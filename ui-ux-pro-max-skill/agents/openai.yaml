@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI/UX Pro Max"
+  short_description: "Searchable UI/UX design and implementation guidance"
+  default_prompt: "Use $ui-ux-pro-max to design and implement a polished, accessible interface for this project."
