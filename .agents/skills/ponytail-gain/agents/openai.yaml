@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ponytail Gain"
+  short_description: "Show Ponytail's published benchmark impact"
+  default_prompt: "Use $ponytail-gain to show the published Ponytail impact scoreboard."

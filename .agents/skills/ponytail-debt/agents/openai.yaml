@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ponytail Debt"
+  short_description: "Collect deferred Ponytail shortcuts into a ledger"
+  default_prompt: "Use $ponytail-debt to report every deferred Ponytail shortcut in this repository."
