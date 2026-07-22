@@ -7,3 +7,7 @@
 
 # Preserve imported upstream metadata locally without creating a gitlink.
 ui-ux-pro-max-skill/.git.upstream-backup/
+
+# Python cache
+__pycache__/
+*.py[cod]

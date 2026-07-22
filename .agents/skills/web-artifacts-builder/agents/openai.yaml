@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Artifacts Builder"
+  short_description: "Build complex self-contained React HTML artifacts"
+  default_prompt: "Use $web-artifacts-builder to build this complex interface as a self-contained HTML artifact."

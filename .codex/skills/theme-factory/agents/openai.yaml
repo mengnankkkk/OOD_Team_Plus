@@ -1,0 +1,4 @@
+interface:
+  display_name: "Theme Factory"
+  short_description: "Apply cohesive color and typography themes"
+  default_prompt: "Use $theme-factory to select or create a cohesive theme for this artifact."

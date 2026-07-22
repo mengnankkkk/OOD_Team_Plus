@@ -1,0 +1,4 @@
+interface:
+  display_name: "Canvas Design"
+  short_description: "Create polished original PDF and PNG artwork"
+  default_prompt: "Use $canvas-design to create an original, museum-quality static visual for this brief."
