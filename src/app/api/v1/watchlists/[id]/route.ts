@@ -32,16 +32,20 @@ function validateContext(params: unknown) {
   return parsed.success ? parsed.data.params : null;
 }
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  if (!validateContext(params)) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
+
+  if (!validateContext(resolvedParams)) {
     return invalidRequest("Invalid route params");
   }
 
   return notFound();
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  if (!validateContext(params)) {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
+
+  if (!validateContext(resolvedParams)) {
     return invalidRequest("Invalid route params");
   }
 
@@ -64,8 +68,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   return notFound();
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
-  if (!validateContext(params)) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
+
+  if (!validateContext(resolvedParams)) {
     return invalidRequest("Invalid route params");
   }
 

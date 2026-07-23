@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  void params.id;
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  void id;
   if (!req.headers.get("If-Match")) {
     return NextResponse.json(
       { error: { code: "INVALID_REQUEST", message: "If-Match required" } },

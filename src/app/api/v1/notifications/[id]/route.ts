@@ -21,8 +21,9 @@ function notFound() {
   );
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  void params.id;
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  void id;
 
   if (!req.headers.get("If-Match")) {
     return invalidRequest("If-Match required");
@@ -42,7 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   return NextResponse.json({
     data: {
-      id: params.id,
+      id,
       status: parsed.data.action === "MARK_READ" ? "read" : "ignored",
       unread: false,
       updatedAt: new Date().toISOString(),

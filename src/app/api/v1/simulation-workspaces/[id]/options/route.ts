@@ -8,8 +8,9 @@ const OptionsRequestSchema = z.object({
   conversationId: z.string().optional(),
 });
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  void params.id;
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  void id;
   if (!req.headers.get("Idempotency-Key")) {
     return NextResponse.json(
       { error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } },
