@@ -17,3 +17,4 @@
 - Portfolio score calculations remain pure and DB-free; persist their bounded integer scores, version, component JSON, and missing-metric JSON through `portfolioScoreSnapshots` only at a separate orchestration boundary.
 - Deterministic demo trends must carry `source: "MOCK"` and `modelVersion: "mock-trend-v1"` through both generated series and API metadata so alert and Evidence Board paths can reject them.
 - Simulation route stubs stay DB-free: validate Idempotency-Key/If-Match at the HTTP boundary, keep candidate generation deterministic, and ensure executeSimulation is a pure function that cannot touch real holdings, alerts, or Evidence Board entries.
+- Sanitizers should remain pure, deterministic, and DB-free; keep ECharts validation whitelist-based with function-string rejection, keep markdown sanitization HTML-stripping plus protocol filtering, and cover both with unit tests instead of route-level fixtures.
