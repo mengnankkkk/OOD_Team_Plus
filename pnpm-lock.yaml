@@ -44,6 +44,9 @@ importers:
       next:
         specifier: 16.2.11
         version: 16.2.11(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@playwright/test@1.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      node-sql-parser:
+        specifier: ^5.4.0
+        version: 5.4.0
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -1492,6 +1495,9 @@ packages:
   '@types/node@22.19.8':
     resolution: {integrity: sha512-ebO/Yl+EAvVe8DnMfi+iaAyIqYdK0q/q0y0rw82INWEKJOBe6b/P3YWE8NW7oOlF/nXFNrHwhARrN/hdgDkraA==}
 
+  '@types/pegjs@0.10.6':
+    resolution: {integrity: sha512-eLYXDbZWXh2uxf+w8sXS8d6KSoXTswfps6fvCUuVAGN8eRpfe7h9eSRydxiSJvo9Bf+GzifsDOr9TMQlmJdmkw==}
+
   '@types/react-dom@19.2.3':
     resolution: {integrity: sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==}
     peerDependencies:
@@ -1855,6 +1861,10 @@ packages:
 
   bidi-js@1.0.3:
     resolution: {integrity: sha512-RKshQI1R3YQ+n9YJz2QQ147P66ELpa1FQEg20Dk8oW9t2KgLbpDLLp9aGZ7y8WHSshDknG0bknqGw5/tyCs5tw==}
+
+  big-integer@1.6.52:
+    resolution: {integrity: sha512-QxD8cf2eVqJOOz63z6JIN9BzvVs/dlySa5HGSBH5xtR8dPteIRQnBxxKqkNTiT6jbDTF6jAfrd4oMcND9RGbQg==}
+    engines: {node: '>=0.6'}
 
   body-parser@2.3.0:
     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
@@ -3250,6 +3260,10 @@ packages:
   node-releases@2.0.51:
     resolution: {integrity: sha512-wRNIrw4DmVLKQlbgOMdkMx27Wrpzes2hh5Jtbi2bjPd+4wJstWIqP5A+lscnqbm0xxmT5Bpg8Lec5ItEBwx6BQ==}
     engines: {node: '>=18'}
+
+  node-sql-parser@5.4.0:
+    resolution: {integrity: sha512-jVe6Z61gPcPjCElPZ6j8llB3wnqGcuQzefim1ERsqIakxnEy5JlzV7XKdO1KmacRG5TKwPc4vJTgSRQ0LfkbFw==}
+    engines: {node: '>=8'}
 
   npm-run-path@6.0.0:
     resolution: {integrity: sha512-9qny7Z9DsQU8Ou39ERsPU4OZQlSTP47ShQzuKZ6PRXpYLtIFgl/DEBYEXKlvcEa+9tHVcK8CF81Y2V72qaZhWA==}
@@ -5192,6 +5206,8 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/pegjs@0.10.6': {}
+
   '@types/react-dom@19.2.3(@types/react@19.2.14)':
     dependencies:
       '@types/react': 19.2.14
@@ -5565,6 +5581,8 @@ snapshots:
     dependencies:
       require-from-string: 2.0.2
     optional: true
+
+  big-integer@1.6.52: {}
 
   body-parser@2.3.0:
     dependencies:
@@ -7274,6 +7292,11 @@ snapshots:
       semver: 6.3.1
 
   node-releases@2.0.51: {}
+
+  node-sql-parser@5.4.0:
+    dependencies:
+      '@types/pegjs': 0.10.6
+      big-integer: 1.6.52
 
   npm-run-path@6.0.0:
     dependencies:
