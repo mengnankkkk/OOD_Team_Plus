@@ -19,7 +19,11 @@
 - SQLite 保存用户画像、持仓、会话、建议和决策日志。
 - 进程内 `Map` 保存正在运行的 Agent 上下文和 SSE 订阅。
 - 不使用 Redis、消息队列、微服务、真实账户、真实交易和生产级鉴权。
-- 行情与研究数据使用本地 Fixture；可选通过 Python CLI 调用 Pandadata/QuantSkills 后生成相同结构的 JSON。
+- **PandaData Data Service API 是正式数据主路径，必须接入。**
+- **仓库内复制的 `.codex/skills/pandadata-api` 是正式数据调用 Skill，必须保留完整目录并参与运行时路由。**
+- TypeScript Agent 通过 `PandadataAdapter` 调用 Python `panda_data==0.0.12` 运行时；Adapter 再调用 Skill 提供的 `scripts/call_api.py` 或同进程运行器。
+- 本地 Fixture 只用于无凭证测试、接口故障降级和确定性回归，不得在真实数据可用时静默替代。
+- 其他复制到 `.codex/skills` 的 Quant/API Skill 通过 `SkillRegistry` 注册、`SkillRouter` 选择，并记录版本、许可证、验证级别和输出摘要。
 
 枚举约定：
 
@@ -500,6 +504,46 @@ getNewsEvidence
 calculateTechnicalIndicators
 ```
 
+### 14.2.1 真实数据接入契约
+
+市场与研究工具不能直接由模型拼接供应商方法名，必须经过以下链路：
+
+```text
+Chief Advisor / Research Agent
+  -> SkillRouter
+  -> pandadata-api Skill
+  -> PandadataAdapter
+  -> .codex/skills/pandadata-api/scripts/call_api.py
+  -> panda_data==0.0.12
+  -> PandaAIQuant Data Service
+```
+
+P0 方法白名单：
+
+| 业务能力 | Pandadata 方法 | 主要用途 |
+| --- | --- | --- |
+| 交易日对齐 | `get_trade_cal`, `get_prev_trade_date`, `get_last_trade_date` | 统一交易日和数据截止时间 |
+| 股票行情 | `get_stock_daily`, `get_stock_rt_daily`, `get_stock_daily_pre`, `get_stock_daily_post` | 日线、实时和复权行情 |
+| 复权因子 | `get_adj_factor` | 复权收益和回撤计算 |
+| 基金/ETF | `get_fund_detail`, `get_fund_daily`, `get_fund_daily_pre`, `get_fund_daily_post` | ETF/基金详情与行情 |
+| 指数 | `get_index_daily`, `get_index_weights`, `get_index_indicator` | 指数行情、成分和估值 |
+| 财务 | `get_fina_reports`, `get_fina_performance`, `get_fina_forecast`, `get_audit_opinion` | 财务、业绩预告和审计意见 |
+| 事件风险 | `get_restricted_list`, `get_stock_pledge`, `get_stock_shareholder_change`, `get_stock_status_change` | 解禁、质押、增减持和状态变化 |
+| 宏观 | `get_macro_detail`, `get_macro_cal` | 宏观指标和经济日历 |
+| 港美股 | `get_hk_daily`, `get_us_daily` | 港美股行情 |
+| 量化因子 | `get_factor`, `get_adj_factor` | 因子和复权数据 |
+
+每个方法调用必须先读取 `.codex/skills/pandadata-api/references/method-index.md`、`sdk-0.0.12.md` 和对应接口文档，确认方法已由 SDK 导出；不允许根据模型记忆猜测参数、字段、标的格式或认证步骤。API Skill 仅负责路由和契约，数值计算仍由确定性 TypeScript 工具完成。
+
+每次真实调用生成 `DataSnapshot` 和 `SkillRun` 摘要，至少记录：
+
+- Skill slug、版本、来源仓库和验证级别。
+- Pandadata 方法名、脱敏参数、查询区间和数据日期。
+- 返回行数、字段校验、质量状态和新鲜度。
+- 原始响应是否被裁剪、错误分类和重试次数。
+
+凭证只从运行环境或 Pandadata Skill 的运行时配置读取，不进入 SQLite、SSE、Evidence Lab 或模型上下文。
+
 ### 14.3 组合与风险工具
 
 ```text
@@ -843,6 +887,9 @@ Agent 通过 SSE 展示过程，但不得暴露内部推理文本。
 - 买入、持有、停止加仓、分批减仓建议。
 - 主动追问。
 - 动态 Agent 委派。
+- PandaData 真实数据接入：至少完成交易日、股票/ETF 行情、财务或指数估值中的一条真实调用链。
+- `pandadata-api` Skill 加载、方法检索、SDK 版本校验和最小冒烟测试。
+- 数据快照、Skill 运行和来源证据可在 Evidence Lab 中回放。
 - 模拟采纳。
 - Evidence Lab。
 - 决策日志。
@@ -865,11 +912,12 @@ Agent 通过 SSE 展示过程，但不得暴露内部推理文本。
 ## 25. 非功能要求
 
 - 首个 SSE 状态事件在请求后 500 毫秒内返回。
-- Fixture 场景完整建议在 15 秒内返回。
+- 已接入真实数据时，完整建议在数据接口和模型延迟允许范围内返回，并展示数据时间；Fixture 回归场景在 15 秒内返回。
 - 所有建议可通过 `recommendation_id` 回放。
 - 相同 Fixture 和参数应生成一致的确定性计算结果。
 - 所有工具输入输出通过 Zod 校验。
 - Agent 失败时保留已完成的证据并返回可理解的降级结果。
+- PandaData 不可用、认证失败或 Skill 契约不匹配时，不得静默伪装成实时数据；必须标记数据源状态并降级为观察提示。
 - 用户重置 Demo 后可恢复到固定初始状态。
 
 ## 26. 验收标准
@@ -883,3 +931,6 @@ Agent 通过 SSE 展示过程，但不得暴露内部推理文本。
 - 风险或合规节点可以降级或阻断建议。
 - 用户可模拟采纳、拒绝和继续追问。
 - 建议、数据、Agent 运行和用户决策能够完整追溯。
+- 配置 Pandadata 凭证后，Agent 能通过 `pandadata-api` Skill 完成至少一次真实数据调用。
+- 真实调用能记录准确的方法名、脱敏参数、数据日期、Skill 版本和质量状态。
+- SDK 未导出或接口契约不匹配时，任务失败或降级，不生成伪造行情。
