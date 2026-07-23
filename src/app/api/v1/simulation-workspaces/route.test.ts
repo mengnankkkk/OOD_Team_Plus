@@ -5,6 +5,7 @@ import { PATCH as patchWorkspace } from "./[id]/route";
 import { POST as generateOptions } from "./[id]/options/route";
 import { GET, POST } from "./route";
 import { generateCandidates } from "@/server/extensions/simulation/candidate-generator";
+import { executeSimulation } from "@/server/extensions/simulation/deterministic-engine";
 
 const url = "http://localhost/api/v1/simulation-workspaces";
 
@@ -81,5 +82,42 @@ describe("/api/v1/simulation-workspaces", () => {
       "Option B",
       "Option C",
     ]);
+  });
+
+  it("simulation engine returns deterministic results", () => {
+    const input = {
+      parentCashDecimal: "100.00",
+      parentHoldings: [
+        { instrumentId: "AAPL", quantity: "2", marketValue: "300" },
+        { instrumentId: "MSFT", quantity: "1", marketValue: "200" },
+      ],
+      candidate: {
+        sequenceNo: 0,
+        label: "Option A",
+        description: "No trades",
+        trades: [],
+      },
+      priceManifest: {
+        prices: { AAPL: "150", MSFT: "200" },
+        sha256: "manifest-1",
+        capturedAt: "2026-07-24T00:00:00.000Z",
+      },
+    };
+
+    const first = executeSimulation(
+      input.parentCashDecimal,
+      [...input.parentHoldings],
+      input.candidate,
+      input.priceManifest,
+    );
+    const second = executeSimulation(
+      input.parentCashDecimal,
+      [...input.parentHoldings],
+      input.candidate,
+      input.priceManifest,
+    );
+
+    expect(first).toEqual(second);
+    expect(first.newTotalMarketValue).toBe("500");
   });
 });
