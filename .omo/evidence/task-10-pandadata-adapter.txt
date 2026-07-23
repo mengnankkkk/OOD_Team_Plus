@@ -1,0 +1,18 @@
+Task 10: PandaData Skill router adapter
+Date: 2026-07-24
+
+Implemented:
+- scripts/call_api.py: environment-only credentials, SDK 0.0.12 init_token, exact six-method whitelist, JSON output.
+- src/server/extensions/pandadata/adapter.ts: Python process bridge, matching whitelist, timeout, output parsing, extension errors.
+- src/server/extensions/pandadata/adapter.test.ts: child_process mock coverage for whitelist, invocation, bridge errors, invalid JSON.
+
+Verification:
+- Changed-file LSP diagnostics: no Python errors; TypeScript LSP process unavailable (exit -4058), covered by tsc.
+- pnpm typecheck: PASS (exit 0)
+- pnpm lint: PASS (exit 0)
+- pnpm test: PASS (exit 0; 13 files, 89 tests)
+
+Security:
+- No credentials are passed in argv or hardcoded.
+- No credential values are logged by adapter or bridge.
+- No non-whitelisted method can reach getattr/spawn.
