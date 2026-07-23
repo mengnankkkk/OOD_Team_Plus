@@ -1,0 +1,10 @@
+Task 15 - Simulation workspace API
+
+Implementation:
+- POST and GET /api/v1/simulation-workspaces
+- GET and PATCH /api/v1/simulation-workspaces/[id]
+- POST validates Idempotency-Key and SimulationWorkspaceRequestSchema.
+- PATCH requires If-Match before returning the persistence-stub 404.
+
+Verification:
+- Focused route tests cover missing headers, invalid fields, valid creation, and empty listing.
