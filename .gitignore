@@ -11,3 +11,12 @@ ui-ux-pro-max-skill/.git.upstream-backup/
 # Python cache
 __pycache__/
 *.py[cod]
+
+# JavaScript / Next.js
+node_modules/
+.next/
+out/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
