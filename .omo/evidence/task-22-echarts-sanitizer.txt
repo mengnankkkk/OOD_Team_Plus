@@ -1,0 +1,11 @@
+Task 22: ECharts sanitizer
+
+Implemented:
+- sanitizeEChartsOption rejects non-object input, oversized payloads, disallowed series types, function strings, and external script links.
+- Allowed chart types are limited to line, bar, pie, scatter, radar, and treemap.
+
+Verification:
+- pnpm test src/server/extensions/sanitizers/echarts-sanitizer.test.ts
+- Result: 1 test file passed, 4 tests passed.
+- pnpm typecheck: PASS (exit 0)
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.
