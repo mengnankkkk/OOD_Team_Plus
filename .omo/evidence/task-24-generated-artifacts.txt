@@ -1,0 +1,11 @@
+Task 24: Generated-artifacts collection API
+
+Implemented:
+- POST requires Idempotency-Key.
+- POST validates GeneratedArtifactRequestSchema and queues artifact generation.
+- GET returns an empty paginated collection stub.
+
+Verification:
+- pnpm test "src/app/api/v1/generated-artifacts/route.test.ts"
+- Result: 1 test file passed, 4 tests passed.
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.
