@@ -24,6 +24,9 @@
 - SQLite 单文件数据库。
 - 本地单 Node.js 进程。
 - SSE 输出 Agent 执行进度和最终回复。
+- PandaAIQuant Data Service API 是研究数据的正式主来源。
+- `.codex/skills/pandadata-api` 是必加载的接口路由与契约 Skill，运行时锁定 `panda_data==0.0.12`。
+- TypeScript 通过 `PandadataAdapter` 调用 Python Skill runner；本地 Fixture 只作为明确标记的降级和回归数据。
 - 不使用 Redis、消息队列、微服务和真实交易接口。
 
 产品边界固定为：
@@ -62,6 +65,12 @@ Conversation Agent Service
   |     +-- portfolio concentration and stress test
   |     +-- suitability and compliance rules
   |
+  +-- external data integration
+  |     +-- SkillRouter
+  |     +-- pandadata-api Skill
+  |     +-- PandadataAdapter -> panda_data==0.0.12
+  |     +-- DataSnapshot / SkillRun recorder
+  |
   +-- DeepSeek model adapter
   |
   v
@@ -77,6 +86,43 @@ SQLite
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 ```
+
+### 2.1 真实数据与 Skill 运行时
+
+PandaData 调用不是公开的业务 Route Handler，而是 Agent Service 的内部白名单工具。调用链固定为：
+
+```text
+Data & Research Agent
+  -> SkillRouter
+  -> .codex/skills/pandadata-api/references/*
+  -> PandadataAdapter
+  -> .codex/skills/pandadata-api/scripts/call_api.py
+  -> panda_data==0.0.12
+  -> PandaAIQuant Data Service
+```
+
+P0 白名单至少包含：
+
+| 能力 | 方法 |
+| --- | --- |
+| 交易日 | `get_trade_cal`, `get_prev_trade_date`, `get_last_trade_date` |
+| 股票/复权行情 | `get_stock_daily`, `get_stock_rt_daily`, `get_stock_daily_pre`, `get_stock_daily_post`, `get_adj_factor` |
+| 基金/ETF | `get_fund_detail`, `get_fund_daily`, `get_fund_daily_pre`, `get_fund_daily_post` |
+| 指数 | `get_index_daily`, `get_index_weights`, `get_index_indicator` |
+| 财务 | `get_fina_reports`, `get_fina_performance`, `get_fina_forecast`, `get_audit_opinion` |
+| 事件 | `get_restricted_list`, `get_stock_pledge`, `get_stock_shareholder_change`, `get_stock_status_change` |
+| 宏观/因子 | `get_macro_detail`, `get_macro_cal`, `get_factor` |
+| 港美股 | `get_hk_daily`, `get_us_daily` |
+
+每次调用前必须从本地 Skill reference 读取方法契约，并用 SDK 兼容性检查确认方法已导出；模型不能猜测方法、参数、字段或认证方式。每次调用完成后，服务写入 `tool_call`、`DataSnapshot` 和 `SkillRun` 摘要，Evidence Lab 只展示脱敏信息。
+
+PandaData 凭证只从环境变量或 Skill runtime 配置读取；健康检查只能返回 `configured`、`reachable` 和版本状态，不返回用户名、密码、Token 或配置路径。
+
+契约来源固定为：
+
+- 本地 `.codex/skills/pandadata-api/references/api-docs.md`、`method-index.md` 和 `sdk-0.0.12.md`。
+- [PandaAIQuant Data Service API](https://www.pandaaiquant.com/data-service/api-docs?api=data_overview)。
+- 其他复制到 `.codex/skills` 的 Skill manifest 与 reference 文档。
 
 本地运行使用单个 `next start` 进程。进程内维护：
 
@@ -125,6 +171,10 @@ export const dynamic = "force-dynamic";
 - MA、MACD、RSI、成交量、波动率和回撤。
 - 公司公告、财报、解禁、减持、政策和宏观事件。
 - 支持证据和反方证据。
+- 必须通过 `pandadata-api` Skill 将业务能力路由到已验证的 `panda_data.get_*` 方法。
+- 交易日统一使用 `get_trade_cal`、`get_prev_trade_date` 或 `get_last_trade_date` 对齐，不能用自然日替代交易日。
+- 每次真实取数生成数据快照，记录方法、脱敏参数、查询窗口、最新数据日、行数和质量状态。
+- Skill 或 SDK 契约不匹配时停止该调用，不得用模型推测字段或用 Fixture 冒充实时结果。
 
 ### 3.4 Portfolio & Risk Agent
 
@@ -266,7 +316,10 @@ MVP 使用一个预置演示用户和签名的 HttpOnly Cookie：`mw_demo_sessio
 | 429 | `RATE_LIMITED` | 本地内存限流触发 |
 | 500 | `INTERNAL_ERROR` | 未分类服务端错误 |
 | 502 | `MODEL_UNAVAILABLE` | DeepSeek 调用失败 |
-| 502 | `DATA_PROVIDER_UNAVAILABLE` | 数据工具调用失败 |
+| 502 | `PANDADATA_AUTH_FAILED` | PandaData 凭证缺失、失效或无权限 |
+| 502 | `PANDADATA_UNAVAILABLE` | PandaAIQuant Data Service 不可访问 |
+| 502 | `SKILL_CONTRACT_MISMATCH` | 本地 API Skill、SDK 和接口文档契约不一致 |
+| 502 | `DATA_PROVIDER_UNAVAILABLE` | 非 PandaData 数据工具调用失败 |
 | 503 | `ANALYSIS_INTERRUPTED` | 进程重启导致任务中断 |
 
 ### 4.5 幂等
@@ -2715,6 +2768,9 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
 | 场景 | 行为 |
 | --- | --- |
 | DeepSeek 超时 | 记录 `MODEL_UNAVAILABLE`，保留已生成证据，允许重试 |
+| PandaData 凭证失败 | 记录 `PANDADATA_AUTH_FAILED`，不使用未标记的 Fixture 冒充实时数据 |
+| PandaData 服务不可用 | 记录 `PANDADATA_UNAVAILABLE`，可使用明确标记的缓存/Fixture，无法满足新鲜度时停止建议 |
+| API Skill 契约不匹配 | 记录 `SKILL_CONTRACT_MISMATCH`，停止该方法调用并要求重新加载本地接口文档 |
 | 行情数据过期 | 不生成明确买卖建议，返回 `STALE_MARKET_DATA` 或观察提示 |
 | 用户画像不完整 | 创建 clarification，任务进入 `WAITING_FOR_USER` |
 | 标的无法确认 | 要求用户确认代码和资产类型 |
@@ -2736,7 +2792,8 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
 - 判断 Node.js 进程是否存活。
 - 检查 SQLite 是否可读写且迁移版本正确。
 - 检查 DeepSeek 是否已配置以及最近一次轻量探测结果。
-- 检查固定 Fixture 和 Demo seed 是否可加载。
+- 检查 PandaData SDK、凭证配置和最近一次轻量数据探测。
+- 检查固定 Fixture 和 Demo seed 是否可加载，Fixture 仅作为降级能力。
 
 健康检查不得返回 API Key、数据库文件路径、环境变量值、堆栈、完整供应商错误或用户数据。模型检查默认复用最近 60 秒内的探测结果，避免每次健康检查都触发模型生成。
 
@@ -2762,6 +2819,13 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
         "provider": "DEEPSEEK",
         "checkedAt": "2026-07-23T09:20:00.000Z"
       },
+      "pandadata": {
+        "status": "UP",
+        "sdkVersion": "0.0.12",
+        "configured": true,
+        "methodProbe": "get_trade_cal",
+        "checkedAt": "2026-07-23T09:20:00.000Z"
+      },
       "fixture": {
         "status": "UP",
         "seedVersion": "demo-v1"
@@ -2778,8 +2842,8 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
 
 状态规则：
 
-- `READY`：数据库、迁移和 Fixture 可用，模型可用。
-- `DEGRADED`：进程和数据库可用，但模型探测失败或仅能展示已缓存结果；返回 HTTP `200`。
+- `READY`：数据库、迁移、PandaData 和模型可用。
+- `DEGRADED`：进程和数据库可用，但 PandaData/模型探测失败，只能使用明确标记的缓存或 Fixture；返回 HTTP `200`。
 - `NOT_READY`：数据库不可用、迁移不匹配或 Fixture 缺失；返回 HTTP `503` 和同结构的脱敏检查结果。
 
 该接口不要求演示 Cookie，不创建会话或业务数据，不受普通读取限流影响，但应设置独立的轻量限流。
@@ -2990,19 +3054,24 @@ X-CSRF-Token: <demo-csrf-token>
 17. 健康检查能区分 `READY`、`DEGRADED` 和 `NOT_READY`，且不泄露敏感配置。
 18. Demo bootstrap 一次返回首屏所需摘要，并与各资源详情接口保持一致。
 19. Demo reset 会取消活动分析；连续重置到同一 seed 后业务状态完全一致。
+20. 配置 Pandadata 凭证后，Agent 能通过复制的 `pandadata-api` Skill 完成真实数据调用。
+21. 真实调用能追溯到准确的方法名、脱敏参数、数据日期、SDK/Skill 版本和质量状态。
+22. SDK 未导出、接口契约不匹配或数据服务不可用时，系统不会输出伪造的实时数据。
 
 ## 26. 推荐实现顺序
 
-1. 建立 SQLite 迁移、统一响应、错误、幂等和会话中间层。
-2. 完成画像、风险测评、目标和持仓 CRUD。
-3. 完成自然语言持仓解析与确认。
-4. 完成会话、消息、分析任务和 SSE 事件存储。
-5. 接入 Mastra Supervisor、DeepSeek 和确定性工具。
-6. 完成追问恢复机制。
-7. 完成个股与组合诊断。
-8. 完成建议卡、Evidence Lab 和合规门禁。
-9. 完成模拟、决策日志和观察条件。
-10. 完成 health、Demo bootstrap 和可重复 reset。
-11. 用验收场景完成端到端演示测试。
+1. 加载 `.codex/skills/pandadata-api`，安装并锁定 `panda_data==0.0.12`，完成 `get_trade_cal` 和 `get_stock_daily` 冒烟测试。
+2. 建立 SQLite 迁移、统一响应、错误、幂等和会话中间层。
+3. 完成画像、风险测评、目标和持仓 CRUD。
+4. 完成自然语言持仓解析与确认。
+5. 完成会话、消息、分析任务和 SSE 事件存储。
+6. 实现 `PandadataAdapter`、方法白名单、数据快照和 Skill 运行记录。
+7. 接入 Mastra Supervisor、DeepSeek 和确定性工具。
+8. 完成追问恢复机制。
+9. 完成个股与组合诊断。
+10. 完成建议卡、Evidence Lab 和合规门禁。
+11. 完成模拟、决策日志和观察条件。
+12. 完成 health、Demo bootstrap 和可重复 reset。
+13. 用真实数据、凭证失败、接口过期和 Fixture 降级场景完成端到端演示测试。
 
 本文档是对话 Agent MVP 的唯一 API 契约。前端、Route Handler、Mastra Agent、工具和 SQLite 迁移应复用同一套 Zod 枚举与对象定义，避免在不同层重复解释金融字段。
