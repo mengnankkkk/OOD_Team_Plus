@@ -1,0 +1,8 @@
+Task 7 evidence
+
+- Read docs/CONVERSATION_AGENT_EXTENSIONS_API.md sections 1, 2, 2.1, 2.2.
+- Read src/server/db/schema/enums.ts for existing database enum values.
+- Added shared extension schemas in src/server/extensions/schemas/index.ts.
+- Added extension error codes and factory in src/server/extensions/errors/codes.ts.
+- Added schema and factory tests in src/server/extensions/schemas/index.test.ts.
+- Verified with pnpm test, pnpm typecheck, and pnpm lint.
