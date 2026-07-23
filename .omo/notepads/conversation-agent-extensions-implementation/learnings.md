@@ -3,3 +3,17 @@
 - Watchlists/notifications/RSS schema should stay Zod-first: keep validation in `src/server/db/schema/watchlists.ts` and avoid sqlite-backed tests.
 - App-layer uniqueness matters for active watchlist items; do not add a DB uniqueness constraint that blocks soft removal flows.
 - RSS item storage must remain summary-only; never persist full article bodies in the DB schema or migration.
+- Simulation branch schemas work best split into a Drizzle table file plus Zod-only validators when the insert rules need cross-row uniqueness checks in tests.
+- SQLite migration should carry the real composite FK and deferred-workflow note; Drizzle schema can stay simpler when the app enforces root/active branch wiring.
+- PandaData SDK 0.0.12 must initialize with `init_token`, not the legacy `login`; keep the identical method whitelist in both the TypeScript adapter and Python bridge.
+- PandaData credentials stay in inherited process environment only; adapter arguments contain only script path, whitelisted method, and JSON parameters.
+- SQL query execution needs two deny-by-default layers: validate one parsed SQLite `SELECT` against table/function whitelists, then install an SQLite authorizer before statement preparation.
+- `node-sql-parser` represents scalar function names as nested name-part arrays in SQLite ASTs, while aggregate names are strings; normalize both forms before whitelist checks.
+- Keep authorizer tests callback-only with a mocked structural database object; never instantiate `better-sqlite3` on Windows Node 22.
+- Query execution should strip a trailing semicolon before appending LIMIT, apply the authorizer before `prepare`, and measure the final JSON bytes after row-boundary truncation.
+- NL query planning must intersect model-selected datasets with the caller-requested ALLOWED_TABLES subset, strictly parse every SQL identifier/expression, escape scope literals, and run the completed SELECT through the AST validator before returning it.
+- Query result persistence must serialize each <=500-row chunk once, hash that exact JSON with SHA-256, measure UTF-8 bytes, and insert chunks plus the succeeded status update through one transaction.
+- Portfolio refresh uses the extension route envelope and shared Idempotency-KeySchema, but remains a 202-only async stub until snapshot persistence and queue wiring are implemented.
+- Portfolio score calculations remain pure and DB-free; persist their bounded integer scores, version, component JSON, and missing-metric JSON through `portfolioScoreSnapshots` only at a separate orchestration boundary.
+- Deterministic demo trends must carry `source: "MOCK"` and `modelVersion: "mock-trend-v1"` through both generated series and API metadata so alert and Evidence Board paths can reject them.
+- Simulation route stubs stay DB-free: validate Idempotency-Key/If-Match at the HTTP boundary, keep candidate generation deterministic, and ensure executeSimulation is a pure function that cannot touch real holdings, alerts, or Evidence Board entries.

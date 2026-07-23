@@ -2,7 +2,9 @@ import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
 import { PATCH as patchWorkspace } from "./[id]/route";
+import { PATCH as switchBranch } from "./[id]/active-branch/route";
 import { POST as generateOptions } from "./[id]/options/route";
+import { POST as undoBranch } from "./[id]/undo/route";
 import { GET, POST } from "./route";
 import { generateCandidates } from "@/server/extensions/simulation/candidate-generator";
 import { executeSimulation } from "@/server/extensions/simulation/deterministic-engine";
@@ -119,5 +121,34 @@ describe("/api/v1/simulation-workspaces", () => {
 
     expect(first).toEqual(second);
     expect(first.newTotalMarketValue).toBe("500");
+  });
+
+  it("PATCH active branch validates If-Match and branchId", async () => {
+    const missingMatch = await switchBranch(
+      new NextRequest(`${url}/ws-1/active-branch`, {
+        method: "PATCH",
+        body: JSON.stringify({ branchId: "branch-1" }),
+      }),
+      { params: { id: "ws-1" } },
+    );
+    expect(missingMatch.status).toBe(400);
+
+    const missingBranch = await switchBranch(
+      new NextRequest(`${url}/ws-1/active-branch`, {
+        method: "PATCH",
+        body: "{}",
+        headers: { "If-Match": "1" },
+      }),
+      { params: { id: "ws-1" } },
+    );
+    expect(missingBranch.status).toBe(400);
+  });
+
+  it("POST undo returns the workspace persistence stub response", async () => {
+    const res = await undoBranch(
+      new NextRequest(`${url}/ws-1/undo`, { method: "POST" }),
+      { params: { id: "ws-1" } },
+    );
+    expect(res.status).toBe(404);
   });
 });
