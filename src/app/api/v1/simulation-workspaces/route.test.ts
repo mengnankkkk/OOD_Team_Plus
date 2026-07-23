@@ -54,14 +54,14 @@ describe("/api/v1/simulation-workspaces", () => {
 
   it("PATCH workspace returns 400 without If-Match", async () => {
     const req = new NextRequest(`${url}/missing`, { method: "PATCH" });
-    const res = await patchWorkspace(req, { params: { id: "missing" } });
+    const res = await patchWorkspace(req, { params: Promise.resolve({ id: "missing" }) });
     expect(res.status).toBe(400);
   });
 
   it("POST options validates the request and queues generation", async () => {
     const missingKey = await generateOptions(
       new NextRequest(`${url}/ws-1/options`, { method: "POST", body: "{}" }),
-      { params: { id: "ws-1" } },
+      { params: Promise.resolve({ id: "ws-1" }) },
     );
     expect(missingKey.status).toBe(400);
 
@@ -71,7 +71,7 @@ describe("/api/v1/simulation-workspaces", () => {
         body: JSON.stringify({ objective: "Reduce concentration" }),
         headers: { "Idempotency-Key": "key-2" },
       }),
-      { params: { id: "ws-1" } },
+      { params: Promise.resolve({ id: "ws-1" }) },
     );
     expect(valid.status).toBe(202);
   });
@@ -129,7 +129,7 @@ describe("/api/v1/simulation-workspaces", () => {
         method: "PATCH",
         body: JSON.stringify({ branchId: "branch-1" }),
       }),
-      { params: { id: "ws-1" } },
+      { params: Promise.resolve({ id: "ws-1" }) },
     );
     expect(missingMatch.status).toBe(400);
 
@@ -139,7 +139,7 @@ describe("/api/v1/simulation-workspaces", () => {
         body: "{}",
         headers: { "If-Match": "1" },
       }),
-      { params: { id: "ws-1" } },
+      { params: Promise.resolve({ id: "ws-1" }) },
     );
     expect(missingBranch.status).toBe(400);
   });
@@ -147,7 +147,7 @@ describe("/api/v1/simulation-workspaces", () => {
   it("POST undo returns the workspace persistence stub response", async () => {
     const res = await undoBranch(
       new NextRequest(`${url}/ws-1/undo`, { method: "POST" }),
-      { params: { id: "ws-1" } },
+      { params: Promise.resolve({ id: "ws-1" }) },
     );
     expect(res.status).toBe(404);
   });

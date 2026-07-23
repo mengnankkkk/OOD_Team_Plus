@@ -9,7 +9,7 @@ describe("/api/v1/notifications/[id]", () => {
   it("PATCH requires If-Match", async () => {
     const res = await PATCH(
       new NextRequest(url, { method: "PATCH", body: JSON.stringify({ action: "MARK_READ" }) }),
-      { params: { id: "notif_1" } },
+      { params: Promise.resolve({ id: "notif_1" }) },
     );
 
     expect(res.status).toBe(400);
@@ -22,7 +22,7 @@ describe("/api/v1/notifications/[id]", () => {
         body: JSON.stringify({ action: "INVALID" }),
         headers: { "If-Match": "1" },
       }),
-      { params: { id: "notif_1" } },
+      { params: Promise.resolve({ id: "notif_1" }) },
     );
 
     expect(res.status).toBe(400);
@@ -35,7 +35,7 @@ describe("/api/v1/notifications/[id]", () => {
         body: JSON.stringify({ action: "MARK_READ" }),
         headers: { "If-Match": "1" },
       }),
-      { params: { id: "notif_1" } },
+      { params: Promise.resolve({ id: "notif_1" }) },
     );
 
     expect(res.status).toBe(200);

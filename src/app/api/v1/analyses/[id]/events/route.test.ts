@@ -9,7 +9,7 @@ describe("GET /api/v1/analyses/[id]/events", () => {
       headers: { "Last-Event-ID": "event_1" },
     });
 
-    const res = await GET(req, { params: { id: "analysis_1" } });
+    const res = await GET(req, { params: Promise.resolve({ id: "analysis_1" }) });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
   });
