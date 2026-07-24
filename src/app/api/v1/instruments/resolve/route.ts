@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     const id = symbol.length === 6 ? `${symbol}.${market}` : createId("instrument");
     db.prepare("INSERT INTO instruments (id,symbol,name,market,asset_type,sector,tradable) VALUES (?,?,?,?,?,?,1)")
-      .run(id, symbol, name, market, parsed.data.assetType, parsed.data.sector ?? "A股", 1);
+      .run(id, symbol, name, market, parsed.data.assetType, parsed.data.sector ?? "A股");
     const row = db.prepare("SELECT id,symbol,name,market,asset_type,sector,tradable FROM instruments WHERE id=?").get(id) as Record<string, unknown>;
     return NextResponse.json({ data: format(row), meta: meta() }, { status: 201 });
   } finally {
