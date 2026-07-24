@@ -15,6 +15,7 @@ const navItems = [
   { path: "/assets", label: "资产" },
   { path: "/advisor", label: "顾问" },
   { path: "/watchlist", label: "持仓观测" },
+  { path: "/simulations", label: "分支模拟" },
 ];
 
 const historyEntries = [
@@ -25,16 +26,15 @@ const historyEntries = [
 
 const workspaceEntries = [
   { path: "/analysis", label: "组合分析" },
-  { path: "/simulations", label: "分支模拟" },
+  { path: "/notification-preference", label: "通知偏好" },
+  { path: "/risk-questionnaire", label: "风险问卷" },
+  { path: "/system-health", label: "系统健康" },
 ];
 
 const adminEntries = [
   { path: "/assets/semantic", label: "语义层" },
   { path: "/admin/users", label: "用户管理" },
   { path: "/admin/rss", label: "RSS 源管理" },
-  { path: "/admin/system", label: "系统健康" },
-  { path: "/notification-preference", label: "通知偏好" },
-  { path: "/risk-questionnaire", label: "风险问卷" },
 ];
 
 export default function TopNavigation() {
@@ -82,7 +82,7 @@ export default function TopNavigation() {
             <span className="hidden bg-gradient-to-br from-white via-[#fff2bc] to-[#d49b2f] bg-clip-text font-semibold text-transparent sm:inline-block">Money Whisperer</span>
           </NavLink>
 
-          <nav className="ml-auto hidden items-center gap-8 md:flex">
+          <nav className="ml-auto hidden items-center gap-5 lg:gap-8 md:flex">
             {navItems.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}><span>{item.label}</span></NavLink>)}
             <div ref={historyWrapRef} className="relative">
               <button type="button" onClick={() => setHistoryMenuOpen((value) => !value)} className={cn("nav-link inline-flex items-center gap-1.5", historyActive && "active", historyMenuOpen && "open")}>
@@ -145,7 +145,7 @@ export default function TopNavigation() {
         {judgeMode ? <div className="mx-auto max-w-[1440px] border-t border-destructive/30 bg-destructive/5 px-5 py-1.5 text-xs text-destructive md:px-10 xl:px-16">评委视图 · Pandadata 路由、Skill 运行、DAG、风控拦截原因均已展开</div> : null}
       </header>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
         {navItems.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>{item.label}</NavLink>)}
         <NavLink to="/history" className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>历史记录</NavLink>
       </nav>

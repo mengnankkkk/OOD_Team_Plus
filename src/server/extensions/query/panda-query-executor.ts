@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import Decimal from "decimal.js";
 
@@ -267,7 +267,7 @@ function normalizeDuration(value: number): number {
 }
 
 function id(prefix: string): string {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+  return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
 function digest(value: string): string {

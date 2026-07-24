@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import type {
   createColumnSchema,
@@ -82,7 +83,7 @@ export async function createColumn(
 ) {
   await requireActive(db, "metadata_semantic_tables", tableId);
   const now = nowIso();
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   await db.execute({
     sql: `insert into metadata_semantic_columns
       (id, table_id, physical_column_name, ordinal_position, data_type,

@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import type {
   createTableSchema,
@@ -77,7 +78,7 @@ export async function pageTables(
 export async function createTable(db: SemanticLayerDb, input: CreateTable) {
   await requireActive(db, "metadata_domains", input.domainId);
   const now = nowIso();
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   await db.execute({
     sql: `insert into metadata_semantic_tables
       (id, domain_id, datasource_key, schema_name, physical_table_name,

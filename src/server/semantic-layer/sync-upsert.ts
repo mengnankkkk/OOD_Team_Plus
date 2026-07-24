@@ -3,6 +3,7 @@ import {
   nullable,
   type SemanticLayerExecutor,
 } from "@/server/semantic-layer/database";
+import { randomUUID } from "node:crypto";
 import type {
   SyncColumn,
   SyncInput,
@@ -18,7 +19,7 @@ export async function upsertDomain(
     sql: "select id from metadata_domains where name = ? limit 1",
     args: [input.domain.name],
   });
-  const id = (existing.rows[0]?.id as string | undefined) ?? crypto.randomUUID();
+  const id = (existing.rows[0]?.id as string | undefined) ?? randomUUID();
   if (existing.rows[0]) {
     await db.execute({
       sql: `update metadata_domains set name = ?,
@@ -57,7 +58,7 @@ export async function upsertTable(
         and physical_table_name = ? limit 1`,
     args: [input.datasourceKey, input.schemaName ?? "", table.physicalTableName],
   });
-  const id = (existing.rows[0]?.id as string | undefined) ?? crypto.randomUUID();
+  const id = (existing.rows[0]?.id as string | undefined) ?? randomUUID();
   if (existing.rows[0]) {
     await updateTable(db, id, domainId, table, now);
     return { id, created: false };
@@ -134,7 +135,7 @@ export async function upsertColumn(
       where table_id = ? and physical_column_name = ? limit 1`,
     args: [tableId, column.physicalColumnName],
   });
-  const id = (existing.rows[0]?.id as string | undefined) ?? crypto.randomUUID();
+  const id = (existing.rows[0]?.id as string | undefined) ?? randomUUID();
   if (existing.rows[0]) {
     await updateColumn(db, id, column, now);
     return { id, created: false };

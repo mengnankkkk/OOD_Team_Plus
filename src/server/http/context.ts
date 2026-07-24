@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { getDbClient } from "@/server/db/client";
 import { AuthFailure, type AuthUser } from "@/server/auth/contracts";
@@ -57,7 +57,7 @@ export function getDatabase() {
 }
 
 export function createId(prefix: string): string {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+  return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
 export function isoNow(): string {

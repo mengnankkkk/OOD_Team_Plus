@@ -16,9 +16,43 @@ import type {
 
 export type { ConversationOutputMode } from "./types";
 
+type PreparedNewRun = {
+  replayed: false;
+  analysisId: string;
+  userMessageId: string;
+  outputMode: ConversationOutputMode;
+};
+
 export async function runConversationAgent(input: AdvisorRunInput) {
   const prepared = prepareRun(input);
   if (prepared.replayed) return prepared.result;
+  return executePreparedConversationAgent(input, prepared);
+}
+
+export function startConversationAgent(input: AdvisorRunInput) {
+  const prepared = prepareRun(input);
+  if (prepared.replayed) return { replayed: true as const, result: prepared.result };
+  void executePreparedConversationAgent(input, prepared).catch(() => undefined);
+  return {
+    replayed: false as const,
+    result: {
+      messageId: prepared.userMessageId,
+      analysis: {
+        analysisId: prepared.analysisId,
+        type: "ADVISORY",
+        status: "RUNNING",
+        streamUrl: `/api/v1/analyses/${prepared.analysisId}/events`,
+      },
+      outputMode: prepared.outputMode,
+      answer: null,
+      recommendationId: null,
+      missingQuestions: [],
+      dataQueryId: null,
+    },
+  };
+}
+
+async function executePreparedConversationAgent(input: AdvisorRunInput, prepared: PreparedNewRun) {
   const { analysisId, userMessageId, outputMode } = prepared;
   persistSseEvent({ analysisId, type: "agent.started", payload: { type: "CONVERSATION_AGENT", conversationId: input.sessionId, outputMode } });
 

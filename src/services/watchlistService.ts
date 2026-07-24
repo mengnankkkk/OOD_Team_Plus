@@ -31,11 +31,20 @@ export async function listWatchlistItems(): Promise<WatchlistItem[]> {
 
 export async function addWatchlistItem(input: { name: string; symbol: string; reason?: string; plannedHorizon?: string }): Promise<void> {
   const watchlist = await ensureDefaultWatchlist();
-  const query = encodeURIComponent(input.symbol || input.name);
-  const instruments = await apiGet<{ items: Instrument[] }>(`/api/v1/instruments/search?q=${query}&limit=20`);
-  const instrument = instruments.items.find((item) => item.tradable && (item.symbol.toLowerCase() === input.symbol.toLowerCase() || item.name === input.name)) ?? instruments.items.find((item) => item.tradable);
+  const instrument = await resolveInstrument(input);
   if (!instrument) throw new Error("未找到可交易标的，请检查代码或名称");
   await apiPost(`/api/v1/watchlists/${watchlist.id}/items`, { instrumentId: instrument.instrumentId, reason: input.reason || undefined, plannedHorizon: input.plannedHorizon || undefined });
+}
+
+async function resolveInstrument(input: { name: string; symbol: string }): Promise<Instrument | null> {
+  const symbol = input.symbol.trim();
+  const name = input.name.trim();
+  if (symbol && name) {
+    return apiPost<Instrument>("/api/v1/instruments/resolve", { symbol, name, assetType: "stock" });
+  }
+  const query = encodeURIComponent(symbol || name);
+  const instruments = await apiGet<{ items: Instrument[] }>(`/api/v1/instruments/search?q=${query}&limit=20`);
+  return instruments.items.find((item) => item.tradable && (item.symbol.toLowerCase() === symbol.toLowerCase() || item.name === name)) ?? instruments.items.find((item) => item.tradable) ?? null;
 }
 
 export async function removeWatchlistItem(item: WatchlistItem): Promise<void> {

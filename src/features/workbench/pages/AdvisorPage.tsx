@@ -4,7 +4,7 @@ import {
   deleteAdvisorSession,
   listAdvisorSessions,
   listOnboardingMessages,
-  sendAdvisorMessage,
+  sendAdvisorMessageStream,
 } from "@/services/advisorService";
 import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, ConversationOutputMode, OnboardingMessage } from "@/types/app/onboarding";
 import { toast } from "sonner";
@@ -237,25 +237,52 @@ const AdvisorPage = () => {
     };
     setMessages((m) => [...m, optimistic]);
     setDraft("");
+    const streamMessageId = `advisor-stream-${Date.now()}`;
+    setMessages((m) => [
+      ...m,
+      {
+        id: streamMessageId,
+        role: "advisor",
+        content: "顾问 Agent 正在接入…",
+        metadata: { streaming: true, streamStatus: "正在创建对话" },
+        createdAt: new Date().toISOString(),
+        sessionId: currentSessionId,
+      },
+    ]);
     try {
-      const { reply, profileUpdate, trace, sessionId: returnedSid, recommendationId, artifact, clarificationId } = await sendAdvisorMessage(text.trim(), currentSessionId, outputMode);
+      const { reply, profileUpdate, trace, sessionId: returnedSid, recommendationId, artifact, clarificationId } = await sendAdvisorMessageStream(
+        text.trim(),
+        currentSessionId,
+        outputMode,
+        {
+          onSessionId: (sessionId) => {
+            if (sessionId !== currentSessionId) setActiveSessionId(sessionId);
+            setMessages((items) => items.map((item) => item.id === optimistic.id || item.id === streamMessageId ? { ...item, sessionId } : item));
+          },
+          onProgress: (status) => {
+            setMessages((items) => items.map((item) => item.id === streamMessageId ? {
+              ...item,
+              content: status,
+              metadata: { ...item.metadata, streaming: true, streamStatus: status },
+            } : item));
+          },
+        },
+      );
       const meta: Record<string, unknown> = {};
       if (profileUpdate) meta.profileUpdate = profileUpdate;
       if (trace) meta.trace = trace;
       if (recommendationId) meta.recommendationId = recommendationId;
       if (artifact) meta.artifact = artifact;
       if (clarificationId) meta.clarificationId = clarificationId;
-      setMessages((m) => [
-        ...m,
-        {
+      setMessages((m) => m.map((item) => item.id === streamMessageId ? {
+          ...item,
           id: `advisor-${Date.now()}`,
           role: "advisor",
           content: reply,
           metadata: meta,
           createdAt: new Date().toISOString(),
           sessionId: returnedSid ?? currentSessionId,
-        },
-      ]);
+        } : item));
       if (profileUpdate) {
         toast.success("已更新你的财务档案");
         await refreshProfile();
@@ -263,7 +290,7 @@ const AdvisorPage = () => {
       void refreshSessions();
     } catch (err: any) {
       toast.error(err?.message ?? "顾问 Agent 暂时无响应");
-      setMessages((m) => m.filter((x) => x.id !== optimistic.id));
+      setMessages((m) => m.filter((x) => x.id !== optimistic.id && x.id !== streamMessageId));
     } finally {
       setSending(false);
     }
@@ -430,7 +457,7 @@ const AdvisorPage = () => {
           ) : (
             <ul className="mx-auto flex max-w-2xl flex-col gap-5">
               {messages.map((msg) => {
-                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel };
+                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string };
                 return (
                   <li key={msg.id} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role !== "user" && (
@@ -453,13 +480,19 @@ const AdvisorPage = () => {
                             ✓ 已把这段信息写入你的财务档案
                           </div>
                         ) : null}
+                        {msg.role === "advisor" && meta.streaming ? (
+                          <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                            <span>{meta.streamStatus ?? "顾问 Agent 正在处理"}</span>
+                          </div>
+                        ) : null}
                       </div>
                       {msg.role === "advisor" && meta.trace ? <AdvisorTrace trace={meta.trace} /> : null}
                     </div>
                   </li>
                 );
               })}
-              {sending && (
+              {sending && !messages.some((message) => Boolean((message.metadata as { streaming?: unknown } | undefined)?.streaming)) && (
                 <li className="flex gap-3">
                   <div className="grid size-8 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">顾问</div>
                   <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">思考中…</div>

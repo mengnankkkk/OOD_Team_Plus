@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import type {
   createForeignKeySchema,
@@ -121,7 +122,7 @@ export async function createForeignKey(
   await requireColumnOnTable(db, input.sourceColumnId, input.sourceTableId);
   await requireColumnOnTable(db, input.targetColumnId, input.targetTableId);
   const now = nowIso();
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   await db.execute({
     sql: `insert into metadata_logical_foreign_keys
       (id, source_table_id, source_column_id, target_table_id, target_column_id,

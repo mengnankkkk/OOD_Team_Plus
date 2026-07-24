@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import type {
   createDomainSchema,
@@ -54,7 +55,7 @@ export async function pageDomains(db: SemanticLayerDb, query: PageQuery) {
 
 export async function createDomain(db: SemanticLayerDb, input: CreateDomain) {
   const now = nowIso();
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   await db.execute({
     sql: `insert into metadata_domains
       (id, name, description, is_visible, status, created_at, updated_at)

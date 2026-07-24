@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 
 import { refreshPortfolio } from "@/server/extensions/analysis/service";
 import { runConversationAgent } from "@/server/extensions/advisor/service";
@@ -74,7 +75,7 @@ async function retryAnalysis(userId: string, sourceId: string, source: Row, over
       WHERE m.agent_run_id=? AND m.role='user' AND c.user_id=? ORDER BY m.created_at LIMIT 1`).get(sourceId, userId) as { session_id?: string; content?: string } | undefined;
     db.close();
     if (!message?.session_id || !message.content) throw new Error("Conversation message not found");
-    const result = await runConversationAgent({ userId, sessionId: message.session_id, content: message.content, clientMessageId: `retry:${sourceId}:${crypto.randomUUID()}` });
+    const result = await runConversationAgent({ userId, sessionId: message.session_id, content: message.content, clientMessageId: `retry:${sourceId}:${randomUUID()}` });
     const analysis = (result as { analysis?: { analysisId?: string } }).analysis;
     if (!analysis?.analysisId) throw new Error("Conversation retry did not create an analysis");
     return { analysisId: analysis.analysisId, result };

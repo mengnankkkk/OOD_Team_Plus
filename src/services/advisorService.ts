@@ -4,6 +4,31 @@ import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOut
 
 type ConversationRow = { id: string; title: string; created_at: string; updated_at: string; row_version: number; last_message_preview?: string };
 type MessageRow = { id: string; role: string; content: string; metadata_json?: string; created_at: string; session_id?: string; agent_run_id?: string | null };
+type StreamStarted = {
+  messageId?: string;
+  answer?: string | null;
+  analysis?: { analysisId?: string; streamUrl?: string; status?: string };
+  recommendationId?: string | null;
+  artifact?: AdvisorReply["artifact"];
+  clarificationId?: string | null;
+};
+type AdvisorStreamObserver = {
+  onSessionId?: (sessionId: string) => void;
+  onProgress?: (message: string) => void;
+};
+
+const ADVISOR_STREAM_EVENTS = [
+  "agent.started",
+  "agent.delegated",
+  "agent.completed",
+  "agent.failed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "evidence.added",
+  "compliance.completed",
+  "recommendation.created",
+] as const;
 
 const mapMessage = (row: MessageRow): OnboardingMessage => ({
   id: row.id,
@@ -71,6 +96,110 @@ export async function sendAdvisorMessage(message: string, sessionId: string, out
     artifact: result.artifact && typeof result.artifact === "object" ? result.artifact as AdvisorReply["artifact"] : null,
     clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
   };
+}
+
+export async function sendAdvisorMessageStream(
+  message: string,
+  sessionId: string,
+  outputMode: ConversationOutputMode,
+  observer: AdvisorStreamObserver = {},
+): Promise<AdvisorReply> {
+  const activeSessionId = await ensureConversation(sessionId, message);
+  observer.onSessionId?.(activeSessionId);
+  observer.onProgress?.("已创建对话，正在启动顾问 Agent");
+  const result = await apiPost<StreamStarted>(`/api/v1/conversations/${activeSessionId}/messages/stream`, {
+    clientMessageId: createClientId(),
+    content: message,
+    outputMode,
+  });
+  const analysisId = result.analysis?.analysisId ?? null;
+  const streamUrl = result.analysis?.streamUrl;
+  if (analysisId && streamUrl && !result.answer) {
+    observer.onProgress?.("顾问 Agent 已启动，正在连接事件流");
+    await watchAdvisorStream(streamUrl, observer).catch((error) => {
+      observer.onProgress?.(error instanceof Error ? error.message : "事件流中断，正在读取最终结果");
+    });
+  }
+  const assistant = analysisId ? await waitForAssistantMessage(activeSessionId, analysisId) : null;
+  const trace = analysisId ? await loadAdvisorTrace(analysisId).catch(() => null) : null;
+  const metadata = assistant?.metadata ?? {};
+  return {
+    reply: assistant?.content ?? String(result.answer ?? "分析已完成。"),
+    profileUpdate: null,
+    trace,
+    sessionId: activeSessionId,
+    analysisId,
+    recommendationId: typeof metadata.recommendationId === "string" ? metadata.recommendationId : result.recommendationId ?? null,
+    artifact: result.artifact && typeof result.artifact === "object" ? result.artifact : null,
+    clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
+  };
+}
+
+function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver): Promise<void> {
+  if (typeof EventSource === "undefined") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(streamUrl);
+    const timeout = window.setTimeout(() => {
+      source.close();
+      reject(new Error("顾问事件流超时，正在读取最终结果"));
+    }, 180_000);
+    const finish = () => {
+      window.clearTimeout(timeout);
+      source.close();
+      resolve();
+    };
+    for (const type of ADVISOR_STREAM_EVENTS) {
+      source.addEventListener(type, (event) => {
+        const payload = parseStreamPayload(event);
+        observer.onProgress?.(streamLabel(type, payload));
+        if (type === "agent.completed" && !payload.agent) finish();
+        if (type === "agent.failed" && payload.code === "ADVISOR_RUN_FAILED") finish();
+      });
+    }
+    source.onerror = () => {
+      window.clearTimeout(timeout);
+      source.close();
+      reject(new Error("顾问事件流连接中断，正在读取最终结果"));
+    };
+  });
+}
+
+function parseStreamPayload(event: Event): Record<string, unknown> {
+  try {
+    return JSON.parse((event as MessageEvent<string>).data) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function streamLabel(type: string, payload: Record<string, unknown>): string {
+  const agent = typeof payload.agent === "string" ? payload.agent : "";
+  if (type === "agent.started") return "顾问 Agent 已接入，开始拆解问题";
+  if (type === "agent.delegated") return agent ? `正在委派 ${agent}` : "正在委派专业子 Agent";
+  if (type === "agent.completed" && agent) return `${agent} 已返回结论`;
+  if (type === "agent.completed") return "顾问 Agent 已完成，正在整理回答";
+  if (type === "agent.failed") return agent ? `${agent} 暂时失败，正在降级处理` : "顾问 Agent 暂时失败，正在读取结果";
+  if (type === "tool.started") return "正在调用工具获取证据";
+  if (type === "tool.completed") return "工具结果已返回，正在合并证据";
+  if (type === "tool.failed") return "工具调用失败，正在使用可用证据降级";
+  if (type === "evidence.added") return "已补充一条证据";
+  if (type === "compliance.completed") return "合规检查完成，正在生成最终说明";
+  if (type === "recommendation.created") return "建议卡已生成";
+  return "顾问 Agent 正在处理";
+}
+
+async function waitForAssistantMessage(sessionId: string, analysisId: string): Promise<OnboardingMessage | null> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
+    const row = [...result.items].reverse().find((item) => item.role === "assistant" && item.agent_run_id === analysisId);
+    if (row) return mapMessage(row);
+    await delay(600);
+  }
+  return null;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {

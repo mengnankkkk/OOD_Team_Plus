@@ -3,6 +3,7 @@ import {
   nullable,
   type SemanticLayerExecutor,
 } from "@/server/semantic-layer/database";
+import { randomUUID } from "node:crypto";
 import { markMissingForeignKeys } from "@/server/semantic-layer/sync-missing";
 import {
   blankStats,
@@ -72,7 +73,7 @@ async function upsertForeignKey(
       where source_column_id = ? and target_column_id = ? limit 1`,
     args: [resolved.sourceColumnId, resolved.targetColumnId],
   });
-  const id = (existing.rows[0]?.id as string | undefined) ?? crypto.randomUUID();
+  const id = (existing.rows[0]?.id as string | undefined) ?? randomUUID();
   if (existing.rows[0]) {
     await updateForeignKey(db, id, fk, resolved);
     return { id, created: false };
