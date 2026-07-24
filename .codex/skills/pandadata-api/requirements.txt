@@ -1,2 +1,11 @@
 panda_data==0.0.12
+numpy>=1.22,<2.0
+pandas>=2.0.0
+pyarrow
+python-snappy>=0.7.3
+python-dotenv>=1.0.0
+PyYAML>=6.0
+zstandard>=0.22.0
+duckdb>=1.1.0
+websockets>=13.0
 requests>=2.0.0

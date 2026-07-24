@@ -37,6 +37,11 @@
   ],
   "exclude": [
     "node_modules",
-    "frontend_src"
+    "frontend_src",
+    ".agents",
+    ".codex",
+    "Anthropic_front",
+    "ponytail",
+    "ui-ux-pro-max-skill"
   ]
 }

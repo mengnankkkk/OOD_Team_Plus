@@ -11,6 +11,10 @@ ui-ux-pro-max-skill/.git.upstream-backup/
 # Python cache
 __pycache__/
 *.py[cod]
+.venv/
+.venv-pandadata/
+/.pandadata/
+/user.json
 
 # JavaScript / Next.js
 node_modules/
@@ -22,5 +26,6 @@ playwright-report/
 *.tsbuildinfo
 .idea
 .omo/
+.data/
 data/
 .serena/

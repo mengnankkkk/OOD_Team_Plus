@@ -223,7 +223,7 @@ SSE 和数据库只保存 Agent 的任务状态、工具输入摘要、证据摘
 - 日期：`YYYY-MM-DD`。
 - 金额、价格和数量：十进制字符串，例如 `"128000.00"`。
 - 比例：数值，`0.15` 表示 `15%`。
-- 示例行情和证券数据均为演示数据，不代表真实市场状态。
+- 证券代码和名称必须使用真实标的；本地 Fixture 数值仅用于演示，不代表真实市场状态。
 
 ### 4.2 身份与数据归属
 
@@ -512,7 +512,7 @@ API 动作与 SQLite `recommendation_action` 的映射：
 | `SCALE_OUT` | `scale_out` |
 | `EXIT` | `exit` |
 
-数据库额外允许内部动作 `risk_notice`。它不是一个可交易动作，对外统一序列化为 `action=WATCH`，并同时返回 `status=DEGRADED` 或 `status=BLOCKED` 及明确的风险/合规原因。查询参数 `action=WATCH` 同时匹配数据库的 `observe` 和 `risk_notice`。
+数据库额外允许内部动作 `risk_notice`，它不是一个可交易动作。`DEGRADED` 建议保留 Agent 原始动作方向，例如 `SCALE_OUT`，但必须明确标记为仅允许模拟、不可实际下单；只有 `BLOCKED` 或纯风险提示才对外序列化为 `action=WATCH`。查询参数 `action=WATCH` 同时匹配数据库的 `observe` 和 `risk_notice`。
 
 API 推荐状态与 SQLite `recommendation_status` 的映射：
 
@@ -535,67 +535,67 @@ API 推荐状态与 SQLite `recommendation_status` 的映射：
 ```json
 {
   "asset": {
-    "symbol": "DEMO001.SZ",
-    "name": "示例科技",
+    "symbol": "000001.SZ",
+    "name": "平安银行",
     "assetType": "STOCK"
   },
   "market": {
-    "lastPrice": "48.60",
+    "lastPrice": "10.42",
     "dataAsOf": "2026-07-22T07:00:00.000Z"
   },
   "position": {
     "quantity": "1000",
-    "averageCost": "52.00",
-    "marketValue": "48600.00",
-    "unrealizedPnl": "-3400.00",
-    "unrealizedPnlRatio": -0.0654,
-    "currentDrawdown": -0.142
+    "averageCost": "11.20",
+    "marketValue": "10420.00",
+    "unrealizedPnl": "-780.00",
+    "unrealizedPnlRatio": -0.0696,
+    "currentDrawdown": -0.110
   },
   "valuation": {
-    "peTtm": "28.60",
+    "peTtm": "5.80",
     "peMeaningful": true,
-    "peThreeYearPercentile": 0.34,
-    "industryPeMedian": "35.20",
-    "pb": "3.40",
-    "ps": "4.10",
-    "dividendYield": 0.012
+    "peThreeYearPercentile": 0.22,
+    "industryPeMedian": "6.40",
+    "pb": "0.73",
+    "ps": "1.10",
+    "dividendYield": 0.04
   },
   "fundamentals": {
-    "revenueYoY": 0.18,
-    "netProfitYoY": 0.12,
-    "roe": 0.154,
-    "grossMarginTrend": "DECLINING",
+    "revenueYoY": 0.10,
+    "netProfitYoY": 0.03,
+    "roe": 0.098,
+    "grossMarginTrend": "STABLE",
     "operatingCashFlowToNetProfit": 1.1,
     "debtRatio": 0.41
   },
   "technical": {
     "ma20Relation": "BELOW",
     "ma60Relation": "BELOW",
-    "macdState": "DAILY_GOLDEN_CROSS",
-    "macdCrossDate": "2026-07-21",
+    "macdState": "BEARISH",
+    "macdCrossDate": null,
     "macdZeroAxis": "BELOW",
-    "weeklyAlignment": "BEARISH",
-    "volumeConfirmation": "WEAK",
+    "weeklyAlignment": "NEUTRAL",
+    "volumeConfirmation": "NORMAL",
     "rsi14": 48.2,
-    "volatility20d": 0.31
+    "volatility20d": 0.22
   },
   "events": [
     {
-      "title": "限售股解禁",
-      "sourceTier": "EXCHANGE_ANNOUNCEMENT",
+      "title": "银行板块净息差与资产质量仍需跟踪",
+      "sourceTier": "LOCAL_FIXTURE",
       "publishedAt": "2026-07-18T09:00:00.000Z",
-      "eventDate": "2026-09-06",
-      "direction": "NEGATIVE",
+      "eventDate": null,
+      "direction": "NEUTRAL",
       "materiality": "MEDIUM",
       "impactHorizon": "SHORT_TO_MEDIUM"
     }
   ],
   "portfolioFit": {
-    "role": "GROWTH_SATELLITE",
-    "currentWeight": 0.0,
+    "role": "VALUE_SATELLITE",
+    "currentWeight": 0.09,
     "suggestedInitialWeight": 0.02,
     "maximumWeight": 0.08,
-    "sectorWeightAfter": 0.23
+    "sectorWeightAfter": 0.11
   }
 }
 ```
@@ -663,6 +663,10 @@ MACD 金叉必须同时展示发生日期、零轴位置、周线方向和成交
 | 持仓 | `POST /holdings/parse/:parseId/confirm` |
 | 持仓 | `PATCH /holdings/:holdingId` |
 | 持仓 | `DELETE /holdings/:holdingId` |
+| 自选 | `GET /watchlist` |
+| 自选 | `POST /watchlist` |
+| 自选 | `PATCH /watchlist/:itemId` |
+| 自选 | `DELETE /watchlist/:itemId` |
 | 对话 | `GET /conversations` |
 | 对话 | `POST /conversations` |
 | 对话 | `GET /conversations/:conversationId` |
@@ -1112,8 +1116,8 @@ GET /api/v1/instruments/:instrumentId
       {
         "id": "holding_01",
         "assetType": "ETF",
-        "symbol": "DEMO300.SH",
-        "name": "沪深300示例ETF",
+        "symbol": "510300.SH",
+        "name": "沪深300ETF",
         "market": "CN",
         "quantity": "1000",
         "averageCost": "4.20",
@@ -1154,8 +1158,8 @@ GET /api/v1/instruments/:instrumentId
 ```json
 {
   "assetType": "ETF",
-  "symbol": "DEMO300.SH",
-  "name": "沪深300示例ETF",
+  "symbol": "510300.SH",
+  "name": "沪深300ETF",
   "market": "CN",
   "quantity": "1000",
   "averageCost": "4.20",
@@ -1223,13 +1227,13 @@ GET /api/v1/instruments/:instrumentId
         "suggestedMatches": [
           {
             "assetType": "ETF",
-            "symbol": "DEMO300.SH",
-            "name": "沪深300示例ETF"
+            "symbol": "510300.SH",
+            "name": "沪深300ETF"
           },
           {
-            "assetType": "INDEX_FUND",
-            "symbol": "DEMO300.OF",
-            "name": "沪深300示例指数基金"
+            "assetType": "INDEX",
+            "symbol": "000300.SH",
+            "name": "沪深300指数"
           }
         ]
       }
@@ -1259,8 +1263,8 @@ GET /api/v1/instruments/:instrumentId
     {
       "candidateId": "candidate_01",
       "assetType": "ETF",
-      "symbol": "DEMO300.SH",
-      "name": "沪深300示例ETF",
+      "symbol": "510300.SH",
+      "name": "沪深300ETF",
       "market": "CN",
       "quantity": "100",
       "averageCost": "4.20",
@@ -1281,7 +1285,7 @@ GET /api/v1/instruments/:instrumentId
     "holdings": [
       {
         "id": "holding_02",
-        "symbol": "DEMO300.SH",
+        "symbol": "510300.SH",
         "quantity": "100",
         "averageCost": "4.20",
         "version": 1
@@ -1707,7 +1711,7 @@ GET /api/v1/instruments/:instrumentId
   "type": "STOCK_SUITABILITY_SCREEN",
   "conversationId": "conv_01",
   "input": {
-    "candidateSymbols": ["DEMO001.SZ", "DEMO002.SH", "DEMO300.SH"],
+    "candidateSymbols": ["000001.SZ", "600519.SH", "510300.SH"],
     "maximumResults": 3
   }
 }
@@ -1933,8 +1937,8 @@ interface AgentStreamEvent<T = unknown> {
         "direction": "SELL",
         "action": "SCALE_OUT",
         "asset": {
-          "symbol": "DEMO_GOLD.SH",
-          "name": "示例黄金ETF"
+          "symbol": "518880.SH",
+          "name": "黄金ETF"
         },
         "summary": "停止追高，考虑分批降低集中度",
         "suitability": "HIGH",
@@ -1974,8 +1978,8 @@ interface AgentStreamEvent<T = unknown> {
     "action": "TRIAL_BUY",
     "status": "ACTIVE",
     "asset": {
-      "symbol": "DEMO001.SZ",
-      "name": "示例科技",
+      "symbol": "000001.SZ",
+      "name": "平安银行",
       "assetType": "STOCK"
     },
     "summary": "估值处于历史中低位，但中期趋势尚未确认，仅适合小仓位观察",
@@ -1989,14 +1993,14 @@ interface AgentStreamEvent<T = unknown> {
       "reduceRatio": null
     },
     "referenceRanges": {
-      "observationPrice": { "min": "46.00", "max": "49.00" },
-      "stopLossPrice": { "min": "41.50", "max": "43.00" },
-      "takeProfitPrice": { "min": "56.00", "max": "60.00" }
+      "observationPrice": { "min": "9.80", "max": "10.50" },
+      "stopLossPrice": { "min": "9.10", "max": "9.40" },
+      "takeProfitPrice": { "min": "11.50", "max": "12.20" }
     },
     "addConditions": [
-      "盈利预期未下修",
+      "净息差和资产质量没有继续恶化",
       "重新站稳 20 日均线",
-      "组合科技行业权重仍低于 25%"
+      "组合银行行业权重仍低于 25%"
     ],
     "stopLossConditions": [
       "价格跌破参考风险区间且成交量异常放大",
@@ -2245,11 +2249,11 @@ interface AgentStreamEvent<T = unknown> {
         "category": "VALUATION",
         "stance": "SUPPORT",
         "title": "PE 处于历史中低分位",
-        "summary": "PE-TTM 28.6，近三年分位 34%",
+        "summary": "PE-TTM 5.8，近三年分位 22%",
         "source": {
-          "type": "DEMO_DATA_TOOL",
+          "type": "LOCAL_FIXTURE",
           "name": "getValuationSnapshot",
-          "reference": "valuation:DEMO001.SZ:2026-07-22"
+          "reference": "valuation:000001.SZ:2026-07-22"
         },
         "dataAsOf": "2026-07-22T07:00:00.000Z",
         "quality": "HIGH"
@@ -2258,12 +2262,12 @@ interface AgentStreamEvent<T = unknown> {
         "id": "evidence_02",
         "category": "FUNDAMENTAL",
         "stance": "COUNTER",
-        "title": "毛利率下降",
-        "summary": "毛利率连续两个报告期下降",
+        "title": "盈利增速偏低",
+        "summary": "净利润同比增长约 3%，后续仍需跟踪净息差和资产质量",
         "source": {
-          "type": "DEMO_DATA_TOOL",
+          "type": "LOCAL_FIXTURE",
           "name": "getFundamentalSnapshot",
-          "reference": "fundamental:DEMO001.SZ:2026-Q2"
+          "reference": "fundamental:000001.SZ:2026-Q2"
         },
         "dataAsOf": "2026-06-30T00:00:00.000Z",
         "quality": "HIGH"
@@ -2288,8 +2292,8 @@ interface AgentStreamEvent<T = unknown> {
         "id": "tool_01",
         "toolName": "getValuationSnapshot",
         "status": "COMPLETED",
-        "inputSummary": "DEMO001.SZ，三年估值窗口",
-        "outputSummary": "PE-TTM 28.6，历史分位 34%",
+        "inputSummary": "000001.SZ，三年估值窗口",
+        "outputSummary": "PE-TTM 5.8，历史分位 22%",
         "startedAt": "2026-07-23T08:55:03.000Z",
         "completedAt": "2026-07-23T08:55:04.000Z"
       }
@@ -2417,8 +2421,8 @@ interface AgentStreamEvent<T = unknown> {
         "id": "condition_20",
         "type": "DRAWDOWN_REACH",
         "asset": {
-          "symbol": "DEMO001.SZ",
-          "name": "示例科技"
+          "symbol": "000001.SZ",
+          "name": "平安银行"
         },
         "severity": "IMPORTANT",
         "parameters": {
@@ -2828,7 +2832,7 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
       },
       "fixture": {
         "status": "UP",
-        "seedVersion": "demo-v1"
+        "seedVersion": "demo-v2-real-symbols"
       }
     }
   },
@@ -2859,7 +2863,7 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
 ```json
 {
   "data": {
-    "seedVersion": "demo-v1",
+    "seedVersion": "demo-v2-real-symbols",
     "user": {
       "id": "user_demo_01",
       "displayName": "演示投资者"
@@ -2888,8 +2892,8 @@ Agent 输出 Zod 校验失败时允许一次带错误摘要的模型修复；第
         {
           "id": "holding_demo_gold",
           "instrument": {
-            "id": "instrument_demo_gold",
-            "symbol": "518880",
+            "id": "instrument_518880_sh",
+            "symbol": "518880.SH",
             "name": "黄金 ETF",
             "assetType": "GOLD_ETF"
           },
@@ -2941,7 +2945,7 @@ X-CSRF-Token: <demo-csrf-token>
 
 ```json
 {
-  "seedVersion": "demo-v1"
+  "seedVersion": "demo-v2-real-symbols"
 }
 ```
 
@@ -2961,11 +2965,11 @@ X-CSRF-Token: <demo-csrf-token>
 {
   "data": {
     "resetId": "demo_reset_01",
-    "seedVersion": "demo-v1",
+    "seedVersion": "demo-v2-real-symbols",
     "cancelledAnalysisIds": ["analysis_30"],
     "resetAt": "2026-07-23T09:22:00.000Z",
     "bootstrap": {
-      "seedVersion": "demo-v1",
+      "seedVersion": "demo-v2-real-symbols",
       "user": {
         "id": "user_demo_01",
         "displayName": "演示投资者"
@@ -2994,8 +2998,8 @@ X-CSRF-Token: <demo-csrf-token>
           {
             "id": "holding_demo_gold",
             "instrument": {
-              "id": "instrument_demo_gold",
-              "symbol": "518880",
+              "id": "instrument_518880_sh",
+              "symbol": "518880.SH",
               "name": "黄金 ETF",
               "assetType": "GOLD_ETF"
             },
