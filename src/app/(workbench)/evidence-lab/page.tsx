@@ -1,4 +1,4 @@
 "use client";
 
-import EvidenceLabPage from "@/pages/desktop/EvidenceLabPage";
+import EvidenceLabPage from "@/features/workbench/pages/EvidenceLabPage";
 export default function EvidenceLabRoute() { return <EvidenceLabPage />; }

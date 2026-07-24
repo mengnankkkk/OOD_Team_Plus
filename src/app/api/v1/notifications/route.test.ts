@@ -1,11 +1,12 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { GET } from "./route";
 
 describe("/api/v1/notifications", () => {
   it("GET returns empty notifications with filters", async () => {
-    const res = await GET(new NextRequest("http://localhost/api/v1/notifications?unreadOnly=true&severity=IMPORTANT&limit=5"));
+    const res = await GET(authenticatedRequest("http://localhost/api/v1/notifications?unreadOnly=true&severity=IMPORTANT&limit=5"));
 
     expect(res.status).toBe(200);
     const body = await res.json();

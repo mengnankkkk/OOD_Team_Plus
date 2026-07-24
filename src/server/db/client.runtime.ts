@@ -3,7 +3,6 @@ import path from "node:path";
 
 import Database from "better-sqlite3";
 
-import { ensureRuntimeSchema } from "./runtime-schema";
 import { prepareDatabase } from "./migration-runner";
 
 export interface SqliteDb {
@@ -20,7 +19,8 @@ export interface SqliteDb {
 }
 
 export function getDbClient(): SqliteDb {
-  const dbPath = path.resolve(process.cwd(), process.env.DB_PATH ?? "./data/mw-dev.db");
+  const rawDbPath = process.env.DB_PATH ?? "./data/mw-dev.db";
+  const dbPath = path.isAbsolute(rawDbPath) ? rawDbPath : path.join(/* turbopackIgnore: true */ process.cwd(), rawDbPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   const database = new Database(dbPath);
@@ -32,7 +32,6 @@ export function getDbClient(): SqliteDb {
 
   if (typeof (database as unknown as Partial<SqliteDb>).prepare === "function") {
     const db = wrapWithBusyRetry(database);
-    ensureRuntimeSchema(db);
     prepareDatabase(db, dbPath);
     return db;
   }

@@ -17,9 +17,6 @@ type SessionRow = {
   row_version: number;
 };
 
-// Only test fixtures may use the historical user id; production requires a real session.
-export const DEMO_USER_ID = "demo-user";
-
 export function getRequestContext(request?: NextRequest): { userId: string; sessionId: string; user: AuthUser } {
   const token = request?.cookies.get("mw_session")?.value;
   if (token) {
@@ -31,12 +28,6 @@ export function getRequestContext(request?: NextRequest): { userId: string; sess
     if (row?.session_id) db.prepare("UPDATE api_sessions SET last_seen_at=? WHERE id=?").run(isoNow(), row.session_id);
     db.close();
     if (row?.session_id) return { userId: row.id, sessionId: row.session_id, user: mapAuthUser(row) };
-  }
-  if (!token && process.env.NODE_ENV === "test") {
-    const db = getDatabase();
-    const row = db.prepare("SELECT * FROM users WHERE id=? AND status='ACTIVE'").get(DEMO_USER_ID) as SessionRow | undefined;
-    db.close();
-    if (row) return { userId: row.id, sessionId: "test-session", user: mapAuthUser(row) };
   }
   throw new AuthFailure("UNAUTHENTICATED", 401, "Authentication is required");
 }

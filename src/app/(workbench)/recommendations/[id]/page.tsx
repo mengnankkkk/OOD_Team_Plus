@@ -1,4 +1,4 @@
 "use client";
 
-import RecommendationDetailPage from "@/pages/desktop/RecommendationDetailPage";
+import RecommendationDetailPage from "@/features/workbench/pages/RecommendationDetailPage";
 export default function RecommendationRoute() { return <RecommendationDetailPage />; }

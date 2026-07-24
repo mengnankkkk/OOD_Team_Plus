@@ -1,4 +1,4 @@
 "use client";
 
-import GoalsPage from "@/pages/desktop/GoalsPage";
+import GoalsPage from "@/features/workbench/pages/GoalsPage";
 export default function GoalsRoute() { return <GoalsPage />; }

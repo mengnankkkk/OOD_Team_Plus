@@ -1,21 +1,22 @@
-import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { TEST_USER_ID, authenticatedRequest, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { getDatabase, isoNow } from "@/server/http/context";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { GET } from "./route";
 
 beforeEach(() => {
+  seedAuthenticatedUser();
   const db = getDatabase();
   db.prepare("DELETE FROM agent_run_events WHERE agent_run_id='analysis_1'").run();
   db.prepare("DELETE FROM agent_runs WHERE id='analysis_1'").run();
-  db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,completed_at) VALUES ('analysis_1','demo-user','test','completed',?,?)").run(isoNow(), isoNow());
+  db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,completed_at) VALUES ('analysis_1',?,'test','completed',?,?)").run(TEST_USER_ID, isoNow(), isoNow());
   db.close();
 });
 
 describe("GET /api/v1/analyses/[id]/events", () => {
   it("returns an SSE response", async () => {
-    const req = new NextRequest("http://localhost/api/v1/analyses/analysis_1/events", {
+    const req = authenticatedRequest("http://localhost/api/v1/analyses/analysis_1/events", {
       headers: { "Last-Event-ID": "event_1" },
     });
 
@@ -31,7 +32,7 @@ describe("GET /api/v1/analyses/[id]/events", () => {
     const ids = db.prepare("SELECT id FROM agent_run_events WHERE agent_run_id='analysis_1' ORDER BY sequence_no").all() as Array<{ id: string }>;
     db.close();
 
-    const res = await GET(new NextRequest("http://localhost/api/v1/analyses/analysis_1/events", {
+    const res = await GET(authenticatedRequest("http://localhost/api/v1/analyses/analysis_1/events", {
       headers: { "Last-Event-ID": ids[0].id },
     }), { params: Promise.resolve({ id: "analysis_1" }) });
     const payload = await res.text();

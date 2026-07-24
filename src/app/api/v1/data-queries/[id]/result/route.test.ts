@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { POST as createQuery } from "../../route";
 import { GET } from "./route";
 import { getDatabase } from "@/server/http/context";
@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe("GET /api/v1/data-queries/:id/result", () => {
   it("returns 410 when a persisted result has expired", async () => {
-    const created = await createQuery(new NextRequest("http://localhost/api/v1/data-queries", {
+    const created = await createQuery(authenticatedRequest("http://localhost/api/v1/data-queries", {
       method: "POST",
       body: JSON.stringify({ questionText: "查询持仓", requestedDatasets: ["PORTFOLIO_HOLDINGS"], outputMode: "SQL_ONLY" }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "expired-query" },
@@ -38,7 +38,7 @@ describe("GET /api/v1/data-queries/:id/result", () => {
     db.close();
 
     const response = await GET(
-      new NextRequest(`http://localhost/api/v1/data-queries/${queryId}/result`),
+      authenticatedRequest(`http://localhost/api/v1/data-queries/${queryId}/result`),
       { params: Promise.resolve({ id: queryId }) },
     );
     const body = await response.json();

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bell, Blocks, BookOpenText, Boxes, ChartNoAxesCombined, DatabaseZap, FileChartColumn, FlaskConical, Menu, MessageSquareText, Search, X } from "lucide-react";
+import { Activity, Bell, Blocks, BookOpenText, ChartNoAxesCombined, DatabaseZap, FileChartColumn, FlaskConical, Menu, MessageSquareText, Search, X } from "lucide-react";
 import { useState } from "react";
 import { useFrontendAuth } from "@/features/frontend-migration/auth";
 

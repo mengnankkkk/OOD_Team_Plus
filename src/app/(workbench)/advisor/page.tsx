@@ -1,4 +1,4 @@
 "use client";
 
-import AdvisorPage from "@/pages/desktop/AdvisorPage";
+import AdvisorPage from "@/features/workbench/pages/AdvisorPage";
 export default function AdvisorRoute() { return <AdvisorPage />; }

@@ -45,7 +45,7 @@ export function resolveArtifactSource(input: ArtifactSourceInput) {
     let columns = query ? parseJson<Array<{ name: string; type?: string }>>(String(query.column_metadata_json ?? "[]"), []) : input.sourceColumns ?? [];
     if (!rows.length && !input.sourceRows) {
       rows = loadCurrentPortfolioRows(db, input.userId);
-      columns = [{ name: "symbol", type: "string" }, { name: "marketValue", type: "number" }, { name: "unrealizedPnl", type: "number" }, { name: "weightPercent", type: "number" }];
+      columns = [{ name: "symbol", type: "string" }, { name: "marketValue", type: "decimal-string" }, { name: "unrealizedPnl", type: "decimal-string" }, { name: "weightBps", type: "integer" }];
     }
     const snapshot = {
       sourceMessage: message ? { id: message.id, role: message.role, content: String(message.content ?? "").slice(0, 8000), createdAt: message.created_at } : null,
@@ -63,8 +63,8 @@ export function resolveArtifactSource(input: ArtifactSourceInput) {
 }
 
 function loadCurrentPortfolioRows(db: ReturnType<typeof getDatabase>, userId: string): Record<string, unknown>[] {
-  return db.prepare(`SELECT i.symbol,CAST(h.market_value_decimal AS REAL) AS marketValue,
-      CAST(h.unrealized_pnl_decimal AS REAL) AS unrealizedPnl,h.weight_bps / 100.0 AS weightPercent
+  return db.prepare(`SELECT i.symbol,h.market_value_decimal AS marketValue,
+      h.unrealized_pnl_decimal AS unrealizedPnl,h.weight_bps AS weightBps
     FROM holding_snapshots h JOIN instruments i ON i.id=h.instrument_id
     WHERE h.portfolio_snapshot_id=(SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1)
     ORDER BY h.weight_bps DESC`).all(userId) as Record<string, unknown>[];

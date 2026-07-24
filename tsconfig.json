@@ -23,9 +23,6 @@
       }
     ],
     "paths": {
-      "@/pages/*": [
-        "./src/migrated-pages/*"
-      ],
       "@tests/*": [
         "./tests/*"
       ],
@@ -47,7 +44,6 @@
   ],
   "exclude": [
     "node_modules",
-    "frontend_src",
     ".agents",
     ".codex",
     "Anthropic_front",

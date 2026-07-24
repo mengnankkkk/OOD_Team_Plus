@@ -5,15 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { backupDatabase, prepareDatabase } from "./migration-runner";
-import { ensureRuntimeSchema } from "./runtime-schema";
 
 describe("database migration guard", () => {
   it("executes and records every migration", () => {
     const db = new Database(":memory:");
-    ensureRuntimeSchema(db as never);
     prepareDatabase(db as never, ":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(12);
+    expect(db.pragma("user_version", { simple: true })).toBe(13);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(14);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
     db.close();
   });

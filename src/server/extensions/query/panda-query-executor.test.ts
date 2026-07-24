@@ -2,7 +2,6 @@ import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prepareDatabase } from "@/server/db/migration-runner";
-import { ensureRuntimeSchema } from "@/server/db/runtime-schema";
 import type { PandaDataResult } from "@/server/extensions/pandadata/adapter";
 
 import { combineQueryResults, executePandaSources } from "./panda-query-executor";
@@ -13,7 +12,6 @@ describe("PandaData QueryPlan execution", () => {
   beforeEach(() => {
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
-    ensureRuntimeSchema(db as never);
     prepareDatabase(db as never, ":memory:");
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('run1','user1','data_query','running',?)")
       .run(new Date().toISOString());

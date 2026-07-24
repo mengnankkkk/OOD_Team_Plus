@@ -1,11 +1,11 @@
-import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
+import { TEST_PORTFOLIO_SNAPSHOT_ID, authenticatedRequest } from "@tests/helpers/auth";
 import { GET } from "./route";
 
 describe("GET /api/v1/portfolio-analysis/trends", () => {
   it("returns snapshot-backed trends with provenance metadata", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/v1/portfolio-analysis/trends?snapshotId=portfolio-snapshot-demo"));
+    const response = await GET(authenticatedRequest(`http://localhost/api/v1/portfolio-analysis/trends?snapshotId=${TEST_PORTFOLIO_SNAPSHOT_ID}`));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -16,7 +16,7 @@ describe("GET /api/v1/portfolio-analysis/trends", () => {
   });
 
   it("uses the default snapshot id when omitted", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/v1/portfolio-analysis/trends"));
+    const response = await GET(authenticatedRequest("http://localhost/api/v1/portfolio-analysis/trends"));
     const body = await response.json();
 
     expect(body.data.trends[0].points.length).toBeGreaterThanOrEqual(2);

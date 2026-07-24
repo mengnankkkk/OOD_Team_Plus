@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TEST_USER_ID, authenticatedRequest } from "@tests/helpers/auth";
 import { POST as createQuery } from "../../../data-queries/route";
 import { POST } from "./route";
 import { getDatabase } from "@/server/http/context";
@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe("POST /api/v1/analyses/:id/retry", () => {
   it("re-executes a failed data query instead of leaving it queued", async () => {
-    const created = await createQuery(new NextRequest("http://localhost/api/v1/data-queries", {
+    const created = await createQuery(authenticatedRequest("http://localhost/api/v1/data-queries", {
       method: "POST",
       body: JSON.stringify({ questionText: "查询持仓", requestedDatasets: ["PORTFOLIO_HOLDINGS"], outputMode: "SQL_ONLY" }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "retry-source-query" },
@@ -38,7 +38,7 @@ describe("POST /api/v1/analyses/:id/retry", () => {
     db.close();
 
     const retried = await POST(
-      new NextRequest(`http://localhost/api/v1/analyses/${sourceAnalysisId}/retry`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json", "Idempotency-Key": "retry-query" } }),
+      authenticatedRequest(`http://localhost/api/v1/analyses/${sourceAnalysisId}/retry`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json", "Idempotency-Key": "retry-query" } }),
       { params: Promise.resolve({ id: sourceAnalysisId }) },
     );
     const retriedBody = await retried.json();
@@ -50,10 +50,10 @@ describe("POST /api/v1/analyses/:id/retry", () => {
 
   it("returns a domain conflict for an unsupported legacy run", async () => {
     const db = getDatabase();
-    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('legacy-failure','demo-user','legacy_task','failed','2026-07-24T00:00:00.000Z')").run();
+    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('legacy-failure',?,'legacy_task','failed','2026-07-24T00:00:00.000Z')").run(TEST_USER_ID);
     db.close();
     const response = await POST(
-      new NextRequest("http://localhost/api/v1/analyses/legacy-failure/retry", { method: "POST", body: "{}", headers: { "Content-Type": "application/json", "Idempotency-Key": "retry-legacy" } }),
+      authenticatedRequest("http://localhost/api/v1/analyses/legacy-failure/retry", { method: "POST", body: "{}", headers: { "Content-Type": "application/json", "Idempotency-Key": "retry-legacy" } }),
       { params: Promise.resolve({ id: "legacy-failure" }) },
     );
     expect(response.status).toBe(409);

@@ -38,14 +38,17 @@ function mapProfile(row: ApiProfile): UserProfile {
 }
 
 export async function fetchCurrentProfile(_userId: string): Promise<UserProfile> {
+  void _userId;
   return mapProfile(await apiGet<ApiProfile>("/api/v1/profile"));
 }
 
 export async function ensureProfile(userId: string, _fallbackName: string): Promise<UserProfile> {
+  void _fallbackName;
   return fetchCurrentProfile(userId);
 }
 
 export async function updateProfile(_userId: string, changes: UserProfileUpdate): Promise<UserProfile> {
+  void _userId;
   const current = await apiGet<ApiProfile>("/api/v1/profile");
   const preferences: Record<string, unknown> = { ...current.preferences };
   for (const [key, value] of Object.entries(changes)) if (key !== "riskLevel") preferences[key] = value;

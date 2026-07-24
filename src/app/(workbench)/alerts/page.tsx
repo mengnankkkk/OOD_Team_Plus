@@ -1,4 +1,4 @@
 "use client";
 
-import AlertsPage from "@/pages/desktop/AlertsPage";
+import AlertsPage from "@/features/workbench/pages/AlertsPage";
 export default function AlertsRoute() { return <AlertsPage />; }

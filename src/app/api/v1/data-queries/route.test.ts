@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { GET, POST } from "./route";
 
 let dbPath = "";
@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe("POST /api/v1/data-queries", () => {
   it("returns 400 when Idempotency-Key is missing", async () => {
-    const req = new NextRequest("http://localhost/api/v1/data-queries", {
+    const req = authenticatedRequest("http://localhost/api/v1/data-queries", {
       method: "POST",
       body: JSON.stringify({
         questionText: "show my portfolio",
@@ -39,7 +39,7 @@ describe("POST /api/v1/data-queries", () => {
   });
 
   it("returns 400 for invalid outputMode", async () => {
-    const req = new NextRequest("http://localhost/api/v1/data-queries", {
+    const req = authenticatedRequest("http://localhost/api/v1/data-queries", {
       method: "POST",
       body: JSON.stringify({
         questionText: "q",
@@ -54,7 +54,7 @@ describe("POST /api/v1/data-queries", () => {
   });
 
   it("returns 202 with analysisId for valid request", async () => {
-    const req = new NextRequest("http://localhost/api/v1/data-queries", {
+    const req = authenticatedRequest("http://localhost/api/v1/data-queries", {
       method: "POST",
       body: JSON.stringify({
         questionText: "show my portfolio",
@@ -75,7 +75,7 @@ describe("POST /api/v1/data-queries", () => {
   });
 
   it("GET returns a persisted list", async () => {
-    const req = new NextRequest("http://localhost/api/v1/data-queries");
+    const req = authenticatedRequest("http://localhost/api/v1/data-queries");
     const res = await GET(req);
 
     expect(res.status).toBe(200);

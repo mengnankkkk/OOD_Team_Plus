@@ -25,7 +25,7 @@ export function updateUser(actor: AuthUser, userId: string, input: { role?: User
   if (current.row_version !== input.expectedVersion) { db.close(); throw new AuthFailure("VERSION_CONFLICT", 412, "User was modified"); }
   const removesAdmin = current.role === "ADMIN" && (input.role === "USER" || input.status === "DISABLED");
   if (removesAdmin) {
-    const count = db.prepare(`SELECT count(*) AS count FROM users WHERE role='ADMIN' AND status='ACTIVE' AND deleted_at IS NULL${process.env.NODE_ENV === "test" ? " AND id!='demo-user'" : ""}`).get() as { count: number };
+    const count = db.prepare("SELECT count(*) AS count FROM users WHERE role='ADMIN' AND status='ACTIVE' AND deleted_at IS NULL").get() as { count: number };
     if (count.count <= 1) { db.close(); throw new AuthFailure("LAST_ADMIN_PROTECTED", 409, "The last active administrator cannot be changed"); }
   }
   if (actor.id === userId && input.status === "DISABLED") { db.close(); throw new AuthFailure("SELF_DISABLE_FORBIDDEN", 409, "Administrators cannot disable their own account"); }

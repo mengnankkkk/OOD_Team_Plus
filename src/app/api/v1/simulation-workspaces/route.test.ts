@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { TEST_PORTFOLIO_SNAPSHOT_ID, authenticatedRequest } from "@tests/helpers/auth";
 import { PATCH as patchWorkspace } from "./[id]/route";
 import { PATCH as switchBranch } from "./[id]/active-branch/route";
 import { POST as executeBranch } from "./[id]/branches/route";
@@ -23,12 +24,12 @@ beforeEach(() => {
 
 describe("/api/v1/simulation-workspaces", () => {
   it("POST returns 400 without Idempotency-Key", async () => {
-    const res = await POST(new NextRequest(url, { method: "POST", body: "{}" }));
+    const res = await POST(authenticatedRequest(url, { method: "POST", body: "{}" }));
     expect(res.status).toBe(400);
   });
 
   it("POST returns 400 without required fields", async () => {
-    const req = new NextRequest(url, {
+    const req = authenticatedRequest(url, {
       method: "POST",
       body: "{}",
       headers: { "Idempotency-Key": "key-1" },
@@ -38,12 +39,12 @@ describe("/api/v1/simulation-workspaces", () => {
   });
 
   it("POST returns 202 with a valid request", async () => {
-    const req = new NextRequest(url, {
+    const req = authenticatedRequest(url, {
       method: "POST",
       body: JSON.stringify({
         label: "Rebalance",
         objectiveText: "Reduce concentration",
-        portfolioSnapshotId: "portfolio-snapshot-demo",
+        portfolioSnapshotId: TEST_PORTFOLIO_SNAPSHOT_ID,
       }),
       headers: { "Idempotency-Key": "key-1" },
     });
@@ -56,7 +57,7 @@ describe("/api/v1/simulation-workspaces", () => {
   });
 
   it("GET returns an empty items list", async () => {
-    const res = await GET(new NextRequest(url));
+    const res = await GET(authenticatedRequest(url));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -72,7 +73,7 @@ describe("/api/v1/simulation-workspaces", () => {
   it("enforces workspace versions and blocks options after archive", async () => {
     const workspace = await createTestWorkspace("archive-workspace");
     const archived = await patchWorkspace(
-      new NextRequest(`${url}/${workspace.id}`, { method: "PATCH", body: JSON.stringify({ status: "ARCHIVED" }), headers: { "If-Match": "1" } }),
+      authenticatedRequest(`${url}/${workspace.id}`, { method: "PATCH", body: JSON.stringify({ status: "ARCHIVED" }), headers: { "If-Match": "1" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
     expect(archived.status).toBe(200);
@@ -81,13 +82,13 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(archivedBody.data.version).toBe(2);
 
     const stale = await patchWorkspace(
-      new NextRequest(`${url}/${workspace.id}`, { method: "PATCH", body: JSON.stringify({ name: "Stale" }), headers: { "If-Match": "1" } }),
+      authenticatedRequest(`${url}/${workspace.id}`, { method: "PATCH", body: JSON.stringify({ name: "Stale" }), headers: { "If-Match": "1" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
     expect(stale.status).toBe(412);
 
     const options = await generateOptions(
-      new NextRequest(`${url}/${workspace.id}/options`, { method: "POST", body: JSON.stringify({ objective: "Reduce concentration" }), headers: { "Idempotency-Key": "archived-options" } }),
+      authenticatedRequest(`${url}/${workspace.id}/options`, { method: "POST", body: JSON.stringify({ objective: "Reduce concentration" }), headers: { "Idempotency-Key": "archived-options" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
     expect(options.status).toBe(409);
@@ -103,7 +104,7 @@ describe("/api/v1/simulation-workspaces", () => {
 
     const workspace = await createTestWorkspace("options-workspace");
     const valid = await generateOptions(
-      new NextRequest(`${url}/${workspace.id}/options`, {
+      authenticatedRequest(`${url}/${workspace.id}/options`, {
         method: "POST",
         body: JSON.stringify({ objective: "Reduce concentration" }),
         headers: { "Idempotency-Key": "key-2" },
@@ -117,7 +118,7 @@ describe("/api/v1/simulation-workspaces", () => {
   });
 
   it("candidate generator returns distinct strategies", async () => {
-    const result = await generateCandidates("Reduce concentration", "portfolio-snapshot-demo");
+    const result = await generateCandidates("Reduce concentration", TEST_PORTFOLIO_SNAPSHOT_ID);
     expect(result.candidates).toHaveLength(3);
     expect(new Set(result.candidates.map((candidate) => candidate.label)).size).toBe(3);
     expect(result.candidates.every((candidate) => candidate.analysis.rationale.length > 0)).toBe(true);
@@ -206,7 +207,7 @@ describe("/api/v1/simulation-workspaces", () => {
   it("executes a branch and restores the parent asset state", async () => {
     const workspace = await createTestWorkspace("undo-workspace");
     await generateOptions(
-      new NextRequest(`${url}/${workspace.id}/options`, {
+      authenticatedRequest(`${url}/${workspace.id}/options`, {
         method: "POST",
         body: JSON.stringify({ objective: "Reduce concentration" }),
         headers: { "Idempotency-Key": "undo-options" },
@@ -214,11 +215,11 @@ describe("/api/v1/simulation-workspaces", () => {
       { params: Promise.resolve({ id: workspace.id }) },
     );
     const options = await (await listOptions(
-      new NextRequest(`${url}/${workspace.id}/options`),
+      authenticatedRequest(`${url}/${workspace.id}/options`),
       { params: Promise.resolve({ id: workspace.id }) },
     )).json();
     const executed = await executeBranch(
-      new NextRequest(`${url}/${workspace.id}/branches`, {
+      authenticatedRequest(`${url}/${workspace.id}/branches`, {
         method: "POST",
         body: JSON.stringify({ parentBranchId: workspace.rootBranchId, optionId: options.data.items[0].id, name: "Keep allocation" }),
         headers: { "Idempotency-Key": "execute-option-a" },
@@ -230,7 +231,7 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(executedBody.data.activeBranchId).not.toBe(workspace.rootBranchId);
 
     const res = await undoBranch(
-      new NextRequest(`${url}/${workspace.id}/undo`, {
+      authenticatedRequest(`${url}/${workspace.id}/undo`, {
         method: "POST",
         headers: { "Idempotency-Key": "undo-option-a", "If-Match": "2" },
       }),
@@ -245,17 +246,17 @@ describe("/api/v1/simulation-workspaces", () => {
   it("rejects an option executed from a different branch", async () => {
     const workspace = await createTestWorkspace("branch-mismatch-workspace");
     await generateOptions(
-      new NextRequest(`${url}/${workspace.id}/options`, { method: "POST", body: JSON.stringify({ objective: "Reduce concentration" }), headers: { "Idempotency-Key": "mismatch-options" } }),
+      authenticatedRequest(`${url}/${workspace.id}/options`, { method: "POST", body: JSON.stringify({ objective: "Reduce concentration" }), headers: { "Idempotency-Key": "mismatch-options" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
-    const options = await (await listOptions(new NextRequest(`${url}/${workspace.id}/options`), { params: Promise.resolve({ id: workspace.id }) })).json();
+    const options = await (await listOptions(authenticatedRequest(`${url}/${workspace.id}/options`), { params: Promise.resolve({ id: workspace.id }) })).json();
     const first = await executeBranch(
-      new NextRequest(`${url}/${workspace.id}/branches`, { method: "POST", body: JSON.stringify({ parentBranchId: workspace.rootBranchId, optionId: options.data.items[0].id, name: "First branch" }), headers: { "Idempotency-Key": "mismatch-first" } }),
+      authenticatedRequest(`${url}/${workspace.id}/branches`, { method: "POST", body: JSON.stringify({ parentBranchId: workspace.rootBranchId, optionId: options.data.items[0].id, name: "First branch" }), headers: { "Idempotency-Key": "mismatch-first" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
     const firstBody = await first.json();
     const mismatched = await executeBranch(
-      new NextRequest(`${url}/${workspace.id}/branches`, { method: "POST", body: JSON.stringify({ parentBranchId: firstBody.data.branchId, optionId: options.data.items[1].id, name: "Invalid branch" }), headers: { "Idempotency-Key": "mismatch-second" } }),
+      authenticatedRequest(`${url}/${workspace.id}/branches`, { method: "POST", body: JSON.stringify({ parentBranchId: firstBody.data.branchId, optionId: options.data.items[1].id, name: "Invalid branch" }), headers: { "Idempotency-Key": "mismatch-second" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
     expect(mismatched.status).toBe(422);
@@ -264,9 +265,9 @@ describe("/api/v1/simulation-workspaces", () => {
 });
 
 async function createTestWorkspace(key: string) {
-  const response = await POST(new NextRequest(url, {
+  const response = await POST(authenticatedRequest(url, {
     method: "POST",
-    body: JSON.stringify({ label: "Rebalance", objectiveText: "Reduce concentration", portfolioSnapshotId: "portfolio-snapshot-demo" }),
+    body: JSON.stringify({ label: "Rebalance", objectiveText: "Reduce concentration", portfolioSnapshotId: TEST_PORTFOLIO_SNAPSHOT_ID }),
     headers: { "Idempotency-Key": key },
   }));
   expect(response.status).toBe(202);

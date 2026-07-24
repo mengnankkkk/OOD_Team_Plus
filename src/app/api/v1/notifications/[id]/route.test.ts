@@ -1,24 +1,25 @@
-import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { TEST_USER_ID, authenticatedRequest, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { getDatabase, isoNow } from "@/server/http/context";
 import { PATCH } from "./route";
 
 const url = "http://localhost/api/v1/notifications/notif_1";
 
 beforeEach(() => {
+  seedAuthenticatedUser();
   const db = getDatabase();
   db.prepare("DELETE FROM notifications WHERE id='notif_1'").run();
   db.prepare(`INSERT INTO notifications
     (id,user_id,severity,title,body_text,source_type,created_at,updated_at,row_version)
-    VALUES ('notif_1','demo-user','important','Risk alert','Review the portfolio','test',?,?,1)`).run(isoNow(), isoNow());
+    VALUES ('notif_1',?,'important','Risk alert','Review the portfolio','test',?,?,1)`).run(TEST_USER_ID, isoNow(), isoNow());
   db.close();
 });
 
 describe("/api/v1/notifications/[id]", () => {
   it("PATCH requires If-Match", async () => {
     const res = await PATCH(
-      new NextRequest(url, { method: "PATCH", body: JSON.stringify({ action: "MARK_READ" }) }),
+      authenticatedRequest(url, { method: "PATCH", body: JSON.stringify({ action: "MARK_READ" }) }),
       { params: Promise.resolve({ id: "notif_1" }) },
     );
 
@@ -27,7 +28,7 @@ describe("/api/v1/notifications/[id]", () => {
 
   it("PATCH validates action values", async () => {
     const res = await PATCH(
-      new NextRequest(url, {
+      authenticatedRequest(url, {
         method: "PATCH",
         body: JSON.stringify({ action: "INVALID" }),
         headers: { "If-Match": "1" },
@@ -40,7 +41,7 @@ describe("/api/v1/notifications/[id]", () => {
 
   it("PATCH marks notifications as read without leaving them unread", async () => {
     const res = await PATCH(
-      new NextRequest(url, {
+      authenticatedRequest(url, {
         method: "PATCH",
         body: JSON.stringify({ action: "MARK_READ" }),
         headers: { "If-Match": "1" },

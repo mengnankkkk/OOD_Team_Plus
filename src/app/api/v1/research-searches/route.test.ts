@@ -1,11 +1,11 @@
-import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { POST } from "./route";
 
 describe("POST /api/v1/research-searches", () => {
   it("returns 202 for valid requests", async () => {
-    const req = new NextRequest("http://localhost/api/v1/research-searches", {
+    const req = authenticatedRequest("http://localhost/api/v1/research-searches", {
       method: "POST",
       body: JSON.stringify({ query: "test" }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "key1" },

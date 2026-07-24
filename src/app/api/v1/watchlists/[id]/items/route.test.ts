@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { DELETE, PATCH } from "../../../watchlist-items/[id]/route";
 import { GET, POST } from "./route";
 
@@ -10,12 +11,12 @@ const context = { params: Promise.resolve({ id: "w1" }) };
 
 describe("watchlist item routes", () => {
   it("POST returns 400 for an invalid item", async () => {
-    const req = new NextRequest(collectionUrl, { method: "POST", body: "{}" });
+    const req = authenticatedRequest(collectionUrl, { method: "POST", body: "{}" });
     expect((await POST(req, context)).status).toBe(400);
   });
 
   it("POST returns 404 for a valid item when watchlist is absent", async () => {
-    const req = new NextRequest(collectionUrl, {
+    const req = authenticatedRequest(collectionUrl, {
       method: "POST",
       body: JSON.stringify({ instrumentId: "AAPL", reason: "Review earnings" }),
       headers: { "Idempotency-Key": "item-key-1" },
@@ -24,7 +25,7 @@ describe("watchlist item routes", () => {
   });
 
   it("GET enforces watchlist ownership", async () => {
-    const response = await GET(new NextRequest(collectionUrl), context);
+    const response = await GET(authenticatedRequest(collectionUrl), context);
     expect(response.status).toBe(404);
   });
 

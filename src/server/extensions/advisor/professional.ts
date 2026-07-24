@@ -119,6 +119,9 @@ export async function runProfessionalAdvisor(input: {
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
       findings.push(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding));
     }
+    if (requiredRoles.includes("EXPLANATION_REPORT")) {
+      findings.push(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings)));
+    }
 
     let candidate = deterministicDecision;
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
@@ -363,6 +366,26 @@ function complianceFindingFor(criticalMissing: string[], dataState: DataState, f
   });
 }
 
+function explanationReportFinding(findings: AgentFinding[]): AgentFinding {
+  const strongest = findings
+    .filter((finding) => finding.agent !== "EXPLANATION_REPORT")
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 3);
+  const missing = [...new Set(findings.flatMap((finding) => finding.missingInformation))];
+  return AgentFindingSchema.parse({
+    agent: "EXPLANATION_REPORT",
+    conclusion: strongest.length
+      ? `已将 ${strongest.map((finding) => finding.agent).join("、")} 的发现整理为可回溯报告`
+      : "没有足够发现可整理为报告",
+    supportEvidence: strongest.flatMap((finding) => finding.supportEvidence).slice(0, 3),
+    counterEvidence: findings.flatMap((finding) => finding.counterEvidence).slice(0, 3),
+    missingInformation: missing,
+    risks: ["解释层只汇总已持久化发现，不替代服务端发布门"],
+    confidence: strongest.length ? Math.min(...strongest.map((finding) => finding.confidence)) : 0.2,
+    needsAnotherAgent: false,
+  });
+}
+
 function enforcePublicationStatus(input: {
   candidate: AdvisorDecision;
   criticalMissing: string[];
@@ -506,9 +529,11 @@ function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | un
 }
 
 function rolesFor(intent: AdvisorIntent, hasTarget: boolean): ProfessionalAgentRole[] {
-  if (intent === "BUY" || intent === "SELL") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER"];
-  if (intent === "DIAGNOSIS") return ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER"];
-  return hasTarget ? ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER"] : ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER"];
+  if (intent === "BUY" || intent === "SELL") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+  if (intent === "DIAGNOSIS") return ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+  return hasTarget
+    ? ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"]
+    : ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
 }
 
 function inferIntent(content: string): AdvisorIntent {

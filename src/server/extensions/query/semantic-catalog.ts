@@ -17,8 +17,8 @@ export const SEMANTIC_DATASETS: Record<SemanticDatasetKey, DatasetDefinition> = 
   PORTFOLIO_SNAPSHOTS: {
     from: "portfolio_snapshots ps", tables: ["portfolio_snapshots"], ownerColumn: "ps.user_id", scopeColumn: "ps.portfolio_id", timeColumn: "ps.as_of",
     defaultDimensions: ["id", "portfolio_id", "cash", "market_value", "data_quality", "as_of"],
-    columns: { id: "ps.id", portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", cash: "CAST(ps.cash_decimal AS REAL)", market_value: "CAST(ps.total_market_value_decimal AS REAL)", total_assets: "CAST(ps.cash_decimal AS REAL) + CAST(ps.total_market_value_decimal AS REAL)", data_quality: "ps.data_quality", as_of: "ps.as_of" },
-    metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "snapshot_count" }, "SUM(total_assets)": { expression: "SUM(CAST(ps.cash_decimal AS REAL) + CAST(ps.total_market_value_decimal AS REAL))", alias: "total_assets" } },
+    columns: { id: "ps.id", portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", cash: "ps.cash_decimal", market_value: "ps.total_market_value_decimal", total_assets: "json_object('cash', ps.cash_decimal, 'marketValue', ps.total_market_value_decimal)", data_quality: "ps.data_quality", as_of: "ps.as_of" },
+    metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "snapshot_count" }, "SUM(total_assets)": { expression: "json_group_array(json_object('cash', ps.cash_decimal, 'marketValue', ps.total_market_value_decimal))", alias: "total_assets_components" } },
   },
   PORTFOLIO_HOLDINGS: holdingDataset(),
   HOLDING_SNAPSHOTS: holdingDataset(),
@@ -40,8 +40,8 @@ function holdingDataset(): DatasetDefinition {
     from: "holding_snapshots h JOIN portfolio_snapshots ps ON ps.id = h.portfolio_snapshot_id LEFT JOIN instruments i ON i.id = h.instrument_id",
     tables: ["holding_snapshots", "portfolio_snapshots", "instruments"], ownerColumn: "ps.user_id", scopeColumn: "ps.portfolio_id", timeColumn: "ps.as_of",
     defaultDimensions: ["symbol", "name", "asset_type", "sector", "quantity", "average_cost", "market_price", "market_value", "unrealized_pnl", "weight_pct"],
-    columns: { portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", symbol: "i.symbol", name: "i.name", asset_type: "UPPER(i.asset_type)", sector: "COALESCE(i.sector, '未分类')", quantity: "CAST(h.quantity_decimal AS REAL)", average_cost: "CAST(h.cost_decimal AS REAL)", market_price: "CAST(h.price_decimal AS REAL)", market_value: "CAST(h.market_value_decimal AS REAL)", unrealized_pnl: "CAST(h.unrealized_pnl_decimal AS REAL)", weight: "h.weight_bps / 10000.0", weight_pct: "h.weight_bps / 100.0", as_of: "ps.as_of" },
-    metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "holding_count" }, "SUM(market_value)": { expression: "SUM(CAST(h.market_value_decimal AS REAL))", alias: "market_value" }, "SUM(unrealized_pnl)": { expression: "SUM(CAST(h.unrealized_pnl_decimal AS REAL))", alias: "unrealized_pnl" }, "AVG(weight)": { expression: "AVG(h.weight_bps / 10000.0)", alias: "average_weight" } },
+    columns: { portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", symbol: "i.symbol", name: "i.name", asset_type: "UPPER(i.asset_type)", sector: "COALESCE(i.sector, '未分类')", quantity: "h.quantity_decimal", average_cost: "h.cost_decimal", market_price: "h.price_decimal", market_value: "h.market_value_decimal", unrealized_pnl: "h.unrealized_pnl_decimal", weight: "h.weight_bps", weight_pct: "h.weight_bps", as_of: "ps.as_of" },
+    metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "holding_count" }, "SUM(market_value)": { expression: "json_group_array(h.market_value_decimal)", alias: "market_value_components" }, "SUM(unrealized_pnl)": { expression: "json_group_array(h.unrealized_pnl_decimal)", alias: "unrealized_pnl_components" }, "AVG(weight)": { expression: "AVG(h.weight_bps)", alias: "average_weight_bps" } },
   };
 }
 

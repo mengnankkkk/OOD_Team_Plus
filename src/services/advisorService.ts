@@ -17,6 +17,7 @@ const mapMessage = (row: MessageRow): OnboardingMessage => ({
 });
 
 export async function listOnboardingMessages(_userId: string, sessionId?: string): Promise<OnboardingMessage[]> {
+  void _userId;
   if (!sessionId) return [];
   const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
   return Promise.all(result.items.map(async (row) => {
@@ -28,6 +29,7 @@ export async function listOnboardingMessages(_userId: string, sessionId?: string
 }
 
 export async function listAdvisorSessions(_userId: string): Promise<AdvisorSessionSummary[]> {
+  void _userId;
   const result = await apiGet<{ items: ConversationRow[] }>("/api/v1/conversations?limit=100");
   return result.items.map((row) => ({
     sessionId: row.id,

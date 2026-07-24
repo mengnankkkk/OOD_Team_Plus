@@ -3,7 +3,6 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { callPandaData } = vi.hoisted(() => ({ callPandaData: vi.fn() }));
@@ -13,6 +12,7 @@ vi.mock("@/server/extensions/pandadata/adapter", async (importOriginal) => ({
   callPandaData,
 }));
 
+import { TEST_PORTFOLIO_ID, authenticatedRequest } from "@tests/helpers/auth";
 import { POST } from "./route";
 
 const url = "http://localhost/api/v1/portfolio-analysis/refresh";
@@ -41,9 +41,9 @@ afterEach(() => {
 
 describe("POST /api/v1/portfolio-analysis/refresh", () => {
   it("returns 400 when Idempotency-Key is missing", async () => {
-    const req = new NextRequest(url, {
+    const req = authenticatedRequest(url, {
       method: "POST",
-      body: JSON.stringify({ portfolioId: "portfolio-demo" }),
+      body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -55,7 +55,7 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
   });
 
   it("returns 400 when portfolioId is missing", async () => {
-    const req = new NextRequest(url, {
+    const req = authenticatedRequest(url, {
       method: "POST",
       body: JSON.stringify({}),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "key1" },
@@ -66,9 +66,9 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
   });
 
   it("returns 202 with analysis for a valid request", async () => {
-    const req = new NextRequest(url, {
+    const req = authenticatedRequest(url, {
       method: "POST",
-      body: JSON.stringify({ portfolioId: "portfolio-demo" }),
+      body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "key1" },
     });
 

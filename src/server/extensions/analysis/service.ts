@@ -158,7 +158,7 @@ export function getPortfolioTrends(userId: string, snapshotId?: string) {
   const base = values[0]?.value.gt(0) ? values[0].value : new Decimal(1);
   let peak = base;
   const observedValues: string[] = [];
-  const totalReturn = values.map((point, index) => {
+  const totalReturn = values.map((point) => {
     observedValues.push(point.value.toString());
     return { date: point.date, value: decimalDisplay(point.value.div(base).minus(1)) };
   });

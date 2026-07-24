@@ -34,7 +34,7 @@ export class SemanticLayerDb implements SemanticLayerExecutor {
     return { rows: [], rowsAffected: result.changes, lastInsertRowid: result.lastInsertRowid };
   }
 
-  async batch(statements: SemanticStatement[], _mode?: "read" | "write"): Promise<SemanticResultSet[]> {
+  async batch(statements: SemanticStatement[]): Promise<SemanticResultSet[]> {
     const results: SemanticResultSet[] = [];
     const transaction = this.database.transaction(() => {
       for (const statement of statements) results.push(executeSync(this.database, statement));
@@ -43,7 +43,7 @@ export class SemanticLayerDb implements SemanticLayerExecutor {
     return results;
   }
 
-  async transaction(_mode?: "read" | "write"): Promise<SemanticLayerTransaction> {
+  async transaction(): Promise<SemanticLayerTransaction> {
     this.database.exec("BEGIN IMMEDIATE");
     let closed = false;
     const execute = async (statement: string | SemanticStatement) => {
@@ -77,7 +77,7 @@ export function createSemanticLayerDb(database: SqliteDb): SemanticLayerDb {
   return new SemanticLayerDb(database);
 }
 
-export async function initSemanticLayerDb(_db: SemanticLayerDb): Promise<void> {
+export async function initSemanticLayerDb(): Promise<void> {
   // Schema creation is migration-owned. This hook remains for service initialization.
 }
 

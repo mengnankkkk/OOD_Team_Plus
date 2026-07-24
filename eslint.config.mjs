@@ -12,13 +12,7 @@ export default defineConfig([
     },
   },
   {
-    files: ["src/server/db/runtime-schema.ts"],
-    rules: {
-      "max-lines": "off",
-    },
-  },
-  {
-    files: ["src/migrated-pages/desktop/**/*.{ts,tsx}", "src/components/desktop/**/*.{ts,tsx}"],
+    files: ["src/features/workbench/pages/**/*.{ts,tsx}", "src/components/desktop/**/*.{ts,tsx}"],
     rules: {
       "max-lines": "off",
       "@typescript-eslint/no-explicit-any": "off",
@@ -54,12 +48,13 @@ export default defineConfig([
   },
   globalIgnores([
     ".next/**",
+    ".next-e2e/**",
+    ".next-visual/**",
     "coverage/**",
     "node_modules/**",
     "playwright-report/**",
     "test-results/**",
     "Anthropic_front/**",
-    "frontend_src/**",
     "ponytail/**",
     "ui-ux-pro-max-skill/**",
   ]),

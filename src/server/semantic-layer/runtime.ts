@@ -11,7 +11,11 @@ const globalSemanticLayer = globalThis as typeof globalThis & {
 
 function runtimeKey(): string {
   const configured = process.env.DB_PATH ?? "./data/mw-dev.db";
-  return configured === ":memory:" ? configured : path.resolve(process.cwd(), configured);
+  return configured === ":memory:"
+    ? configured
+    : path.isAbsolute(configured)
+      ? configured
+      : path.join(/* turbopackIgnore: true */ process.cwd(), configured);
 }
 
 export async function getSemanticLayerDb(): Promise<SemanticLayerDb> {

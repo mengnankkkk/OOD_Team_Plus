@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
+
 vi.mock("@/server/extensions/security/public-url", () => ({
   assertPublicHttpUrl: vi.fn(async (value: string) => {
     const url = new URL(value);
@@ -34,7 +36,7 @@ afterEach(() => {
 
 describe("/api/v1/admin/rss/feeds", () => {
   it("requires an idempotency key", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/v1/admin/rss/feeds", {
+    const response = await POST(authenticatedRequest("http://localhost/api/v1/admin/rss/feeds", {
       method: "POST",
       body: JSON.stringify({ feedUrl: "https://example.com/feed.xml" }),
     }));
@@ -42,7 +44,7 @@ describe("/api/v1/admin/rss/feeds", () => {
   });
 
   it("blocks SSRF URLs", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/v1/admin/rss/feeds", {
+    const response = await POST(authenticatedRequest("http://localhost/api/v1/admin/rss/feeds", {
       method: "POST",
       body: JSON.stringify({ feedUrl: "http://127.0.0.1/feed" }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "rss-ssrf-1" },
@@ -52,7 +54,7 @@ describe("/api/v1/admin/rss/feeds", () => {
   });
 
   it("creates, updates and soft-deletes a feed with version checks", async () => {
-    const created = await POST(new NextRequest("http://localhost/api/v1/admin/rss/feeds", {
+    const created = await POST(authenticatedRequest("http://localhost/api/v1/admin/rss/feeds", {
       method: "POST",
       body: JSON.stringify({ name: "财经资讯", feedUrl: "https://example.com/feed.xml", siteUrl: "https://example.com", enabled: true, refreshIntervalMinutes: 30 }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": "rss-create-1" },
@@ -63,24 +65,24 @@ describe("/api/v1/admin/rss/feeds", () => {
     const feedId = createdBody.data.id as string;
 
     const updated = await PATCH(
-      new NextRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "PATCH", body: JSON.stringify({ name: "市场资讯" }), headers: { "Content-Type": "application/json", "If-Match": "1" } }),
+      authenticatedRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "PATCH", body: JSON.stringify({ name: "市场资讯" }), headers: { "Content-Type": "application/json", "If-Match": "1" } }),
       { params: Promise.resolve({ id: feedId }) },
     );
     expect(updated.status).toBe(200);
     expect((await updated.json()).data).toMatchObject({ name: "市场资讯", version: 2 });
 
     const stale = await PATCH(
-      new NextRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "PATCH", body: JSON.stringify({ name: "旧版本" }), headers: { "Content-Type": "application/json", "If-Match": "1" } }),
+      authenticatedRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "PATCH", body: JSON.stringify({ name: "旧版本" }), headers: { "Content-Type": "application/json", "If-Match": "1" } }),
       { params: Promise.resolve({ id: feedId }) },
     );
     expect(stale.status).toBe(412);
 
     const deleted = await DELETE(
-      new NextRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "DELETE", headers: { "If-Match": "2" } }),
+      authenticatedRequest(`http://localhost/api/v1/admin/rss/feeds/${feedId}`, { method: "DELETE", headers: { "If-Match": "2" } }),
       { params: Promise.resolve({ id: feedId }) },
     );
     expect(deleted.status).toBe(204);
-    const listed = await GET(new NextRequest("http://localhost/api/v1/admin/rss/feeds"));
+    const listed = await GET(authenticatedRequest("http://localhost/api/v1/admin/rss/feeds"));
     expect((await listed.json()).data.items).toEqual([]);
   });
 

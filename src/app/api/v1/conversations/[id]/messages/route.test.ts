@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TEST_USER_ID, authenticatedRequest, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { POST as answerClarification } from "../clarifications/[clarificationId]/answer/route";
 import { GET as listClarifications } from "../clarifications/route";
 import { POST } from "./route";
@@ -18,9 +18,10 @@ beforeEach(() => {
   dbPath = join(tmpdir(), `money-whisperer-advisor-${randomUUID()}.db`);
   vi.stubEnv("DB_PATH", dbPath);
   vi.stubEnv("DEEPSEEK_API_KEY", "");
+  seedAuthenticatedUser();
   const db = getDatabase();
   const now = isoNow();
-  db.prepare("INSERT INTO conversation_sessions (id,user_id,title,status,created_at,updated_at,row_version) VALUES (?,'demo-user','Advisor test','active',?,?,1)").run(conversationId, now, now);
+  db.prepare("INSERT INTO conversation_sessions (id,user_id,title,status,created_at,updated_at,row_version) VALUES (?,?,'Advisor test','active',?,?,1)").run(conversationId, TEST_USER_ID, now, now);
   db.close();
 });
 
@@ -39,7 +40,7 @@ describe("conversation advisor clarifications", () => {
     expect(initialBody.data.analysis.status).toBe("WAITING_FOR_USER");
 
     const pending = await listClarifications(
-      new NextRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications?status=PENDING`),
+      authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications?status=PENDING`),
       { params: Promise.resolve({ id: conversationId }) },
     );
     const pendingBody = await pending.json();
@@ -49,7 +50,7 @@ describe("conversation advisor clarifications", () => {
 
     const clarificationId = initialBody.data.clarificationId as string;
     const answered = await answerClarification(
-      new NextRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications/${clarificationId}/answer`, {
+      authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications/${clarificationId}/answer`, {
         method: "POST",
         body: JSON.stringify({ answers: { riskLevel: "BALANCED", investmentAmount: "20000", holdingPeriod: "LONG", maxDrawdown: "0.12", instrumentPreference: "SECTOR_ETF", nearTermUse: false } }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": "answer-profile" },
@@ -62,7 +63,7 @@ describe("conversation advisor clarifications", () => {
     expect(answeredBody.data.result.recommendationId).toBeTruthy();
 
     const db = getDatabase();
-    const profile = db.prepare("SELECT * FROM user_profiles WHERE user_id='demo-user'").get() as Record<string, unknown>;
+    const profile = db.prepare("SELECT * FROM user_profiles WHERE user_id=?").get(TEST_USER_ID) as Record<string, unknown>;
     db.close();
     expect(profile.risk_level).toBe("BALANCED");
     expect(profile.horizon).toBe("LONG");
@@ -76,7 +77,7 @@ describe("conversation advisor clarifications", () => {
 
     const clarificationId = initialBody.data.clarificationId as string;
     const answered = await answerClarification(
-      new NextRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications/${clarificationId}/answer`, {
+      authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/clarifications/${clarificationId}/answer`, {
         method: "POST",
         body: JSON.stringify({ answers: { instrument: "AAPL" } }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": "answer-instrument" },
@@ -92,7 +93,7 @@ describe("conversation advisor clarifications", () => {
   it("returns RUN_ALREADY_ACTIVE for a duplicate processing message", async () => {
     const db = getDatabase();
     const now = isoNow();
-    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('active-run','demo-user','conversation_agent','running',?)").run(now);
+    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('active-run',?,'conversation_agent','running',?)").run(TEST_USER_ID, now);
     db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,client_message_id,agent_run_id,metadata_json) VALUES ('active-message',?,'user','处理中',?,'processing-message','active-run','{}')").run(conversationId, now);
     db.close();
 
@@ -105,7 +106,7 @@ describe("conversation advisor clarifications", () => {
 
 async function sendMessage(content: string, clientMessageId: string) {
   return POST(
-    new NextRequest(`http://localhost/api/v1/conversations/${conversationId}/messages`, {
+    authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content, clientMessageId }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": `idem-${clientMessageId}` },
@@ -119,6 +120,6 @@ function createCompleteProfile() {
   const now = isoNow();
   db.prepare(`INSERT INTO user_profiles
     (id,user_id,risk_level,investment_amount_decimal,horizon,max_drawdown_decimal,preferences_json,status,version,created_at,updated_at)
-    VALUES ('profile-test','demo-user','BALANCED','20000','LONG','0.12',?,'completed',1,?,?)`).run(JSON.stringify({ instrumentPreference: "STOCK", nearTermUse: false }), now, now);
+    VALUES ('profile-test',?,'BALANCED','20000','LONG','0.12',?,'completed',1,?,?)`).run(TEST_USER_ID, JSON.stringify({ instrumentPreference: "STOCK", nearTermUse: false }), now, now);
   db.close();
 }

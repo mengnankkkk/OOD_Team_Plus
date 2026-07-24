@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useFrontendAuth } from "@/features/frontend-migration/auth";
 import { fetchCurrentProfile } from "@/services/profileService";
@@ -10,17 +10,17 @@ export const useAuth = () => {
   const auth = useFrontendAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
-  const refreshProfile = async () => {
+  const refreshProfile = useCallback(async () => {
     if (!auth.user) {
       setProfile(null);
       return;
     }
     setProfile(await fetchCurrentProfile(auth.user.id));
-  };
+  }, [auth.user]);
 
   useEffect(() => {
     void refreshProfile();
-  }, [auth.user?.id]);
+  }, [refreshProfile]);
 
   return useMemo(() => {
     const user = auth.user ? {
@@ -47,5 +47,5 @@ export const useAuth = () => {
       },
       signOut: auth.signOut,
     };
-  }, [auth, profile]);
+  }, [auth, profile, refreshProfile]);
 };

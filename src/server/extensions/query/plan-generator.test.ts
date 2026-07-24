@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 
 import { generateQueryPlan } from "./plan-generator";
-import { ensureRuntimeSchema } from "@/server/db/runtime-schema";
 import { prepareDatabase } from "@/server/db/migration-runner";
 
 vi.stubGlobal("fetch", vi.fn());
@@ -172,7 +171,6 @@ describe("generateQueryPlan", () => {
 
   it("maps managed semantic column names to trusted catalog expressions", async () => {
     const database = new Database(":memory:");
-    ensureRuntimeSchema(database as never);
     prepareDatabase(database as never, ":memory:");
     const now = new Date().toISOString();
     database.prepare("INSERT INTO metadata_domains (id,name,is_visible,status,created_at,updated_at) VALUES ('domain1','证券研究',1,'active',?,?)").run(now, now);

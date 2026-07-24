@@ -1,4 +1,4 @@
 "use client";
 
-import AssetsPage from "@/pages/desktop/AssetsPage";
+import AssetsPage from "@/features/workbench/pages/AssetsPage";
 export default function AssetsRoute() { return <AssetsPage />; }

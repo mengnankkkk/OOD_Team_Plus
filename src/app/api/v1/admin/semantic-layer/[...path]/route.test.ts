@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { closeSemanticLayerRuntime } from "@/server/semantic-layer/runtime";
 
 import { GET, POST } from "./route";
@@ -28,7 +28,7 @@ afterEach(() => {
 describe("/api/v1/admin/semantic-layer", () => {
   it("creates and lists domains through the authenticated admin namespace", async () => {
     const created = await POST(
-      new NextRequest("http://localhost/api/v1/admin/semantic-layer/domains", {
+      authenticatedRequest("http://localhost/api/v1/admin/semantic-layer/domains", {
         method: "POST",
         body: JSON.stringify({ name: "投资组合", description: "用户组合语义域", isVisible: true }),
         headers: { "Content-Type": "application/json" },
@@ -39,7 +39,7 @@ describe("/api/v1/admin/semantic-layer", () => {
     expect(await created.json()).toEqual(expect.objectContaining({ name: "投资组合", isVisible: true }));
 
     const listed = await GET(
-      new NextRequest("http://localhost/api/v1/admin/semantic-layer/domains?pageNo=1&pageSize=20"),
+      authenticatedRequest("http://localhost/api/v1/admin/semantic-layer/domains?pageNo=1&pageSize=20"),
       { params: Promise.resolve({ path: ["domains"] }) },
     );
     expect(listed.status).toBe(200);
@@ -48,7 +48,7 @@ describe("/api/v1/admin/semantic-layer", () => {
 
   it("returns 404 for unknown semantic routes", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/v1/admin/semantic-layer/unknown"),
+      authenticatedRequest("http://localhost/api/v1/admin/semantic-layer/unknown"),
       { params: Promise.resolve({ path: ["unknown"] }) },
     );
     expect(response.status).toBe(404);

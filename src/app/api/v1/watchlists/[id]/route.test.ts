@@ -1,13 +1,14 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
+import { authenticatedRequest } from "@tests/helpers/auth";
 import { DELETE, GET, PATCH } from "./route";
 
 const url = "http://localhost/api/v1/watchlists/wl_1";
 
 describe("/api/v1/watchlists/[id]", () => {
   it("GET returns 404 for missing watchlist", async () => {
-    const res = await GET(new NextRequest(url), { params: Promise.resolve({ id: "wl_1" }) });
+    const res = await GET(authenticatedRequest(url), { params: Promise.resolve({ id: "wl_1" }) });
     expect(res.status).toBe(404);
   });
 
