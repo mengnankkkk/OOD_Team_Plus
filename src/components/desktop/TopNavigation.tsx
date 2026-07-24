@@ -14,7 +14,6 @@ const navItems = [
   { path: "/", label: "首页" },
   { path: "/assets", label: "资产" },
   { path: "/advisor", label: "顾问" },
-  { path: "/query", label: "智能查数" },
   { path: "/watchlist", label: "持仓观测" },
 ];
 
@@ -146,7 +145,7 @@ export default function TopNavigation() {
         {judgeMode ? <div className="mx-auto max-w-[1440px] border-t border-destructive/30 bg-destructive/5 px-5 py-1.5 text-xs text-destructive md:px-10 xl:px-16">评委视图 · Pandadata 路由、Skill 运行、DAG、风控拦截原因均已展开</div> : null}
       </header>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
         {navItems.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>{item.label}</NavLink>)}
         <NavLink to="/history" className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>历史记录</NavLink>
       </nav>
