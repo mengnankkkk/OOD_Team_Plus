@@ -1,7 +1,20 @@
 import { Agent } from "@mastra/core/agent";
+import { z } from "zod";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
 import { AgentFindingSchema, AdvisorDecisionSchema, type AgentFinding, type AdvisorDecision } from "@/server/extensions/advisor/professional-contracts";
+
+const ChiefAgentFindingSchema = z.object({
+  agent: AgentFindingSchema.shape.agent,
+  conclusion: AgentFindingSchema.shape.conclusion,
+  supportEvidence: AgentFindingSchema.shape.supportEvidence,
+  counterEvidence: AgentFindingSchema.shape.counterEvidence,
+  missingInformation: AgentFindingSchema.shape.missingInformation,
+  risks: AgentFindingSchema.shape.risks,
+  confidence: AgentFindingSchema.shape.confidence,
+  needsAnotherAgent: z.boolean(),
+  suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent,
+});
 
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
@@ -55,7 +68,7 @@ export async function runChiefAdvisor(input: {
       maxSteps: 1,
       modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
       structuredOutput: {
-        schema: AgentFindingSchema,
+        schema: ChiefAgentFindingSchema,
         instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
       },
     });
