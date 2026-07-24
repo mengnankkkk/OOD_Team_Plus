@@ -3,17 +3,22 @@ import type { UserProfile, UserProfileUpdate } from "@/types/app/user";
 
 type ApiProfile = {
   id?: string;
-  riskLevel?: "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE" | null;
+  riskLevel?: "R1" | "R2" | "R3" | "R4" | "R5" | "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE" | null;
   preferences?: Record<string, unknown>;
   status?: string;
   version?: number;
   updatedAt?: string;
+  hasGoal?: boolean;
+  onboardingCompleted?: boolean;
 };
 
-const riskFromApi = (risk: ApiProfile["riskLevel"]): UserProfile["riskLevel"] =>
-  risk === "CONSERVATIVE" ? "R2" : risk === "AGGRESSIVE" ? "R4" : "R3";
+const riskFromApi = (risk: ApiProfile["riskLevel"]): UserProfile["riskLevel"] => {
+  if (risk === null || risk === undefined) return null;
+  if (risk === "R1" || risk === "R2" || risk === "R3" || risk === "R4" || risk === "R5") return risk as UserProfile["riskLevel"];
+  return risk === "CONSERVATIVE" ? "R2" : risk === "AGGRESSIVE" ? "R4" : "R3";
+};
 const riskToApi = (risk: UserProfile["riskLevel"]): NonNullable<ApiProfile["riskLevel"]> =>
-  risk === "R1" || risk === "R2" ? "CONSERVATIVE" : risk === "R4" || risk === "R5" ? "AGGRESSIVE" : "BALANCED";
+  risk ?? "R3";
 
 function mapProfile(row: ApiProfile): UserProfile {
   const prefs = row.preferences ?? {};
@@ -31,7 +36,8 @@ function mapProfile(row: ApiProfile): UserProfile {
     riskSubjective: prefs.riskSubjective == null ? null : String(prefs.riskSubjective),
     riskCapacity: prefs.riskCapacity == null ? null : String(prefs.riskCapacity),
     behaviorNotes: prefs.behaviorNotes == null ? null : String(prefs.behaviorNotes),
-    onboardingCompleted: row.status === "COMPLETED" || Boolean(prefs.onboardingCompleted),
+    hasGoal: Boolean(row.hasGoal),
+    onboardingCompleted: Boolean(row.onboardingCompleted) || ((row.status === "COMPLETED" || row.status === "COMPLETE") && Boolean(row.hasGoal)),
     createdAt: String(prefs.createdAt ?? now),
     updatedAt: now,
   };
@@ -52,8 +58,10 @@ export async function updateProfile(_userId: string, changes: UserProfileUpdate)
   const current = await apiGet<ApiProfile>("/api/v1/profile");
   const preferences: Record<string, unknown> = { ...current.preferences };
   for (const [key, value] of Object.entries(changes)) if (key !== "riskLevel") preferences[key] = value;
+  const nextRiskLevel = changes.riskLevel === undefined ? riskFromApi(current.riskLevel) : changes.riskLevel;
+  const apiRiskLevel = nextRiskLevel ? riskToApi(nextRiskLevel) : null;
   const updated = await apiPatch<ApiProfile>("/api/v1/profile", {
-    riskLevel: changes.riskLevel ? riskToApi(changes.riskLevel) : current.riskLevel,
+    riskLevel: apiRiskLevel,
     preferences,
   }, current.version);
   return mapProfile(updated);

@@ -1,3 +1,5 @@
+/* eslint-disable max-lines */
+
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -7,10 +9,12 @@ import { PATCH as switchBranch } from "./[id]/active-branch/route";
 import { POST as executeBranch } from "./[id]/branches/route";
 import { GET as listOptions, POST as generateOptions } from "./[id]/options/route";
 import { POST as undoBranch } from "./[id]/undo/route";
+import { GET as getSnapshot } from "./[id]/branches/[branchId]/snapshot/route";
 import { GET, POST } from "./route";
 import { generateCandidates, hashPriceManifest, type PriceManifest } from "@/server/extensions/simulation/candidate-generator";
 import { executeSimulation } from "@/server/extensions/simulation/deterministic-engine";
 import { getDatabase } from "@/server/http/context";
+import { getSseEvents } from "@/server/extensions/sse/event-persister";
 
 const url = "http://localhost/api/v1/simulation-workspaces";
 
@@ -113,8 +117,13 @@ describe("/api/v1/simulation-workspaces", () => {
     );
     expect(valid.status).toBe(202);
     const body = await valid.json();
-    expect(body.data.status).toBe("COMPLETED");
-    expect(body.data.items).toHaveLength(3);
+    expect(body.data.status).toBe("QUEUED");
+    const completed = await waitForOptions(workspace.id);
+    expect(completed.data.status).toBe("SUCCEEDED");
+    expect(completed.data.items).toHaveLength(3);
+    expect(completed.data.provider).toBe("DETERMINISTIC_FALLBACK");
+    const eventTypes = getSseEvents(completed.data.analysis.analysisId).map((event) => event.type);
+    expect(eventTypes).toEqual(expect.arrayContaining(["run.started", "agent.started", "branch.options.created", "run.completed"]));
   });
 
   it("candidate generator returns distinct strategies", async () => {
@@ -214,6 +223,7 @@ describe("/api/v1/simulation-workspaces", () => {
       }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
+    await waitForOptions(workspace.id);
     const options = await (await listOptions(
       authenticatedRequest(`${url}/${workspace.id}/options`),
       { params: Promise.resolve({ id: workspace.id }) },
@@ -241,6 +251,49 @@ describe("/api/v1/simulation-workspaces", () => {
     const body = await res.json();
     expect(body.data.activeBranchId).toBe(workspace.rootBranchId);
     expect(body.data.version).toBe(3);
+    const db = getDatabase();
+    const events = db.prepare("SELECT event_type FROM simulation_branch_events WHERE workspace_id=? ORDER BY created_at,id").all(workspace.id) as Array<{ event_type: string }>;
+    db.close();
+    expect(events.filter((event) => event.event_type === "undo")).toHaveLength(1);
+    expect(events.filter((event) => event.event_type === "branch_switched")).toHaveLength(0);
+  });
+
+  it("returns the frozen data time and simulated P&L without changing real holdings", async () => {
+    const db = getDatabase();
+    const before = db.prepare("SELECT instrument_id,quantity_decimal,cost_decimal FROM holdings WHERE user_id=? ORDER BY instrument_id").all("test-auth-user");
+    db.close();
+    const workspace = await createTestWorkspace("snapshot-semantics");
+    await generateOptions(
+      authenticatedRequest(`${url}/${workspace.id}/options`, {
+        method: "POST",
+        body: JSON.stringify({ objective: "降低集中度" }),
+        headers: { "Idempotency-Key": "snapshot-options" },
+      }),
+      { params: Promise.resolve({ id: workspace.id }) },
+    );
+    const options = await waitForOptions(workspace.id);
+    const option = options.data.items.find((item: { analysis: { strategy?: string } }) => item.analysis.strategy === "BALANCED") ?? options.data.items[1];
+    const executed = await executeBranch(
+      authenticatedRequest(`${url}/${workspace.id}/branches`, {
+        method: "POST",
+        body: JSON.stringify({ parentBranchId: workspace.rootBranchId, optionId: option.id, name: "Balanced snapshot" }),
+        headers: { "Idempotency-Key": "snapshot-execute" },
+      }),
+      { params: Promise.resolve({ id: workspace.id }) },
+    );
+    const executedBody = await executed.json();
+    const snapshotResponse = await getSnapshot(
+      authenticatedRequest(`${url}/${workspace.id}/branches/${executedBody.data.branchId}/snapshot`),
+      { params: Promise.resolve({ id: workspace.id, branchId: executedBody.data.branchId }) },
+    );
+    const snapshotBody = await snapshotResponse.json();
+    expect(snapshotBody.data.totalAssets).toBeTruthy();
+    expect(snapshotBody.data.unrealizedPnl).not.toBe("0");
+    expect(snapshotBody.data.dataAsOf).toBe(options.data.priceManifest.capturedAt);
+    const afterDb = getDatabase();
+    const after = afterDb.prepare("SELECT instrument_id,quantity_decimal,cost_decimal FROM holdings WHERE user_id=? ORDER BY instrument_id").all("test-auth-user");
+    afterDb.close();
+    expect(after).toEqual(before);
   });
 
   it("rejects an option executed from a different branch", async () => {
@@ -249,6 +302,7 @@ describe("/api/v1/simulation-workspaces", () => {
       authenticatedRequest(`${url}/${workspace.id}/options`, { method: "POST", body: JSON.stringify({ objective: "Reduce concentration" }), headers: { "Idempotency-Key": "mismatch-options" } }),
       { params: Promise.resolve({ id: workspace.id }) },
     );
+    await waitForOptions(workspace.id);
     const options = await (await listOptions(authenticatedRequest(`${url}/${workspace.id}/options`), { params: Promise.resolve({ id: workspace.id }) })).json();
     const first = await executeBranch(
       authenticatedRequest(`${url}/${workspace.id}/branches`, { method: "POST", body: JSON.stringify({ parentBranchId: workspace.rootBranchId, optionId: options.data.items[0].id, name: "First branch" }), headers: { "Idempotency-Key": "mismatch-first" } }),
@@ -272,4 +326,19 @@ async function createTestWorkspace(key: string) {
   }));
   expect(response.status).toBe(202);
   return (await response.json()).data as { id: string; rootBranchId: string; activeBranchId: string; version: number };
+}
+
+async function waitForOptions(workspaceId: string) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const response = await listOptions(
+      authenticatedRequest(`${url}/${workspaceId}/options`),
+      { params: Promise.resolve({ id: workspaceId }) },
+    );
+    const body = await response.json();
+    if (body.data.status === "SUCCEEDED" || body.data.status === "FAILED") {
+      return body;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for branch options");
 }

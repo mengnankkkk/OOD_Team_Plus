@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, LoaderCircle, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "../lib/api";
 
 export function PageHeading({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description: string; actions?: React.ReactNode }) {
@@ -32,10 +32,20 @@ export function useApiResource<T>(path: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(Boolean(path));
+  const requestSequence = useRef(0);
   const reload = useCallback(async () => {
     if (!path) return;
+    const sequence = requestSequence.current + 1;
+    requestSequence.current = sequence;
     setLoading(true); setError("");
-    try { setData(await apiGet<T>(path)); } catch (reason) { setError(reason instanceof Error ? reason.message : "读取失败"); } finally { setLoading(false); }
+    try {
+      const next = await apiGet<T>(path);
+      if (requestSequence.current === sequence) setData(next);
+    } catch (reason) {
+      if (requestSequence.current === sequence) setError(reason instanceof Error ? reason.message : "读取失败");
+    } finally {
+      if (requestSequence.current === sequence) setLoading(false);
+    }
   }, [path]);
   useEffect(() => { void reload(); }, [reload]);
   return { data, setData, error, loading, reload };

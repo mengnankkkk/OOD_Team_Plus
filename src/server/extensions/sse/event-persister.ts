@@ -1,9 +1,13 @@
 export const SSE_EVENT_TYPES = [
+  "run.started",
+  "run.completed",
+  "run.failed",
   "query.planned",
   "query.validated",
   "query.completed",
   "artifact.completed",
   "branch.options.created",
+  "branch.options.failed",
   "branch.created",
   "search.source.completed",
   "portfolio.refreshed",

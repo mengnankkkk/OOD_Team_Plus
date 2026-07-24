@@ -36,6 +36,17 @@ describe("deterministic simulation engine", () => {
     frozen.prices.AAPL = "151";
     expect(() => executeSimulation("0", [{ instrumentId: "AAPL", quantity: "1", marketValue: "150" }], candidate([]), frozen)).toThrow("PRICE_MANIFEST_HASH_MISMATCH");
   });
+
+  it("carries cost basis through simulated trades and returns unrealized P&L", () => {
+    const result = executeSimulation("200", [
+      { instrumentId: "AAPL", quantity: "2", marketValue: "300", assetType: "STOCK", sector: "TECH", cost: "140" },
+    ], candidate([{ instrumentId: "AAPL", action: "BUY", quantity: "1", price: "150" }]), manifest({ AAPL: "150" }));
+
+    expect(result.newTotalAssets).toBe("499.85");
+    expect(result.costBasis).toBe("430");
+    expect(result.unrealizedPnl).toBe("20");
+    expect(result.holdings[0].cost).toBe("143.333333333333");
+  });
 });
 
 function manifest(prices: Record<string, string>): PriceManifest {

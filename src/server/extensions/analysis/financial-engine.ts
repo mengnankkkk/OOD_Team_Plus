@@ -31,7 +31,7 @@ export function calculatePortfolioMetrics(cashValue: string, holdings: Financial
     const cost = holding.cost == null ? null : nonNegative(holding.cost, `cost:${holding.instrumentId}`);
     const unrealizedPnl = cost == null ? null : price.minus(cost).mul(quantity);
     const unrealizedPnlRate = cost?.gt(0) ? price.div(cost).minus(1) : null;
-    return { ...holding, quantityValue: quantity, priceValue: price, marketValue, unrealizedPnl, unrealizedPnlRate };
+    return { ...holding, cost, quantityValue: quantity, priceValue: price, marketValue, unrealizedPnl, unrealizedPnlRate };
   });
   const totalMarketValue = sum(items.map((item) => item.marketValue));
   const totalAssets = cash.plus(totalMarketValue);
@@ -58,6 +58,7 @@ export function calculatePortfolioMetrics(cashValue: string, holdings: Financial
       sector: item.sector ?? null,
       quantity: clean(item.quantityValue),
       price: clean(item.priceValue),
+      cost: item.cost == null ? null : clean(item.cost),
       marketValue: clean(item.marketValue),
       weight: clean(item.weight),
       weightBps: item.weight.mul(10_000).toDecimalPlaces(0).toNumber(),

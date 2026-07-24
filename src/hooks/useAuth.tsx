@@ -9,13 +9,20 @@ import type { UserProfile } from "@/types/app/user";
 export const useAuth = () => {
   const auth = useFrontendAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
 
   const refreshProfile = useCallback(async () => {
     if (!auth.user) {
       setProfile(null);
+      setProfileLoading(false);
       return;
     }
-    setProfile(await fetchCurrentProfile(auth.user.id));
+    setProfileLoading(true);
+    try {
+      setProfile(await fetchCurrentProfile(auth.user.id));
+    } finally {
+      setProfileLoading(false);
+    }
   }, [auth.user]);
 
   useEffect(() => {
@@ -34,7 +41,8 @@ export const useAuth = () => {
       session: user ? { user } : null,
       user,
       profile,
-      loading: auth.loading,
+      loading: auth.loading || profileLoading,
+      profileLoading,
       isAnonymous: false,
       refreshProfile,
       async signInWithPassword(username: string, password: string) {
@@ -47,5 +55,5 @@ export const useAuth = () => {
       },
       signOut: auth.signOut,
     };
-  }, [auth, profile, refreshProfile]);
+  }, [auth, profile, profileLoading, refreshProfile]);
 };
