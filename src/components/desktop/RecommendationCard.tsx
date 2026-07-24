@@ -1,4 +1,4 @@
-import { ArrowRight, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Recommendation } from "@/types/app/recommendation";
 import { useNavigate } from "@/features/frontend-migration/router";
@@ -26,7 +26,6 @@ const RecommendationCard = ({ rec, onGenerate, generating }: RecommendationCardP
         <p className="eyebrow">今天没有紧要的决定</p>
         <h2 className="mt-3 text-2xl font-semibold">Agent 尚未生成新建议</h2>
         <p className="mt-3 max-w-2xl text-sm text-muted-foreground">让规划、数据、组合、风险、合规九个 Agent 走一轮流水线，把你目前的画像与账本对照可行动的建议。</p>
-        <div className="mt-6"><Button onClick={onGenerate} disabled={generating} className="h-11 px-6"><Sparkles className="size-4" />{generating ? "Agent 正在协作…" : "生成一轮 Multi-Agent 建议"}</Button></div>
       </section>
     );
   }

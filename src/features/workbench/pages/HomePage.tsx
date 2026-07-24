@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import AllocationPanel from "@/components/desktop/AllocationPanel";
-import AgentTheater from "@/components/desktop/AgentTheater";
 import DrawdownChart from "@/components/desktop/DrawdownChart";
 import GoalProgress from "@/components/desktop/GoalProgress";
 import HealthMetrics from "@/components/desktop/HealthMetrics";
@@ -14,7 +13,7 @@ import { computeHealthMetrics } from "@/lib/financialHealth";
 import { runAgentWorkflow } from "@/services/recommendationService";
 import { toast } from "sonner";
 import AnimatedMenuButton from "@/components/desktop/AnimatedMenuButton";
-import { ExternalLink, RefreshCw, Rss, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Rss, Sparkles } from "lucide-react";
 import { useDemoMode } from "@/hooks/useDemoMode";
 
 const todayStamp = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
@@ -60,7 +59,7 @@ const HomePage = () => {
   };
 
   return (
-    <div className="newsprint-texture">
+    <div className="newsprint-texture home-black-buttons">
       <div className="newsprint-masthead mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="newsprint-date-line">{todayStamp} · 数据更新至上一交易日 · MONEY WHISPERER DAILY</p>
@@ -95,7 +94,6 @@ const HomePage = () => {
 
       <div className="mt-6"><RecommendationCard rec={activeRec} onGenerate={handleGenerate} generating={generating} /></div>
       <HomeRssCard />
-      <AgentTheater latestRun={latestRun} generating={generating} />
     </div>
   );
 };
@@ -103,6 +101,12 @@ const HomePage = () => {
 const HomeRssCard = () => {
   const rss = useApiResource<{ items: RssItem[] }>("/api/v1/rss/items?limit=5");
   const items = rss.data?.items ?? [];
+  const [activeIndex, setActiveIndex] = useState(0);
+  const active = items.length ? Math.min(activeIndex, items.length - 1) : 0;
+  const move = (direction: -1 | 1) => {
+    if (!items.length) return;
+    setActiveIndex((index) => (index + direction + items.length) % items.length);
+  };
 
   return (
     <section className="paper-card mt-6 p-6">
@@ -128,23 +132,65 @@ const HomeRssCard = () => {
       {rss.loading ? <p className="mt-5 text-sm text-muted-foreground">正在读取资讯源…</p> : null}
       {!rss.loading && !rss.error && items.length === 0 ? <p className="mt-5 text-sm text-muted-foreground">当前还没有 RSS 资讯。</p> : null}
       {items.length ? (
-        <div className="mt-5 grid gap-3 lg:grid-cols-5">
-          {items.map((item) => (
-            <article key={item.id} className="min-w-0 border border-border bg-background/50 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <small className="text-xs text-muted-foreground">{item.feedName}</small>
-                <a href={item.canonicalUrl} target="_blank" rel="noreferrer" aria-label={`打开${item.title}`} className="shrink-0 text-primary">
-                  <ExternalLink className="size-4" />
-                </a>
-              </div>
-              <h3 className="mt-2 line-clamp-2 text-sm font-semibold">{item.title}</h3>
-              <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">{item.summary ?? "该条目未提供摘要。"}</p>
-              <div className="mt-3 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
-                {item.publishedAt ? <span>{new Date(item.publishedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span> : null}
-                {item.categories.slice(0, 2).map((category) => <span key={category}>· {category}</span>)}
-              </div>
-            </article>
-          ))}
+        <div className="rss-carousel" aria-roledescription="carousel" aria-label="RSS 资讯轮播">
+          <div className="rss-carousel-stage">
+            {items.map((item, index) => {
+              let offset = index - active;
+              if (offset > items.length / 2) offset -= items.length;
+              if (offset < -items.length / 2) offset += items.length;
+              const distance = Math.min(Math.abs(offset), 2);
+              const isActive = offset === 0;
+              const hidden = Math.abs(offset) > 2;
+              return (
+                <article
+                  key={item.id}
+                  className="rss-slide"
+                  data-active={isActive}
+                  aria-current={isActive}
+                  aria-hidden={hidden}
+                  role="button"
+                  tabIndex={hidden ? -1 : 0}
+                  onClick={() => setActiveIndex(index)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setActiveIndex(index);
+                    }
+                  }}
+                  style={{
+                    transform: `translateX(-50%) translateX(${offset * 62}%) scale(${isActive ? 1 : distance === 1 ? 0.86 : 0.72}) rotateY(${offset * -7}deg)`,
+                    opacity: hidden ? 0 : isActive ? 1 : distance === 1 ? 0.68 : 0.32,
+                    zIndex: 10 - distance,
+                  }}
+                >
+                  <div className="rss-slide-visual">
+                    <Rss className="size-7" />
+                    <span>{item.feedName}</span>
+                  </div>
+                  <div className="rss-slide-body">
+                    <div className="flex items-start justify-between gap-3">
+                      <small>{item.publishedAt ? new Date(item.publishedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : "未标注日期"}</small>
+                      <a href={item.canonicalUrl} target="_blank" rel="noreferrer" aria-label={`打开${item.title}`} className="rss-slide-link" onClick={(event) => event.stopPropagation()}>
+                        <ExternalLink className="size-4" />
+                      </a>
+                    </div>
+                    <h3>{item.title}</h3>
+                    <p>{item.summary ?? "该条目未提供摘要。"}</p>
+                    <div className="rss-slide-tags">
+                      {item.categories.slice(0, 2).map((category) => <span key={category}>{category}</span>)}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          {items.length > 1 ? (
+            <div className="rss-carousel-controls">
+              <button type="button" aria-label="上一条资讯" onClick={() => move(-1)}><ChevronLeft className="size-4" /></button>
+              <div className="rss-carousel-dots">{items.map((item, index) => <button key={item.id} type="button" aria-label={`切换到第 ${index + 1} 条资讯`} aria-current={index === active} onClick={() => setActiveIndex(index)} />)}</div>
+              <button type="button" aria-label="下一条资讯" onClick={() => move(1)}><ChevronRight className="size-4" /></button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>
