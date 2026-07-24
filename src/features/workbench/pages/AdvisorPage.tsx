@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { createClientId } from "@/lib/client-id";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
@@ -80,7 +81,7 @@ const ACTION_TOOLS = [
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string>(() => crypto.randomUUID());
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => createClientId());
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -144,7 +145,7 @@ const AdvisorPage = () => {
     setMessages([]);
     setDraft("");
     setSessionMenuId(null);
-    setActiveSessionId(crypto.randomUUID());
+    setActiveSessionId(createClientId());
   }, [sending]);
 
   useEffect(() => {

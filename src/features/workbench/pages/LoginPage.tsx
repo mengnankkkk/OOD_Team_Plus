@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Image from "next/image";
 import { Navigate, useNavigate } from "@/features/frontend-migration/router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,7 +43,10 @@ const LoginPage = () => {
   return (
     <div className="grid min-h-screen bg-background lg:grid-cols-[3fr_2fr]">
       <div className="hidden flex-col justify-between border-r border-border bg-card p-12 lg:flex">
-        <div className="flex items-center gap-3"><span className="seal-mark">财语</span><span className="font-semibold tracking-tight">Money Whisperer</span></div>
+        <div className="flex items-center gap-3">
+          <Image src="/money-whisperer-logo.png" alt="Money Whisperer logo" width={40} height={40} className="size-10 shrink-0 object-contain" priority />
+          <span className="font-semibold tracking-tight">Money Whisperer</span>
+        </div>
         <div>
           <p className="eyebrow">多 Agent 目标理财管家</p>
           <h1 className="mt-6 max-w-md text-4xl font-semibold leading-tight">先看目标，再看市场。<br />让每一条建议都能沿着红线走回它出生的证据。</h1>

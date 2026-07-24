@@ -1,3 +1,5 @@
+import { createClientId } from "@/lib/client-id";
+
 export class FrontendApiError extends Error {
   constructor(message: string, public readonly code = "API_ERROR", public readonly status = 500) { super(message); }
 }
@@ -6,7 +8,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (init.method && init.method !== "GET" && !headers.has("Idempotency-Key")) headers.set("Idempotency-Key", crypto.randomUUID());
+  if (init.method && init.method !== "GET" && !headers.has("Idempotency-Key")) headers.set("Idempotency-Key", createClientId());
   if (init.method && init.method !== "GET" && typeof document !== "undefined" && !headers.has("X-CSRF-Token")) {
     const csrf = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("mw_csrf="))?.slice("mw_csrf=".length);
     if (csrf) headers.set("X-CSRF-Token", decodeURIComponent(csrf));

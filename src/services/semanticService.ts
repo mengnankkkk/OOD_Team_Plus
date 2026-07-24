@@ -12,6 +12,7 @@ import type {
   SyncResult,
   SyncTableInput,
 } from "@/types/app/semantic";
+import { createClientId } from "@/lib/client-id";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 const SEMANTIC_API = "/api/v1/admin/semantic-layer";
@@ -20,7 +21,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", "application/json");
   if (init?.method && init.method !== "GET") {
-    headers.set("Idempotency-Key", crypto.randomUUID());
+    headers.set("Idempotency-Key", createClientId());
     const csrf = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("mw_csrf="))?.slice("mw_csrf=".length);
     if (csrf) headers.set("X-CSRF-Token", decodeURIComponent(csrf));
   }

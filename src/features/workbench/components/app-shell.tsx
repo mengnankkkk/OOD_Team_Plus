@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, Bell, Blocks, BookOpenText, ChartNoAxesCombined, DatabaseZap, FileChartColumn, FlaskConical, Menu, MessageSquareText, Search, X } from "lucide-react";
@@ -26,7 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="desk-shell">
       <aside className={`desk-rail ${open ? "is-open" : ""}`}>
         <div className="rail-brand">
-          <span className="rail-monogram">MW</span>
+          <Image src="/money-whisperer-logo.png" alt="Money Whisperer logo" width={44} height={44} className="size-11 shrink-0 object-contain" priority />
           <div><strong>Money Whisperer</strong><small>PERSONAL INVESTMENT OFFICE</small></div>
           <button className="rail-close" onClick={() => setOpen(false)} aria-label="关闭导航"><X size={18} /></button>
         </div>

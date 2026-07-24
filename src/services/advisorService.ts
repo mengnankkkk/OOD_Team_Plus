@@ -1,4 +1,5 @@
 import { apiGet, apiPatch, apiPost, FrontendApiError } from "@/features/frontend-migration/api";
+import { createClientId } from "@/lib/client-id";
 import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOutputMode, OnboardingMessage, TraceSpan } from "@/types/app/onboarding";
 
 type ConversationRow = { id: string; title: string; created_at: string; updated_at: string; row_version: number; last_message_preview?: string };
@@ -54,7 +55,7 @@ async function ensureConversation(sessionId: string, title: string): Promise<str
 export async function sendAdvisorMessage(message: string, sessionId: string, outputMode: ConversationOutputMode): Promise<AdvisorReply> {
   const activeSessionId = await ensureConversation(sessionId, message);
   const result = await apiPost<Record<string, unknown>>(`/api/v1/conversations/${activeSessionId}/messages`, {
-    clientMessageId: crypto.randomUUID(),
+    clientMessageId: createClientId(),
     content: message,
     outputMode,
   });
