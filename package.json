@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "3.0.236",
+    "@libsql/client": "0.17.4",
     "@mastra/ai-sdk": "1.6.3",
     "@mastra/core": "1.52.0",
     "@mastra/libsql": "1.17.0",
