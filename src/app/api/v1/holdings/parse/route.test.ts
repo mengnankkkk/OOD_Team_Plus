@@ -41,18 +41,18 @@ describe("holding text parsing", () => {
     const confirmed = await confirm(
       new NextRequest(`http://localhost/api/v1/holdings/parse/${parseId}/confirm`, {
         method: "POST",
-        body: JSON.stringify({ confirmedCandidates: [{ candidateId: parsedBody.data.candidates[0].candidateId, symbol: "DEMO300.SH", quantity: "100", averageCost: "4.20" }] }),
+        body: JSON.stringify({ confirmedCandidates: [{ candidateId: parsedBody.data.candidates[0].candidateId, symbol: "510300.SH", quantity: "100", averageCost: "4.20" }] }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": "confirm-demo300" },
       }),
       { params: Promise.resolve({ parseId }) },
     );
     const confirmedBody = await confirmed.json();
     expect(confirmed.status).toBe(201);
-    expect(confirmedBody.data.holdings[0]).toMatchObject({ symbol: "DEMO300.SH", quantity_decimal: "100", averageCost: "4.20" });
+    expect(confirmedBody.data.holdings[0]).toMatchObject({ symbol: "510300.SH", quantity_decimal: "100", averageCost: "4.20" });
 
     const db = getDatabase();
     const latest = db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id='demo-user' ORDER BY created_at DESC LIMIT 1").get() as { id: string };
-    const snapshotHolding = db.prepare("SELECT instrument_id FROM holding_snapshots WHERE portfolio_snapshot_id=? AND instrument_id='DEMO300.SH'").get(latest.id);
+    const snapshotHolding = db.prepare("SELECT instrument_id FROM holding_snapshots WHERE portfolio_snapshot_id=? AND instrument_id='510300.SH'").get(latest.id);
     db.close();
     expect(snapshotHolding).toBeTruthy();
   });

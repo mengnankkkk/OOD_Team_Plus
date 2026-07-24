@@ -92,6 +92,6 @@ describe("/api/v1/admin/rss/feeds", () => {
     db.prepare("INSERT INTO api_sessions (id,user_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('regular-session','regular-user',?,?,?,?)").run(hashSessionToken(token), "2099-01-01T00:00:00.000Z", now, now);
     db.close();
     const response = await GET(new NextRequest("http://localhost/api/v1/admin/rss/feeds", { headers: { Cookie: `mw_session=${token}` } }));
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
   });
 });

@@ -114,7 +114,9 @@ function validateAst(statement: object, allowedTables: ReadonlySet<string>): str
   const functions = new Set<string>();
 
   walkAst(statement, (node) => {
-    if (typeof node.table === "string") tables.add(node.table);
+    // Column references carry their table alias in `table`; only FROM/JOIN
+    // relation nodes expose the `db` property and represent physical tables.
+    if (typeof node.table === "string" && Object.hasOwn(node, "db")) tables.add(node.table);
     const functionName = getFunctionName(node);
     if (functionName) functions.add(functionName);
   });

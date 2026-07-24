@@ -1,72 +1,55 @@
-import { EventEmitter } from "node:events";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
-
-import { spawn } from "node:child_process";
+const execFile = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ execFile }));
+vi.mock("node:util", () => ({ promisify: () => execFile }));
 
 import { callPandaData } from "@/server/extensions/pandadata/adapter";
 
-function mockProcess(stdout: string, code = 0): ChildProcessWithoutNullStreams {
-  const child = new EventEmitter() as ChildProcessWithoutNullStreams;
-  child.stdout = new EventEmitter() as ChildProcessWithoutNullStreams["stdout"];
-  child.stderr = new EventEmitter() as ChildProcessWithoutNullStreams["stderr"];
-
-  queueMicrotask(() => {
-    child.stdout.emit("data", Buffer.from(stdout));
-    child.emit("close", code);
-  });
-  return child;
-}
-
 describe("callPandaData", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  beforeEach(() => execFile.mockReset());
 
-  it("rejects methods outside the whitelist", async () => {
-    // @ts-expect-error Deliberately exercise the runtime trust boundary.
-    await expect(callPandaData("drop_table", {})).rejects.toMatchObject({
+  it("rejects methods outside the documented contract catalog", async () => {
+    await expect(callPandaData("drop_table" as never, {})).rejects.toMatchObject({
       code: "PANDA_DATA_UNAVAILABLE",
       retryable: false,
     });
-    expect(spawn).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("spawns Python with method and serialized parameters", async () => {
-    vi.mocked(spawn).mockReturnValue(mockProcess("[]"));
-
-    const result = await callPandaData(
-      "get_stock_daily",
-      { symbol: ["000001.SZ"] },
-      { pythonPath: "python-test" },
-    );
-
-    expect(result).toMatchObject({ data: [], method: "get_stock_daily" });
-    expect(spawn).toHaveBeenCalledWith(
-      "python-test",
-      [expect.stringContaining("call_api.py"), "get_stock_daily", '{"symbol":["000001.SZ"]}'],
-      expect.objectContaining({ env: process.env, timeout: 30_000 }),
-    );
-  });
-
-  it("maps bridge failures to extension errors", async () => {
-    vi.mocked(spawn).mockReturnValue(mockProcess('{"error":"missing credentials","retryable":false}', 1));
-
-    await expect(callPandaData("get_fund_daily", {})).rejects.toMatchObject({
+  it("rejects missing required date parameters before starting Python", async () => {
+    await expect(callPandaData("get_stock_daily", { symbol: ["000001.SZ"] })).rejects.toMatchObject({
       code: "PANDA_DATA_UNAVAILABLE",
-      message: "missing credentials",
       retryable: false,
     });
+    expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid successful output", async () => {
-    vi.mocked(spawn).mockReturnValue(mockProcess("not-json"));
+  it("runs dry-run before live call and reports data freshness separately", async () => {
+    execFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true, dry_run: true }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: { data: [{ symbol: "000001.SZ", date: "20260724", close: 12.3 }] } }) });
 
-    await expect(callPandaData("get_index_daily", {})).rejects.toMatchObject({
+    const result = await callPandaData("get_stock_daily", {
+      symbol: ["000001.SZ"], start_date: "20260701", end_date: "20260724", fields: ["symbol", "date", "close"],
+    }, { pythonPath: "python-test" });
+
+    expect(result).toMatchObject({ contractValidated: true, dryRunSucceeded: true, liveCallSucceeded: true, fresh: true, asOfDate: "2026-07-24" });
+    expect(execFile.mock.calls[0]?.[1]?.[0]).toMatch(/call_api\.py$/u);
+    expect(execFile).toHaveBeenNthCalledWith(1, "python-test", expect.arrayContaining(["--dry-run"]), expect.any(Object));
+    expect(execFile).toHaveBeenNthCalledWith(2, "python-test", expect.arrayContaining(["--no-setup"]), expect.any(Object));
+  });
+
+  it("does not treat successful dry-run as live data", async () => {
+    execFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true, dry_run: true }) })
+      .mockRejectedValueOnce({ stderr: "Runtime setup failed: missing credentials" });
+
+    await expect(callPandaData("get_fund_daily", {
+      symbol: ["510050.SH"], start_date: "20260701", end_date: "20260724", fields: [],
+    })).rejects.toMatchObject({
       code: "PANDA_DATA_UNAVAILABLE",
-      message: "PandaData returned invalid JSON",
+      details: { category: "PANDADATA_AUTH_FAILED" },
       retryable: true,
     });
   });

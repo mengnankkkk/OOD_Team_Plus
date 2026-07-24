@@ -19,6 +19,7 @@ __pycache__/
 # JavaScript / Next.js
 node_modules/
 .next/
+.next-e2e/
 out/
 coverage/
 test-results/
@@ -29,3 +30,5 @@ playwright-report/
 .data/
 data/
 .serena/
+.next-visual/
+.artifacts

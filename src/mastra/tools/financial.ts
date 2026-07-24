@@ -13,7 +13,10 @@ type ToolContext = { requestContext?: { get: (key: string) => unknown } };
 
 function requestUserId(context?: ToolContext): string {
   const value = context?.requestContext?.get("userId");
-  return typeof value === "string" && value.length > 0 ? value : "demo-user";
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("AUTHENTICATED_USER_CONTEXT_REQUIRED");
+  }
+  return value;
 }
 
 export const getPortfolioSnapshotTool = createTool({

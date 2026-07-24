@@ -17,6 +17,41 @@ export default defineConfig([
       "max-lines": "off",
     },
   },
+  {
+    files: ["src/migrated-pages/desktop/**/*.{ts,tsx}", "src/components/desktop/**/*.{ts,tsx}"],
+    rules: {
+      "max-lines": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/purity": "off",
+      "react-hooks/immutability": "off",
+      "react/no-unescaped-entities": "off",
+    },
+  },
+  {
+    files: ["src/components/ui/**/*.{ts,tsx}", "src/features/frontend-migration/**/*.{ts,tsx}", "src/features/workbench/**/*.{ts,tsx}", "src/hooks/**/*.{ts,tsx}"],
+    rules: {
+      "max-lines": "off",
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
+  {
+    files: ["src/app/(workbench)/**/*.{ts,tsx}"],
+    rules: {
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
+  {
+    files: [
+      "src/server/extensions/advisor/professional.ts",
+      "src/server/extensions/analysis/service.ts",
+      "src/server/extensions/query/plan-generator.ts",
+      "src/server/extensions/simulation/candidate-generator.ts",
+    ],
+    rules: {
+      "max-lines": "off",
+    },
+  },
   globalIgnores([
     ".next/**",
     "coverage/**",

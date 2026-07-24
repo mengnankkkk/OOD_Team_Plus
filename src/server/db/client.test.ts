@@ -26,7 +26,7 @@ vi.mock("node:fs", async () => {
   };
 });
 
-import { getDbClient } from "./client.runtime";
+import { getDbClient, withBusyRetry } from "./client.runtime";
 
 describe("getDbClient", () => {
   beforeEach(() => {
@@ -53,5 +53,25 @@ describe("getDbClient", () => {
   it("calls pragma with busy_timeout = 5000", () => {
     getDbClient();
     expect(mockPragma).toHaveBeenCalledWith("busy_timeout = 5000");
+  });
+
+  it("retries SQLITE_BUSY three times and then succeeds", () => {
+    let attempts = 0;
+    const result = withBusyRetry(() => {
+      attempts += 1;
+      if (attempts <= 3) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      return "written";
+    });
+    expect(result).toBe("written");
+    expect(attempts).toBe(4);
+  });
+
+  it("does not retry non-lock errors", () => {
+    let attempts = 0;
+    expect(() => withBusyRetry(() => {
+      attempts += 1;
+      throw new Error("constraint failed");
+    })).toThrow("constraint failed");
+    expect(attempts).toBe(1);
   });
 });

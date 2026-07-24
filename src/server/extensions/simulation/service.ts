@@ -1,5 +1,6 @@
 import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/context";
-import { generateCandidates, type SimulationCandidate } from "./candidate-generator";
+import { calculatePortfolioMetrics, runPortfolioStressTests } from "@/server/extensions/analysis/financial-engine";
+import { generateCandidates, type PriceManifest, type SimulationCandidate } from "./candidate-generator";
 import { executeSimulation } from "./deterministic-engine";
 import { persistSseEvent } from "../sse/event-persister";
 
@@ -13,14 +14,21 @@ export function createWorkspace(userId: string, input: { label: string; objectiv
   const workspaceId = createId("workspace");
   const branchId = createId("branch");
   const analysisId = createId("analysis");
-  const holdings = db.prepare("SELECT * FROM holding_snapshots WHERE portfolio_snapshot_id = ?").all(input.portfolioSnapshotId) as Row[];
+  const holdings = db.prepare(`SELECT h.*,i.asset_type,i.sector FROM holding_snapshots h
+    JOIN instruments i ON i.id=h.instrument_id WHERE h.portfolio_snapshot_id=?`).all(input.portfolioSnapshotId) as Row[];
+  const rootFinancialHoldings = holdings.map((holding) => ({
+    instrumentId: String(holding.instrument_id), assetType: String(holding.asset_type), sector: holding.sector == null ? null : String(holding.sector),
+    quantity: String(holding.quantity_decimal), price: String(holding.price_decimal), cost: String(holding.cost_decimal),
+  }));
+  const rootMetrics = calculatePortfolioMetrics(String(snapshot.cash_decimal), rootFinancialHoldings);
+  const rootStress = runPortfolioStressTests(String(snapshot.cash_decimal), rootFinancialHoldings);
+  const rootWorst = Math.min(0, ...rootStress.map((item) => Number(item.changeRatio)));
   const simSnapshotId = createId("sim_snapshot");
   const publish = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,completed_at) VALUES (?,?,?,'completed',?,?)").run(analysisId, userId, "simulation_workspace", now, now);
     db.prepare("INSERT INTO simulation_workspaces (id, user_id, conversation_session_id, recommendation_id, portfolio_snapshot_id, label, objective_text, status, root_branch_id, active_branch_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)").run(workspaceId, userId, input.conversationSessionId ?? null, input.recommendationId ?? null, input.portfolioSnapshotId, input.label, input.objectiveText, branchId, branchId, now, now);
     db.prepare("INSERT INTO simulation_branches (id, workspace_id, label, depth, status, created_at, updated_at) VALUES (?, ?, ?, 0, 'active', ?, ?)").run(branchId, workspaceId, "Initial assets", now, now);
-    const rootHhi = holdings.reduce((sum, holding) => sum + (Number(holding.weight_bps ?? 0) / 10_000) ** 2, 0);
-    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(simSnapshotId, workspaceId, branchId, input.portfolioSnapshotId, snapshot.cash_decimal, snapshot.total_market_value_decimal, json({ totalReturn: 0, maxDrawdown: 0, volatility: 0.09 + rootHhi * 0.22, concentrationHHI: rootHhi, expectedReturn: 0, bullCaseReturn: 0, bearCaseReturn: 0, riskLevel: rootHhi > 0.45 ? "HIGH" : "MEDIUM" }), "branch-simulation-v3", now);
+    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(simSnapshotId, workspaceId, branchId, input.portfolioSnapshotId, rootMetrics.cashValue, rootMetrics.totalMarketValue, json({ totalReturn: 0, maxDrawdown: rootWorst, volatility: null, concentrationHHI: Number(rootMetrics.concentrationHhi), expectedReturn: 0, bullCaseReturn: Number(rootStress.find((item) => item.scenario === "BULL")?.changeRatio ?? 0), bearCaseReturn: Number(rootStress.find((item) => item.scenario === "BEAR")?.changeRatio ?? 0), riskLevel: Math.abs(rootWorst) > 0.2 ? "HIGH" : Math.abs(rootWorst) > 0.1 ? "MEDIUM" : "LOW", stressTests: rootStress, missingMetrics: ["ANNUAL_VOLATILITY_REQUIRES_HISTORICAL_SERIES"], formulaVersion: rootMetrics.formulaVersion, assetConservationDelta: "0" }), "branch-simulation-v4", now);
     for (const holding of holdings) db.prepare("INSERT INTO simulation_asset_snapshot_items (id, snapshot_id, instrument_id, quantity_decimal, price_decimal, market_value_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(createId("sim_item"), simSnapshotId, holding.instrument_id, holding.quantity_decimal, holding.price_decimal, holding.market_value_decimal, holding.weight_bps, now);
     db.prepare("INSERT INTO simulation_branch_events (id, workspace_id, event_type, to_branch_id, user_id, created_at) VALUES (?, ?, 'root_created', ?, ?, ?)").run(createId("branch_event"), workspaceId, branchId, userId, now);
   });
@@ -45,17 +53,16 @@ export async function generateOptions(userId: string, workspaceId: string, objec
   if (!workspace) throw new Error("Workspace not found");
   if (workspace.status === "ARCHIVED") throw new Error("WORKSPACE_ARCHIVED");
   const branchId = workspace.activeBranchId;
-  const generated = await generateCandidates(objective, String(workspace.portfolioSnapshotId), String(branchId));
+  const generated = await generateCandidates(objective, String(workspace.portfolioSnapshotId), String(branchId), userId);
   const db = getDatabase();
   const now = isoNow();
   const batchId = createId("option_batch");
   const analysisId = createId("analysis");
-  const manifest = generated.priceManifest.prices;
   const optionIds: string[] = [];
   const publish = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at, completed_at) VALUES (?, ?, 'branch_option_generation', 'completed', ?, ?)").run(analysisId, userId, now, now);
-    db.prepare("INSERT INTO simulation_option_batches (id, workspace_id, branch_id, agent_run_id, status, price_manifest_json, price_manifest_sha256, created_at) VALUES (?, ?, ?, ?, 'succeeded', ?, ?, ?)").run(batchId, workspaceId, branchId, analysisId, json(manifest), generated.priceManifest.sha256, now);
-    for (const candidate of generated.candidates) { const optionId = createId("option"); optionIds.push(optionId); db.prepare("INSERT INTO simulation_options (id, batch_id, workspace_id, sequence_no, label, description_text, trades_json, analysis_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(optionId, batchId, workspaceId, candidate.sequenceNo, candidate.label, candidate.description, json(candidate.trades), json(candidate.analysis), now); }
+    db.prepare("INSERT INTO simulation_option_batches (id, workspace_id, branch_id, agent_run_id, status, price_manifest_json, price_manifest_sha256, created_at) VALUES (?, ?, ?, ?, 'succeeded', ?, ?, ?)").run(batchId, workspaceId, branchId, analysisId, json(generated.priceManifest), generated.priceManifest.sha256, now);
+    for (const candidate of generated.candidates) { const optionId = createId("option"); optionIds.push(optionId); db.prepare("INSERT INTO simulation_options (id, batch_id, workspace_id, sequence_no, label, description_text, trades_json, analysis_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(optionId, batchId, workspaceId, candidate.sequenceNo, candidate.label, candidate.description, json(candidate.trades), json({ ...candidate.analysis, targetAllocations: candidate.targetAllocations, tradeIntent: candidate.tradeIntent }), now); }
   });
   publish();
   db.close();
@@ -90,14 +97,15 @@ export function executeOption(userId: string, workspaceId: string, input: { pare
   const assetSnapshotId = createId("sim_snapshot");
   const analysisId = createId("analysis");
   const trades = parseJson<Array<{ instrumentId: string; action: string; quantity: string; price?: string }>>(option.trades_json as string, []);
-  const sourceItems = db.prepare("SELECT * FROM simulation_asset_snapshot_items WHERE snapshot_id = ?").all(parent.id) as Row[];
+  const sourceItems = db.prepare(`SELECT h.*,i.asset_type,i.sector FROM simulation_asset_snapshot_items h
+    JOIN instruments i ON i.id=h.instrument_id WHERE h.snapshot_id=?`).all(parent.id) as Row[];
   let simulation: ReturnType<typeof executeSimulation>;
   try {
     simulation = executeSimulation(
       String(parent.cash_decimal),
-      sourceItems.map((item) => ({ instrumentId: String(item.instrument_id), quantity: String(item.quantity_decimal), marketValue: String(item.market_value_decimal) })),
-      { sequenceNo: Number(option.sequence_no), label: String(option.label), description: String(option.description_text), trades: trades as SimulationCandidate["trades"], analysis: parseJson(option.analysis_json as string, {}) as SimulationCandidate["analysis"] },
-      { prices: parseJson<Record<string, string>>(batch.price_manifest_json as string, {}), sha256: String(batch.price_manifest_sha256), capturedAt: String(batch.created_at) },
+      sourceItems.map((item) => ({ instrumentId: String(item.instrument_id), quantity: String(item.quantity_decimal), marketValue: String(item.market_value_decimal), assetType: String(item.asset_type), sector: item.sector == null ? null : String(item.sector) })),
+      { sequenceNo: Number(option.sequence_no), label: String(option.label), description: String(option.description_text), trades: trades as SimulationCandidate["trades"], targetAllocations: [], tradeIntent: "persisted option execution", analysis: parseJson(option.analysis_json as string, {}) as SimulationCandidate["analysis"] },
+      assertManifest(parseJson<PriceManifest>(batch.price_manifest_json as string, {} as PriceManifest), String(batch.price_manifest_sha256)),
     );
   } catch (error) {
     db.close();
@@ -106,7 +114,7 @@ export function executeOption(userId: string, workspaceId: string, input: { pare
   const publish = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,completed_at) VALUES (?,?,?,'completed',?,?)").run(analysisId, userId, "branch_execution", now, now);
     db.prepare("INSERT INTO simulation_branches (id, workspace_id, parent_branch_id, parent_option_id, label, depth, status, created_at, updated_at) SELECT ?, workspace_id, ?, ?, ?, depth + 1, 'active', ?, ? FROM simulation_branches WHERE id = ?").run(branchId, input.parentBranchId, option.id, input.name, now, now, input.parentBranchId);
-    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, base_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(assetSnapshotId, workspaceId, branchId, parent.portfolio_snapshot_id, parent.id, simulation.newCashDecimal, simulation.newTotalMarketValue, json(simulation.metrics), "branch-simulation-v2", now);
+    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, base_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(assetSnapshotId, workspaceId, branchId, parent.portfolio_snapshot_id, parent.id, simulation.newCashDecimal, simulation.newTotalMarketValue, json(simulation.metrics), "branch-simulation-v4", now);
     for (const item of simulation.holdings) db.prepare("INSERT INTO simulation_asset_snapshot_items (id, snapshot_id, instrument_id, quantity_decimal, price_decimal, market_value_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(createId("sim_item"), assetSnapshotId, item.instrumentId, item.quantity, item.price, item.marketValue, item.weightBps, now);
     db.prepare("UPDATE simulation_options SET executed_branch_id = ? WHERE id = ?").run(branchId, option.id);
     db.prepare("UPDATE simulation_workspaces SET active_branch_id = ?, row_version = row_version + 1, updated_at = ? WHERE id = ? AND user_id = ?").run(branchId, now, workspaceId, userId);
@@ -164,4 +172,9 @@ export function getBranchSnapshot(userId: string, workspaceId: string, branchId:
   const manifest = db2.prepare("SELECT b.price_manifest_sha256 FROM simulation_options o JOIN simulation_option_batches b ON b.id = o.batch_id WHERE o.executed_branch_id = ?").get(branchId) as { price_manifest_sha256?: string } | undefined;
   db2.close();
   return { cash: snapshot.cash_decimal, totalValue: snapshot.total_market_value_decimal, unrealizedPnl: "0", holdings: items.map((item) => ({ instrumentId: item.instrument_id, quantity: item.quantity_decimal, price: item.price_decimal, marketValue: item.market_value_decimal, weightBps: item.weight_bps })), metrics: parseJson(snapshot.metrics_json as string, {}), priceManifestSha256: manifest?.price_manifest_sha256 ?? null, dataAsOf: snapshot.created_at, engineVersion: snapshot.model_version };
+}
+
+function assertManifest(manifest: PriceManifest, persistedSha256: string): PriceManifest {
+  if (!manifest || typeof manifest !== "object" || manifest.sha256 !== persistedSha256) throw new Error("PRICE_MANIFEST_HASH_MISMATCH");
+  return manifest;
 }

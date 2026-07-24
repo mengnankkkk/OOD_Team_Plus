@@ -17,12 +17,12 @@ describe("calculatePortfolioScore", () => {
     expect(score.missingMetrics).toEqual(["return", "drawdown", "volatility"]);
   });
 
-  it("handles a single holding without a concentration penalty", () => {
+  it("treats a single non-cash holding as fully concentrated", () => {
     const score = calculatePortfolioScore(5000, [
       { instrumentId: "A", quantity: "100", price: "50", marketValue: "5000", weightBps: 10000 },
     ]);
 
-    expect(score.components.concentrationScore).toBe(100);
+    expect(score.components.concentrationScore).toBe(0);
   });
 
   it("maps supplied metrics and clamps their component scores", () => {

@@ -2,20 +2,57 @@ import type { NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 
 import { getDbClient } from "@/server/db/client";
+import { AuthFailure, type AuthUser } from "@/server/auth/contracts";
 
+type SessionRow = {
+  session_id: string;
+  id: string;
+  username: string;
+  display_name: string;
+  role: "USER" | "ADMIN";
+  status: "ACTIVE" | "DISABLED";
+  force_password_change: number;
+  created_at: string;
+  updated_at: string | null;
+  row_version: number;
+};
+
+// Only test fixtures may use the historical user id; production requires a real session.
 export const DEMO_USER_ID = "demo-user";
 
-export function getRequestContext(request?: NextRequest): { userId: string; sessionId: string | null } {
+export function getRequestContext(request?: NextRequest): { userId: string; sessionId: string; user: AuthUser } {
   const token = request?.cookies.get("mw_session")?.value;
   if (token) {
     const db = getDatabase();
-    const row = db.prepare("SELECT id,user_id FROM api_sessions WHERE token_hash=? AND expires_at>? LIMIT 1").get(hashSessionToken(token), isoNow()) as { id?: string; user_id?: string } | undefined;
-    if (row?.id && row.user_id) db.prepare("UPDATE api_sessions SET last_seen_at=? WHERE id=?").run(isoNow(), row.id);
+    const row = db.prepare(`SELECT s.id AS session_id,u.* FROM api_sessions s
+      JOIN users u ON u.id=s.user_id
+      WHERE s.token_hash=? AND s.expires_at>? AND s.revoked_at IS NULL
+        AND u.status='ACTIVE' AND u.deleted_at IS NULL LIMIT 1`).get(hashSessionToken(token), isoNow()) as SessionRow | undefined;
+    if (row?.session_id) db.prepare("UPDATE api_sessions SET last_seen_at=? WHERE id=?").run(isoNow(), row.session_id);
     db.close();
-    if (row?.id && row.user_id) return { userId: row.user_id, sessionId: row.id };
+    if (row?.session_id) return { userId: row.id, sessionId: row.session_id, user: mapAuthUser(row) };
   }
-  const legacySessionId = request?.cookies.get("mw_demo_session")?.value ?? null;
-  return { userId: DEMO_USER_ID, sessionId: legacySessionId };
+  if (!token && process.env.NODE_ENV === "test") {
+    const db = getDatabase();
+    const row = db.prepare("SELECT * FROM users WHERE id=? AND status='ACTIVE'").get(DEMO_USER_ID) as SessionRow | undefined;
+    db.close();
+    if (row) return { userId: row.id, sessionId: "test-session", user: mapAuthUser(row) };
+  }
+  throw new AuthFailure("UNAUTHENTICATED", 401, "Authentication is required");
+}
+
+function mapAuthUser(row: SessionRow): AuthUser {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    status: row.status,
+    forcePasswordChange: row.force_password_change === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
+    version: row.row_version,
+  };
 }
 
 export function getDatabase() {

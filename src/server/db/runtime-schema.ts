@@ -611,12 +611,73 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
   ensureColumn("generated_artifact_versions", "created_by_type", "TEXT NOT NULL DEFAULT 'system'");
   ensureColumn("generated_artifact_versions", "created_by_id", "TEXT");
   ensureColumn("simulation_options", "analysis_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("users", "username", "TEXT");
+  ensureColumn("users", "username_normalized", "TEXT");
+  ensureColumn("users", "password_hash", "TEXT");
+  ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'USER'");
+  ensureColumn("users", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'");
+  ensureColumn("users", "force_password_change", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("users", "password_changed_at", "TEXT");
+  ensureColumn("users", "updated_at", "TEXT");
+  ensureColumn("users", "deleted_at", "TEXT");
+  ensureColumn("users", "row_version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("api_sessions", "csrf_token_hash", "TEXT");
+  ensureColumn("api_sessions", "revoked_at", "TEXT");
+  ensureColumn("api_sessions", "user_agent_hash", "TEXT");
+  ensureColumn("api_sessions", "ip_hash", "TEXT");
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_normalized
+      ON users(username_normalized) WHERE username_normalized IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status);
+    CREATE TABLE IF NOT EXISTS auth_rate_limits (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      subject_hash TEXT NOT NULL,
+      window_started_at TEXT NOT NULL,
+      hit_count INTEGER NOT NULL DEFAULT 1,
+      blocked_until TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(scope, subject_hash, window_started_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_lookup
+      ON auth_rate_limits(scope, subject_hash, window_started_at);
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id TEXT PRIMARY KEY,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT,
+      user_id TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      outcome TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_events_user_created
+      ON audit_events(user_id, created_at DESC);
+  `);
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_client ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL");
 
   const now = new Date().toISOString();
-  const user = db.prepare("SELECT id FROM users WHERE id = ?").get("demo-user") as { id: string } | undefined;
-  if (!user) {
-    db.prepare("INSERT INTO users (id, display_name, created_at) VALUES (?, ?, ?)").run("demo-user", "Demo Investor", now);
+  if (process.env.NODE_ENV === "test") {
+    db.prepare(`INSERT OR IGNORE INTO users
+      (id,username,username_normalized,display_name,role,status,force_password_change,created_at,updated_at,row_version)
+      VALUES ('demo-user','demo_user','demo_user','Test Investor','ADMIN','ACTIVE',0,?,?,1)`).run(now, now);
+    db.prepare(`INSERT OR IGNORE INTO portfolio_snapshots
+      (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at)
+      VALUES ('portfolio-snapshot-demo','demo-user','portfolio-demo','10000','500','complete','[{"source":"TEST_FIXTURE","status":"SUCCEEDED"}]',?,?)`).run(now, now);
+    db.prepare(`INSERT OR IGNORE INTO holding_snapshots
+      (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
+      VALUES ('holding-snapshot-aapl','portfolio-snapshot-demo','AAPL','2','140','150','300','20',6000,?)`).run(now);
+    db.prepare(`INSERT OR IGNORE INTO holding_snapshots
+      (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
+      VALUES ('holding-snapshot-msft','portfolio-snapshot-demo','MSFT','1','190','200','200','10',4000,?)`).run(now);
+    db.prepare(`INSERT OR IGNORE INTO holdings
+      (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at)
+      VALUES ('holding-demo-aapl','demo-user','portfolio-demo','AAPL','2','140','active',1,?,?)`).run(now, now);
+    db.prepare(`INSERT OR IGNORE INTO holdings
+      (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at)
+      VALUES ('holding-demo-msft','demo-user','portfolio-demo','MSFT','1','190','active',1,?,?)`).run(now, now);
   }
   for (const instrument of [
     ["AAPL", "AAPL", "Apple", "NASDAQ", "stock", "Technology", 1],
@@ -624,16 +685,8 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
     ["SPY", "SPY", "SPDR S&P 500 ETF", "NYSE", "fund", "Broad Market", 1],
     ["GLD", "GLD", "SPDR Gold Shares", "NYSE", "fund", "Commodities", 1],
     ["000300.SH", "000300.SH", "沪深300指数", "SH", "index", "Broad Market", 0],
-    ["DEMO300.SH", "DEMO300.SH", "沪深300示例ETF", "SH", "etf", "Broad Market", 1],
-    ["DEMO300.OF", "DEMO300.OF", "沪深300示例指数基金", "CN", "fund", "Broad Market", 1],
+    ["510300.SH", "510300.SH", "沪深300ETF", "SH", "fund", "Broad Market", 1],
   ]) {
     db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, name, market, asset_type, sector, tradable) VALUES (?, ?, ?, ?, ?, ?, ?)").run(...instrument);
-  }
-  db.prepare("INSERT OR IGNORE INTO portfolio_snapshots (id, user_id, portfolio_id, cash_decimal, total_market_value_decimal, data_quality, source_statuses_json, as_of, created_at) VALUES (?, ?, ?, ?, ?, 'fixture', ?, ?, ?)").run("portfolio-snapshot-demo", "demo-user", "portfolio-demo", "10000", "5000", JSON.stringify([{ source: "LOCAL_FIXTURE", status: "SUCCEEDED" }]), now, now);
-  db.prepare("UPDATE portfolio_snapshots SET data_quality='fixture', source_statuses_json=? WHERE id='portfolio-snapshot-demo'").run(JSON.stringify([{ source: "LOCAL_FIXTURE", status: "SUCCEEDED" }]));
-  const holdings = [["holding-aapl", "AAPL", "10", "120", "150", "1500", "300", 3000], ["holding-msft", "MSFT", "5", "200", "220", "1100", "100", 2200], ["holding-spy", "SPY", "5", "250", "280", "1400", "150", 2800]];
-  for (const holding of holdings) {
-    db.prepare("INSERT OR IGNORE INTO holding_snapshots (id, portfolio_snapshot_id, instrument_id, quantity_decimal, cost_decimal, price_decimal, market_value_decimal, unrealized_pnl_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(holding[0], "portfolio-snapshot-demo", ...holding.slice(1), now);
-    db.prepare("INSERT OR IGNORE INTO holdings (id, user_id, portfolio_id, instrument_id, quantity_decimal, cost_decimal, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(`holding-${holding[0]}`, "demo-user", "portfolio-demo", holding[1], holding[2], holding[3], now, now, now);
   }
 }

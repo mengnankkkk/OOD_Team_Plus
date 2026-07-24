@@ -7,7 +7,7 @@ import { POST as executeBranch } from "./[id]/branches/route";
 import { GET as listOptions, POST as generateOptions } from "./[id]/options/route";
 import { POST as undoBranch } from "./[id]/undo/route";
 import { GET, POST } from "./route";
-import { generateCandidates } from "@/server/extensions/simulation/candidate-generator";
+import { generateCandidates, hashPriceManifest, type PriceManifest } from "@/server/extensions/simulation/candidate-generator";
 import { executeSimulation } from "@/server/extensions/simulation/deterministic-engine";
 import { getDatabase } from "@/server/http/context";
 
@@ -116,14 +116,11 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(body.data.items).toHaveLength(3);
   });
 
-  it("candidate generator returns A/B/C", async () => {
+  it("candidate generator returns distinct strategies", async () => {
     const result = await generateCandidates("Reduce concentration", "portfolio-snapshot-demo");
     expect(result.candidates).toHaveLength(3);
-    expect(result.candidates.map((candidate) => candidate.label)).toEqual([
-      "Option A",
-      "Option B",
-      "Option C",
-    ]);
+    expect(new Set(result.candidates.map((candidate) => candidate.label)).size).toBe(3);
+    expect(result.candidates.every((candidate) => candidate.analysis.rationale.length > 0)).toBe(true);
   });
 
   it("simulation engine returns deterministic results", () => {
@@ -138,13 +135,35 @@ describe("/api/v1/simulation-workspaces", () => {
         label: "Option A",
         description: "No trades",
         trades: [],
+        targetAllocations: [],
+        tradeIntent: "hold",
+        analysis: {
+          strategy: "HOLD" as const,
+          riskLevel: "MEDIUM" as const,
+          forecast: {
+            expectedReturn: 0,
+            bullCaseReturn: 0,
+            bearCaseReturn: 0,
+            annualVolatility: 0,
+            maxDrawdown: 0,
+            concentrationHHI: 0,
+          },
+          rationale: [],
+          counterEvidence: [],
+          risks: [],
+          assumptions: [],
+          stressTests: [],
+        },
       },
       priceManifest: {
         prices: { AAPL: "150", MSFT: "200" },
-        sha256: "manifest-1",
+        assets: { AAPL: { assetType: "STOCK", sector: "TECH" }, MSFT: { assetType: "STOCK", sector: "TECH" } },
+        feeRate: "0.001",
+        sha256: "",
         capturedAt: "2026-07-24T00:00:00.000Z",
-      },
+      } as PriceManifest,
     };
+    input.priceManifest.sha256 = hashPriceManifest(input.priceManifest);
 
     const first = executeSimulation(
       input.parentCashDecimal,

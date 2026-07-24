@@ -1,9 +1,14 @@
+import Decimal from "decimal.js";
+
 import { createExtensionError, ExtensionErrorCode, type ExtensionError } from "@/server/extensions/errors/codes";
-import { callPandaData, type PandaDataMethod } from "@/server/extensions/pandadata/adapter";
+import type { PandaDataMethod } from "@/server/extensions/pandadata/adapter";
+import { executePandaSources } from "@/server/extensions/query/panda-query-executor";
+import type { MarketDatasetKey, PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
 
 import { calculatePortfolioScore, type HoldingSnapshot } from "./scoring";
+import { calculatePortfolioMetrics as calculateFinancialPortfolio, calculateTechnicalIndicators, runPortfolioStressTests } from "./financial-engine";
 
 type HoldingRow = Record<string, unknown>;
 
@@ -20,7 +25,7 @@ interface RefreshHolding extends HoldingRow {
 interface PricePoint {
   symbol: string;
   date: string;
-  close: number;
+  close: string;
 }
 
 interface SourceStatus {
@@ -43,40 +48,46 @@ export function getPortfolioHoldings(userId: string, snapshotId?: string) {
   const snapshot = getLatestSnapshot(userId, snapshotId);
   if (!snapshot) return null;
   const db = getDatabase();
-  const rows = db.prepare(`SELECT h.*, i.symbol, i.name, i.asset_type, i.market, i.sector
+  const rawRows = db.prepare(`SELECT h.*, i.symbol, i.name, i.asset_type, i.market, i.sector
     FROM holding_snapshots h LEFT JOIN instruments i ON i.id = h.instrument_id
-    WHERE h.portfolio_snapshot_id = ? ORDER BY CAST(h.market_value_decimal AS REAL) DESC`).all(snapshot.id) as HoldingRow[];
-  const history = db.prepare(`SELECT h.instrument_id,
-      MAX(CAST(h.price_decimal AS REAL)) AS peak_price,
-      MIN(CAST(h.price_decimal AS REAL)) AS low_price,
-      COUNT(*) AS observation_count
+    WHERE h.portfolio_snapshot_id = ?`).all(snapshot.id) as HoldingRow[];
+  const history = db.prepare(`SELECT h.instrument_id,h.price_decimal
     FROM holding_snapshots h JOIN portfolio_snapshots ps ON ps.id=h.portfolio_snapshot_id
     WHERE ps.user_id=? AND ps.portfolio_id=? AND ps.as_of<=?
-    GROUP BY h.instrument_id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
+    ORDER BY ps.as_of,ps.created_at,h.created_at`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
   db.close();
-  const historyByInstrument = new Map(history.map((item) => [String(item.instrument_id), item]));
+  const rows = [...rawRows].sort((left, right) => financialDecimal(right.market_value_decimal).comparedTo(financialDecimal(left.market_value_decimal)));
+  const historyByInstrument = new Map<string, Decimal[]>();
+  for (const item of history) {
+    const key = String(item.instrument_id);
+    historyByInstrument.set(key, [...(historyByInstrument.get(key) ?? []), financialDecimal(item.price_decimal)]);
+  }
+  const financial = calculateFinancialPortfolio(String(snapshot.cash_decimal), rows.map((row) => ({
+    instrumentId: String(row.instrument_id), assetType: String(row.asset_type ?? "stock").toUpperCase(), sector: row.sector == null ? null : String(row.sector),
+    quantity: String(row.quantity_decimal), price: String(row.price_decimal), cost: String(row.cost_decimal),
+  })));
+  const metricsByInstrument = new Map(financial.holdings.map((item) => [item.instrumentId, item]));
   const items = rows.map((row) => {
-    const itemHistory = historyByInstrument.get(String(row.instrument_id));
-    const price = Number(row.price_decimal);
-    const peak = Math.max(Number(itemHistory?.peak_price ?? 0), Number(row.cost_decimal), price);
+    const itemHistory = historyByInstrument.get(String(row.instrument_id)) ?? [];
+    const price = financialDecimal(row.price_decimal);
+    const peak = [...itemHistory, financialDecimal(row.cost_decimal), price].reduce((value, item) => Decimal.max(value, item), price);
+    const calculated = metricsByInstrument.get(String(row.instrument_id))!;
     return {
       holdingId: row.id, instrumentId: row.instrument_id, assetType: String(row.asset_type ?? "stock").toUpperCase(),
       symbol: row.symbol, name: row.name, quantity: row.quantity_decimal, averageCost: row.cost_decimal,
-      marketPrice: row.price_decimal, marketValue: row.market_value_decimal, weight: Number(row.weight_bps ?? 0) / 10_000,
-      unrealizedPnl: row.unrealized_pnl_decimal,
-      unrealizedPnlRate: Number(row.cost_decimal) ? Number(row.unrealized_pnl_decimal) / (Number(row.cost_decimal) * Number(row.quantity_decimal)) : null,
-      drawdown: peak > 0 ? price / peak - 1 : 0,
-      drawdownWindowDays: Number(itemHistory?.observation_count ?? 1), sector: row.sector,
+      marketPrice: calculated.price, marketValue: calculated.marketValue, weight: Number(calculated.weight),
+      unrealizedPnl: calculated.unrealizedPnl,
+      unrealizedPnlRate: calculated.unrealizedPnlRate == null ? null : Number(calculated.unrealizedPnlRate),
+      drawdown: peak.gt(0) ? price.div(peak).minus(1).toNumber() : null,
+      drawdownWindowDays: itemHistory.length, sector: row.sector,
     };
   });
-  const totalValue = items.reduce((sum, item) => sum + Number(item.marketValue), 0);
-  const totalPnl = items.reduce((sum, item) => sum + Number(item.unrealizedPnl), 0);
   return {
     portfolioSnapshotId: snapshot.id,
     asOf: snapshot.as_of,
     dataQuality: String(snapshot.data_quality ?? "complete").toUpperCase(),
     sourceStatuses: parseJson(String(snapshot.source_statuses_json ?? "[]"), []),
-    summary: { totalValue: totalValue.toFixed(2), cashValue: String(snapshot.cash_decimal), unrealizedPnl: totalPnl.toFixed(2) },
+    summary: { totalValue: financial.totalMarketValue, cashValue: financial.cashValue, totalAssets: financial.totalAssets, unrealizedPnl: financial.unrealizedPnl },
     items,
   };
 }
@@ -85,11 +96,11 @@ export function getPortfolioMetrics(userId: string, snapshotId?: string) {
   const snapshot = getLatestSnapshot(userId, snapshotId);
   if (!snapshot) return null;
   const view = getPortfolioHoldings(userId, String(snapshot.id));
-  const holdings: HoldingSnapshot[] = (view?.items ?? []).map((item) => ({ instrumentId: String(item.instrumentId), quantity: String(item.quantity), price: String(item.marketPrice), marketValue: String(item.marketValue), weightBps: Math.round(item.weight * 10_000) }));
+  const holdings: HoldingSnapshot[] = (view?.items ?? []).map((item) => ({ instrumentId: String(item.instrumentId), quantity: String(item.quantity), price: String(item.marketPrice), marketValue: String(item.marketValue), weightBps: new Decimal(item.weight).mul(10_000).toDecimalPlaces(0).toNumber() }));
   const analytics = derivePortfolioAnalytics(userId, snapshot, view);
   const score = calculatePortfolioScore(
     Number(view?.summary.totalValue ?? 0), holdings, analytics.totalReturnPct,
-    analytics.maxDrawdownPct, analytics.annualVolatilityPct, analytics.liquidityScore,
+    analytics.maxDrawdownPct, analytics.annualVolatilityPct ?? undefined, analytics.liquidityScore,
   );
   const db = getDatabase();
   persistScore(db, String(snapshot.id), score);
@@ -98,15 +109,16 @@ export function getPortfolioMetrics(userId: string, snapshotId?: string) {
     portfolioSnapshotId: snapshot.id, portfolioId: snapshot.portfolio_id, scoreVersion: score.scoreVersion,
     healthScore: score.healthScore, riskScore: score.riskScore,
     metrics: {
-      totalValue: analytics.totalAssets, marketValue: Number(view?.summary.totalValue ?? 0), cashValue: Number(view?.summary.cashValue ?? 0),
+      totalValue: Number(analytics.totalAssets), marketValue: Number(view?.summary.totalValue ?? 0), cashValue: Number(view?.summary.cashValue ?? 0),
       unrealizedPnl: Number(view?.summary.unrealizedPnl ?? 0), totalReturn: analytics.totalReturnPct / 100,
-      maxDrawdown: analytics.maxDrawdownPct / 100, annualVolatility: analytics.annualVolatilityPct / 100,
+      maxDrawdown: analytics.maxDrawdownPct / 100, annualVolatility: analytics.annualVolatilityPct == null ? null : analytics.annualVolatilityPct / 100,
       concentrationHhi: analytics.concentrationHhi, topHoldingWeight: analytics.topHoldingWeight,
       cashAllocation: analytics.cashAllocation, liquidityScore: analytics.liquidityScore,
     },
     allocation: { bySector: analytics.bySector, byAssetType: analytics.byAssetType },
     components: Object.entries(score.components).map(([code, value]) => ({ code: code.toUpperCase(), score: value, quality: "VALID" })),
-    missingMetrics: score.missingMetrics, observationCount: analytics.observationCount,
+    stressTests: analytics.stressTests,
+    missingMetrics: [...new Set([...score.missingMetrics, ...analytics.missingMetrics])], observationCount: analytics.observationCount,
     dataQuality: view?.dataQuality, sourceStatuses: view?.sourceStatuses, asOf: snapshot.as_of,
   };
 }
@@ -118,30 +130,50 @@ export function getPortfolioTrends(userId: string, snapshotId?: string) {
   const snapshots = db.prepare(`SELECT id,as_of,cash_decimal,total_market_value_decimal
     FROM portfolio_snapshots WHERE user_id=? AND portfolio_id=? AND as_of<=?
     ORDER BY as_of,created_at,id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
-  const concentrationRows = db.prepare(`SELECT ps.id,
-      SUM((h.weight_bps / 10000.0) * (h.weight_bps / 10000.0)) AS hhi
+  const concentrationRows = db.prepare(`SELECT ps.id,h.weight_bps
     FROM portfolio_snapshots ps LEFT JOIN holding_snapshots h ON h.portfolio_snapshot_id=ps.id
-    WHERE ps.user_id=? AND ps.portfolio_id=? AND ps.as_of<=? GROUP BY ps.id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
+    WHERE ps.user_id=? AND ps.portfolio_id=? AND ps.as_of<=?`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
   db.close();
-  const hhiBySnapshot = new Map(concentrationRows.map((row) => [String(row.id), Number(row.hhi ?? 0)]));
-  const values = snapshots.map((row) => ({ id: String(row.id), date: String(row.as_of).slice(0, 10), value: Number(row.cash_decimal) + Number(row.total_market_value_decimal) }));
+  const hhiBySnapshot = new Map<string, Decimal>();
+  for (const row of concentrationRows) {
+    const id = String(row.id);
+    const weight = financialDecimal(row.weight_bps ?? 0).div(10_000);
+    hhiBySnapshot.set(id, (hhiBySnapshot.get(id) ?? new Decimal(0)).plus(weight.pow(2)));
+  }
+  const values = snapshots.map((row) => ({
+    id: String(row.id),
+    date: String(row.as_of).slice(0, 10),
+    value: financialDecimal(row.cash_decimal).plus(financialDecimal(row.total_market_value_decimal)),
+  }));
   const currentView = getPortfolioHoldings(userId, String(snapshot.id));
-  const costBasis = Number(currentView?.summary.cashValue ?? 0) + (currentView?.items ?? []).reduce((sum, item) => sum + Number(item.averageCost) * Number(item.quantity), 0);
-  if (values.length === 1 && costBasis > 0) {
+  const costBasis = financialDecimal(currentView?.summary.cashValue ?? 0).plus((currentView?.items ?? []).reduce(
+    (sum, item) => sum.plus(financialDecimal(item.averageCost).mul(financialDecimal(item.quantity))),
+    new Decimal(0),
+  ));
+  if (values.length === 1 && costBasis.gt(0)) {
     const baseline = new Date(String(snapshot.as_of));
     baseline.setUTCDate(baseline.getUTCDate() - 30);
     values.unshift({ id: "cost-basis", date: baseline.toISOString().slice(0, 10), value: costBasis });
   }
-  const base = values[0]?.value || 1;
+  const base = values[0]?.value.gt(0) ? values[0].value : new Decimal(1);
   let peak = base;
-  const returns: number[] = [];
+  const observedValues: string[] = [];
   const totalReturn = values.map((point, index) => {
-    if (index > 0 && values[index - 1].value > 0) returns.push(point.value / values[index - 1].value - 1);
-    return { date: point.date, value: round4(point.value / base - 1) };
+    observedValues.push(point.value.toString());
+    return { date: point.date, value: decimalDisplay(point.value.div(base).minus(1)) };
   });
-  const drawdown = values.map((point) => { peak = Math.max(peak, point.value); return { date: point.date, value: round4(peak ? point.value / peak - 1 : 0) }; });
-  const volatility = values.map((point, index) => ({ date: point.date, value: round4(annualizedVolatility(returns.slice(0, Math.max(0, index)))) }));
-  const concentration = values.map((point) => ({ date: point.date, value: round4(hhiBySnapshot.get(point.id) ?? (point.id === "cost-basis" ? 0 : 0)) }));
+  const drawdown = values.map((point) => {
+    peak = Decimal.max(peak, point.value);
+    return { date: point.date, value: decimalDisplay(peak.gt(0) ? point.value.div(peak).minus(1) : new Decimal(0)) };
+  });
+  const volatility = values.map((point, index) => {
+    const indicator = calculateTechnicalIndicators(observedValues.slice(0, index + 1));
+    return { date: point.date, value: indicator.annualVolatility == null ? null : decimalDisplay(financialDecimal(indicator.annualVolatility)) };
+  });
+  const concentration = values.map((point) => ({
+    date: point.date,
+    value: decimalDisplay(hhiBySnapshot.get(point.id) ?? new Decimal(0)),
+  }));
   return {
     portfolioSnapshotId: snapshot.id,
     trends: [
@@ -155,56 +187,53 @@ export function getPortfolioTrends(userId: string, snapshotId?: string) {
 
 function derivePortfolioAnalytics(userId: string, snapshot: Record<string, unknown>, view: ReturnType<typeof getPortfolioHoldings>) {
   const items = view?.items ?? [];
-  const marketValue = Number(view?.summary.totalValue ?? 0);
-  const cashValue = Number(view?.summary.cashValue ?? 0);
-  const totalAssets = marketValue + cashValue;
-  const costBasis = cashValue + items.reduce((sum, item) => sum + Number(item.averageCost) * Number(item.quantity), 0);
-  const totalReturnPct = costBasis > 0 ? (totalAssets / costBasis - 1) * 100 : 0;
-  const concentrationHhi = items.reduce((sum, item) => sum + item.weight * item.weight, 0);
-  const topHoldingWeight = items.reduce((max, item) => Math.max(max, item.weight), 0);
+  const financialHoldings = items.map((item) => ({ instrumentId: String(item.instrumentId), assetType: item.assetType, sector: item.sector == null ? null : String(item.sector), quantity: String(item.quantity), price: String(item.marketPrice), cost: String(item.averageCost) }));
+  const financial = calculateFinancialPortfolio(String(view?.summary.cashValue ?? "0"), financialHoldings);
+  const totalAssets = financialDecimal(financial.totalAssets);
+  const cashValue = financialDecimal(financial.cashValue);
+  const costBasis = cashValue.plus(items.reduce((sum, item) => sum.plus(financialDecimal(item.averageCost).mul(financialDecimal(item.quantity))), new Decimal(0)));
+  const totalReturnPct = costBasis.gt(0) ? totalAssets.div(costBasis).minus(1).mul(100).toNumber() : 0;
+  const concentrationHhi = Number(financial.concentrationHhi);
+  const topHoldingWeight = Number(financial.largestPositionWeight);
   const bySector = allocation(items, (item) => String(item.sector ?? "未分类"));
   const byAssetType = allocation(items, (item) => String(item.assetType));
-  const liquidityByType: Record<string, number> = { STOCK: 92, ETF: 95, INDEX: 90, FUND: 75 };
-  const investedLiquidity = items.reduce((sum, item) => sum + item.weight * (liquidityByType[item.assetType] ?? 55), 0);
-  const cashAllocation = totalAssets > 0 ? cashValue / totalAssets : 0;
-  const liquidityScore = investedLiquidity * (1 - cashAllocation) + 100 * cashAllocation;
+  const liquidityByType: Record<string, string> = { STOCK: "0.92", ETF: "0.95", INDEX: "0.90", FUND: "0.75" };
+  const investedLiquidity = financial.holdings.reduce((sum, item) => sum.plus(financialDecimal(item.weight).mul(liquidityByType[item.assetType] ?? "0.55")), new Decimal(0));
+  const cashAllocationValue = totalAssets.gt(0) ? cashValue.div(totalAssets) : new Decimal(0);
+  const liquidityScore = investedLiquidity.mul(new Decimal(1).minus(cashAllocationValue)).plus(cashAllocationValue).mul(100).toNumber();
   const db = getDatabase();
   const history = db.prepare(`SELECT cash_decimal,total_market_value_decimal FROM portfolio_snapshots
     WHERE user_id=? AND portfolio_id=? AND as_of<=? ORDER BY as_of,created_at,id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
   db.close();
-  const values = history.map((row) => Number(row.cash_decimal) + Number(row.total_market_value_decimal));
-  const periodReturns = values.slice(1).map((value, index) => values[index] > 0 ? value / values[index] - 1 : 0);
-  const annualVolatilityPct = periodReturns.length > 1
-    ? annualizedVolatility(periodReturns) * 100
-    : Math.min(100, weightedReturnDispersion(items) * Math.sqrt(12) * 100);
-  let peak = values[0] ?? totalAssets;
-  let maxDrawdown = 0;
-  for (const value of values) { peak = Math.max(peak, value); if (peak > 0) maxDrawdown = Math.min(maxDrawdown, value / peak - 1); }
-  if (values.length < 2) maxDrawdown = Math.min(0, ...items.map((item) => Number(item.drawdown ?? 0)));
-  return { totalAssets, totalReturnPct, maxDrawdownPct: maxDrawdown * 100, annualVolatilityPct, concentrationHhi, topHoldingWeight, cashAllocation, liquidityScore, bySector, byAssetType, observationCount: history.length };
+  const values = history.map((row) => financialDecimal(row.cash_decimal).plus(financialDecimal(row.total_market_value_decimal)).toString());
+  const indicators = values.length ? calculateTechnicalIndicators(values) : null;
+  const holdingDrawdown = items.reduce((value, item) => item.drawdown == null ? value : Decimal.min(value, item.drawdown), new Decimal(0));
+  const maxDrawdown = indicators?.maxDrawdown == null ? holdingDrawdown : financialDecimal(indicators.maxDrawdown);
+  const annualVolatilityPct = indicators?.annualVolatility == null ? null : financialDecimal(indicators.annualVolatility).mul(100).toNumber();
+  const stressTests = runPortfolioStressTests(financial.cashValue, financialHoldings);
+  return {
+    totalAssets: financial.totalAssets,
+    totalReturnPct,
+    maxDrawdownPct: maxDrawdown.mul(100).toNumber(),
+    annualVolatilityPct,
+    concentrationHhi,
+    topHoldingWeight,
+    cashAllocation: Number(financial.cashAllocation),
+    liquidityScore,
+    bySector,
+    byAssetType,
+    observationCount: history.length,
+    stressTests,
+    missingMetrics: indicators?.annualVolatility == null ? ["ANNUAL_VOLATILITY_REQUIRES_AT_LEAST_3_PORTFOLIO_SNAPSHOTS"] : [],
+  };
 }
 
 function allocation(items: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"], key: (item: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"][number]) => string) {
-  const totals = new Map<string, number>();
-  for (const item of items) totals.set(key(item), (totals.get(key(item)) ?? 0) + Number(item.marketValue));
-  const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
-  return [...totals.entries()].map(([name, value]) => ({ name, value, weight: total > 0 ? value / total : 0 })).sort((a, b) => b.value - a.value);
+  const totals = new Map<string, Decimal>();
+  for (const item of items) totals.set(key(item), (totals.get(key(item)) ?? new Decimal(0)).plus(financialDecimal(item.marketValue)));
+  const total = [...totals.values()].reduce((sum, value) => sum.plus(value), new Decimal(0));
+  return [...totals.entries()].map(([name, value]) => ({ name, value: value.toNumber(), weight: total.gt(0) ? value.div(total).toNumber() : 0 })).sort((a, b) => b.value - a.value);
 }
-
-function weightedReturnDispersion(items: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"]): number {
-  if (items.length < 2) return Math.abs(Number(items[0]?.unrealizedPnlRate ?? 0)) * 0.35;
-  const mean = items.reduce((sum, item) => sum + Number(item.unrealizedPnlRate ?? 0) * item.weight, 0);
-  return Math.sqrt(items.reduce((sum, item) => sum + item.weight * (Number(item.unrealizedPnlRate ?? 0) - mean) ** 2, 0));
-}
-
-function annualizedVolatility(returns: number[]): number {
-  if (returns.length < 2) return 0;
-  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
-  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
-  return Math.sqrt(Math.max(0, variance)) * Math.sqrt(252);
-}
-
-function round4(value: number): number { return Math.round(value * 10_000) / 10_000; }
 
 export async function refreshPortfolio(userId: string, portfolioId: string) {
   const db = getDatabase();
@@ -234,36 +263,45 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
   persistSseEvent({ analysisId, type: "agent.started", payload: { type: "PORTFOLIO_REFRESH", portfolioId } });
 
   try {
-    const marketData = await fetchLatestPrices(holdings);
+    const marketData = await fetchLatestPrices(holdings, analysisId);
     if (marketData.successfulSources === 0) {
       throw marketData.firstError ?? createExtensionError(ExtensionErrorCode.PANDA_DATA_UNAVAILABLE, "No market data source returned successfully", undefined, true);
     }
 
     const values = holdings.map((holding) => {
       const quote = marketData.prices.get(holding.symbol);
-      const fallbackPrice = Number(holding.previous_price ?? holding.cost_decimal);
-      const price = quote?.close ?? fallbackPrice;
-      const quantity = Number(holding.quantity_decimal);
-      const cost = Number(holding.cost_decimal);
-      const marketValue = quantity * price;
-      return { instrumentId: holding.instrument_id, symbol: holding.symbol, quantity: holding.quantity_decimal, cost: holding.cost_decimal, price, marketValue, pnl: (price - cost) * quantity, usedFallback: !quote };
+      const fallbackPrice = financialDecimal(holding.previous_price ?? holding.cost_decimal);
+      const price = quote ? financialDecimal(quote.close) : fallbackPrice;
+      const quantity = financialDecimal(holding.quantity_decimal);
+      const cost = financialDecimal(holding.cost_decimal);
+      const marketValue = quantity.mul(price);
+      return {
+        instrumentId: holding.instrument_id,
+        symbol: holding.symbol,
+        quantity: holding.quantity_decimal,
+        cost: holding.cost_decimal,
+        price: financialString(price),
+        marketValue: financialString(marketValue),
+        pnl: financialString(price.minus(cost).mul(quantity)),
+        usedFallback: !quote,
+      };
     });
     const missingSymbols = values.filter((value) => value.usedFallback).map((value) => value.symbol);
     const sourceStatuses = [...marketData.statuses];
     if (missingSymbols.length) sourceStatuses.push({ source: "PREVIOUS_SNAPSHOT", status: "FALLBACK", resultCount: missingSymbols.length });
     const dataQuality = missingSymbols.length || sourceStatuses.some((source) => source.status === "FAILED") ? "partial" : "complete";
-    const totalMarketValue = values.reduce((sum, value) => sum + value.marketValue, 0);
+    const totalMarketValue = values.reduce((sum, value) => sum.plus(value.marketValue), new Decimal(0));
     const snapshotId = createId("portfolio_snapshot");
     const publishedAt = isoNow();
     const publishDb = getDatabase();
-    const scoreInputs = values.map((value) => ({ instrumentId: value.instrumentId, quantity: String(value.quantity), price: String(value.price), marketValue: String(value.marketValue), weightBps: totalMarketValue ? Math.round(value.marketValue / totalMarketValue * 10_000) : 0 }));
-    const score = calculatePortfolioScore(totalMarketValue, scoreInputs);
+    const scoreInputs = values.map((value) => ({ instrumentId: value.instrumentId, quantity: value.quantity, price: value.price, marketValue: value.marketValue, weightBps: weightBps(value.marketValue, totalMarketValue) }));
+    const score = calculatePortfolioScore(financialString(totalMarketValue), scoreInputs);
     const publish = publishDb.transaction(() => {
-      publishDb.prepare("INSERT INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(snapshotId, userId, portfolioId, previous.cash_decimal, String(totalMarketValue), dataQuality, json(sourceStatuses), publishedAt, publishedAt);
+      publishDb.prepare("INSERT INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(snapshotId, userId, portfolioId, previous.cash_decimal, financialString(totalMarketValue), dataQuality, json(sourceStatuses), publishedAt, publishedAt);
       for (const value of values) {
         publishDb.prepare(`INSERT INTO holding_snapshots
           (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(createId("holding_snapshot"), snapshotId, value.instrumentId, value.quantity, value.cost, String(value.price), String(value.marketValue), String(value.pnl), totalMarketValue ? Math.round(value.marketValue / totalMarketValue * 10_000) : 0, publishedAt);
+          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(createId("holding_snapshot"), snapshotId, value.instrumentId, value.quantity, value.cost, value.price, value.marketValue, value.pnl, weightBps(value.marketValue, totalMarketValue), publishedAt);
       }
       persistScore(publishDb, snapshotId, score);
       publishDb.prepare("UPDATE agent_runs SET status='completed', completed_at=? WHERE id=? AND user_id=?").run(publishedAt, analysisId, userId);
@@ -295,21 +333,28 @@ export function syncPortfolioFromHoldings(userId: string, portfolioId: string) {
     WHERE h.user_id = ? AND h.portfolio_id = ? AND h.status = 'active'`).all(userId, portfolioId) as HoldingRow[];
   const now = isoNow();
   const values = holdings.map((holding) => {
-    const quantity = Number(holding.quantity_decimal);
-    const cost = Number(holding.cost_decimal);
-    const price = Number(holding.market_price ?? cost);
-    const marketValue = quantity * price;
-    return { instrumentId: String(holding.instrument_id), quantity: String(holding.quantity_decimal), cost: String(holding.cost_decimal), price, marketValue, pnl: (price - cost) * quantity };
+    const quantity = financialDecimal(holding.quantity_decimal);
+    const cost = financialDecimal(holding.cost_decimal);
+    const price = financialDecimal(holding.market_price ?? cost);
+    const marketValue = quantity.mul(price);
+    return {
+      instrumentId: String(holding.instrument_id),
+      quantity: financialString(quantity),
+      cost: financialString(cost),
+      price: financialString(price),
+      marketValue: financialString(marketValue),
+      pnl: financialString(price.minus(cost).mul(quantity)),
+    };
   });
-  const totalMarketValue = values.reduce((sum, value) => sum + value.marketValue, 0);
+  const totalMarketValue = values.reduce((sum, value) => sum.plus(value.marketValue), new Decimal(0));
   const snapshotId = createId("portfolio_snapshot");
-  const scoreInputs = values.map((value) => ({ instrumentId: value.instrumentId, quantity: value.quantity, price: String(value.price), marketValue: String(value.marketValue), weightBps: totalMarketValue ? Math.round(value.marketValue / totalMarketValue * 10_000) : 0 }));
-  const score = calculatePortfolioScore(totalMarketValue, scoreInputs);
+  const scoreInputs = values.map((value) => ({ instrumentId: value.instrumentId, quantity: value.quantity, price: value.price, marketValue: value.marketValue, weightBps: weightBps(value.marketValue, totalMarketValue) }));
+  const score = calculatePortfolioScore(financialString(totalMarketValue), scoreInputs);
   const publish = db.transaction(() => {
-    db.prepare("INSERT INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,'partial',?,?,?)").run(snapshotId, userId, portfolioId, previous?.cash_decimal ?? "0", String(totalMarketValue), json([{ source: "USER_HOLDINGS", status: "SUCCEEDED" }, { source: "PREVIOUS_SNAPSHOT", status: "FALLBACK" }]), now, now);
+    db.prepare("INSERT INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,'partial',?,?,?)").run(snapshotId, userId, portfolioId, previous?.cash_decimal ?? "0", financialString(totalMarketValue), json([{ source: "USER_HOLDINGS", status: "SUCCEEDED" }, { source: "PREVIOUS_SNAPSHOT", status: "FALLBACK" }]), now, now);
     for (const value of values) db.prepare(`INSERT INTO holding_snapshots
       (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(createId("holding_snapshot"), snapshotId, value.instrumentId, value.quantity, value.cost, String(value.price), String(value.marketValue), String(value.pnl), totalMarketValue ? Math.round(value.marketValue / totalMarketValue * 10_000) : 0, now);
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(createId("holding_snapshot"), snapshotId, value.instrumentId, value.quantity, value.cost, value.price, value.marketValue, value.pnl, weightBps(value.marketValue, totalMarketValue), now);
     persistScore(db, snapshotId, score);
   });
   publish();
@@ -317,7 +362,7 @@ export function syncPortfolioFromHoldings(userId: string, portfolioId: string) {
   return { snapshotId, asOf: now };
 }
 
-async function fetchLatestPrices(holdings: RefreshHolding[]) {
+async function fetchLatestPrices(holdings: RefreshHolding[], analysisId: string) {
   const grouped = new Map<PandaDataMethod, Set<string>>();
   for (const holding of holdings) {
     const method = marketMethod(holding);
@@ -334,9 +379,19 @@ async function fetchLatestPrices(holdings: RefreshHolding[]) {
   let successfulSources = 0;
   let firstError: ExtensionError | null = null;
 
-  await Promise.all(Array.from(grouped.entries()).map(async ([method, symbols]) => {
+  const db = getDatabase();
+  for (const [method, symbols] of grouped.entries()) {
     try {
-      const result = await callPandaData(method, { symbol: Array.from(symbols), start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] });
+      const source: PandaQuerySource = {
+        dataset: datasetForMethod(method),
+        method,
+        parameters: { symbol: Array.from(symbols), start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] },
+        columns: ["symbol", "date", "close"],
+        joinKeys: ["symbol", "date"],
+        assetType: assetTypeForMethod(method),
+      };
+      const [execution] = await executePandaSources({ sources: [source], agentRunId: analysisId, localRows: [], db });
+      const result = execution.result;
       const rows = normalizePriceRows(result.data);
       for (const row of rows) {
         const current = prices.get(row.symbol);
@@ -349,8 +404,23 @@ async function fetchLatestPrices(holdings: RefreshHolding[]) {
       firstError ??= normalized;
       statuses.push({ source: `PANDADATA:${method}`, status: "FAILED", error: { code: normalized.code, message: normalized.message, retryable: normalized.retryable } });
     }
-  }));
+  }
+  db.close();
   return { prices, statuses, successfulSources, firstError };
+}
+
+function datasetForMethod(method: PandaDataMethod): MarketDatasetKey {
+  if (method === "get_fund_daily") return "MARKET_FUND_DAILY";
+  if (method === "get_index_daily") return "MARKET_INDEX_DAILY";
+  if (method === "get_hk_daily") return "MARKET_HK_DAILY";
+  if (method === "get_us_daily") return "MARKET_US_DAILY";
+  return "MARKET_STOCK_DAILY";
+}
+
+function assetTypeForMethod(method: PandaDataMethod): string {
+  if (method === "get_fund_daily") return "FUND";
+  if (method === "get_index_daily") return "INDEX";
+  return "STOCK";
 }
 
 function marketMethod(holding: RefreshHolding): PandaDataMethod {
@@ -372,8 +442,8 @@ function normalizePriceRows(data: unknown): PricePoint[] {
     const value = row as Record<string, unknown>;
     const symbol = String(value.symbol ?? "").trim();
     const date = String(value.date ?? "").trim();
-    const close = Number(value.close);
-    return symbol && date && Number.isFinite(close) && close > 0 ? [{ symbol, date, close }] : [];
+    const close = safeFinancialDecimal(value.close);
+    return symbol && date && close?.gt(0) ? [{ symbol, date, close: financialString(close) }] : [];
   });
 }
 
@@ -392,4 +462,33 @@ function compactDate(value: Date): string {
 function normalizeExtensionError(error: unknown): ExtensionError {
   if (error && typeof error === "object" && "code" in error && "message" in error && "retryable" in error) return error as ExtensionError;
   return createExtensionError(ExtensionErrorCode.PANDA_DATA_UNAVAILABLE, error instanceof Error ? error.message : "Portfolio refresh failed", undefined, true);
+}
+
+function safeFinancialDecimal(value: unknown): Decimal | null {
+  try {
+    return financialDecimal(value);
+  } catch {
+    return null;
+  }
+}
+
+function financialDecimal(value: unknown): Decimal {
+  if (value === null || value === undefined || value === "") throw new Error("INVALID_FINANCIAL_DECIMAL");
+  const result = new Decimal(String(value));
+  if (!result.isFinite()) throw new Error("INVALID_FINANCIAL_DECIMAL");
+  return result;
+}
+
+function financialString(value: Decimal): string {
+  return value.toDecimalPlaces(12).toFixed().replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1");
+}
+
+function decimalDisplay(value: Decimal): number {
+  return value.toDecimalPlaces(8).toNumber();
+}
+
+function weightBps(marketValue: string, totalMarketValue: Decimal): number {
+  return totalMarketValue.gt(0)
+    ? financialDecimal(marketValue).div(totalMarketValue).mul(10_000).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber()
+    : 0;
 }

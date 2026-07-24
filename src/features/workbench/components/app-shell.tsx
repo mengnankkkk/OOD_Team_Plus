@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, Bell, Blocks, BookOpenText, Boxes, ChartNoAxesCombined, DatabaseZap, FileChartColumn, FlaskConical, Menu, MessageSquareText, Search, X } from "lucide-react";
 import { useState } from "react";
+import { useFrontendAuth } from "@/features/frontend-migration/auth";
 
 const NAV = [
   { href: "/", label: "投资总览", detail: "Portfolio desk", icon: Blocks },
@@ -16,8 +17,11 @@ const NAV = [
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "/";
   const [open, setOpen] = useState(false);
+  const auth = useFrontendAuth();
+  if (auth.loading) return <div className="boot-screen">正在准备投资工作台...</div>;
+  if (!auth.user) return <div className="login-shell"><a href="/login" className="button primary">登录 Money Whisperer</a></div>;
   return (
     <div className="desk-shell">
       <aside className={`desk-rail ${open ? "is-open" : ""}`}>
@@ -36,7 +40,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="rail-footer">
           <div className="rail-pulse"><Activity size={14} /><span>LOCAL ENGINE</span><b>在线</b></div>
-          <Link href="/chat" className="rail-lab"><MessageSquareText size={15} /> Supervisor Lab <span>稍后</span></Link>
+          <Link href="/advisor" className="rail-lab"><MessageSquareText size={15} /> 专业 Advisor Chat <span>辩论</span></Link>
           <div className="rail-disclaimer">本工具用于研究与情景分析<br />不构成投资建议</div>
         </div>
       </aside>
@@ -44,7 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <header className="desk-topbar">
           <button className="mobile-menu" onClick={() => setOpen(true)} aria-label="打开导航"><Menu size={20} /></button>
           <div className="market-note"><span className="live-dot" /> 本地投资工作台 <i>数据质量会在每个模块内标注</i></div>
-          <div className="top-actions"><BookOpenText size={16} /><span>研究模式</span><div className="avatar">DI</div></div>
+          <div className="top-actions"><BookOpenText size={16} /><span>研究模式</span><div className="avatar">{auth.user.displayName.slice(0, 2).toUpperCase()}</div><button className="button ghost" onClick={() => void auth.signOut()}>退出</button></div>
         </header>
         <main className="desk-content">{children}</main>
       </div>

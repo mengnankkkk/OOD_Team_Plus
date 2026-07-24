@@ -3,14 +3,16 @@ import { z } from "zod";
 
 import { syncRssFeed } from "@/server/extensions/rss/service";
 import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
-import { DEMO_USER_ID, getRequestContext, idempotencyKey, meta } from "@/server/http/context";
+import { authError, requireAdmin } from "@/server/auth/http";
+import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
 const Schema = z.object({ force: z.boolean().default(false) });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { userId } = getRequestContext(req);
-  if (userId !== DEMO_USER_ID) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Resource not found" } }, { status: 404 });
+  let context: ReturnType<typeof getRequestContext>;
+  try { context = getRequestContext(req); requireAdmin(context.user); } catch (error) { return authError(error); }
+  const { userId } = context;
   if (!idempotencyKey(req)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
   const parsed = Schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Invalid sync request", details: parsed.error.format() } }, { status: 422 });

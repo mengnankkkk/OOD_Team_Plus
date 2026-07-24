@@ -1,0 +1,42 @@
+services:
+  money-whisperer:
+    image: money-whisperer:${GIT_SHA:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL}
+      DEEPSEEK_API_URL: ${DEEPSEEK_API_URL}
+      DEFAULT_USERNAME: ${DEFAULT_USERNAME}
+      DEFAULT_PASSWORD: ${DEFAULT_PASSWORD}
+      JAVA_SERVICE_BASE_URL: ${JAVA_SERVICE_BASE_URL}
+      MCP_SEARCH_URL: ${MCP_SEARCH_URL}
+      APP_ORIGIN: ${APP_ORIGIN}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      DB_PATH: /app/data/money-whisperer.db
+      PANDADATA_PYTHON: /opt/pandadata-venv/bin/python
+    volumes:
+      - money-whisperer-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  money-whisperer-data:

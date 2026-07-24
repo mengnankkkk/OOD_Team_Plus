@@ -4,6 +4,7 @@ import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/co
 
 import { executeQuery } from "./executor";
 import { generateQueryPlan } from "./plan-generator";
+import { combineQueryResults, executePandaSources } from "./panda-query-executor";
 import { persistQueryResult } from "./result-persister";
 import type { QueryPlan } from "./types";
 import { persistSseEvent } from "../sse/event-persister";
@@ -25,6 +26,11 @@ const DATASET_TABLES: Record<string, string> = {
   PORTFOLIO_METRICS: "portfolio_score_snapshots",
   HOLDING_SNAPSHOTS: "holding_snapshots",
   INSTRUMENTS: "instruments",
+  MARKET_STOCK_DAILY: "pandadata:get_stock_daily",
+  MARKET_FUND_DAILY: "pandadata:get_fund_daily",
+  MARKET_INDEX_DAILY: "pandadata:get_index_daily",
+  MARKET_US_DAILY: "pandadata:get_us_daily",
+  MARKET_HK_DAILY: "pandadata:get_hk_daily",
 };
 const ALLOWED_DATASETS = new Set(Object.keys(DATASET_TABLES));
 
@@ -48,12 +54,13 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
   const queryId = createId("query");
   const analysisId = createId("analysis");
   const now = isoNow();
-  const { plan, sql, parameters, planner } = await generateQueryPlan(
+  const { plan, sql, parameters, planner, pandaSources } = await generateQueryPlan(
     input.questionText,
     input.requestedDatasets,
     input.accountScope ?? null,
     input.userId,
     input.requestedLimit,
+    db,
   );
 
   db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at) VALUES (?, ?, ?, ?, ?)").run(analysisId, input.userId, "data_query", "running", now);
@@ -64,14 +71,24 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`)
     .run(queryId, input.userId, input.sessionId ?? null, input.sourceMessageId ?? null, analysisId,
       input.questionText, json(input.accountScope ?? []), json(input.requestedDatasets), input.outputMode,
-      input.requestedLimit, json(plan), sql, json(["TEXT", "INTEGER"]),
-      json(["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"]), now, now, now);
+      input.requestedLimit, json(plan), sql ?? pandaSources.map((source) => `PANDADATA:${source.method}`).join(","), json([...parameters.map((value) => typeof value), ...(pandaSources.length ? ["PANDADATA_CONTRACT"] : [])]),
+      json(["SEMANTIC_QUERY_PLAN", ...(sql ? ["PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] : []), ...(pandaSources.length ? ["PANDADATA_CONTRACT", "PANDADATA_DRY_RUN", "EXPLICIT_SOURCE"] : [])]), now, now, now);
 
   try {
-    const result = await executeQuery(sql, input.requestedLimit, () => db, parameters);
+    const localResult = sql ? await executeQuery(sql, input.requestedLimit, () => db, parameters) : null;
+    const pandaExecutions = await executePandaSources({ sources: pandaSources, agentRunId: analysisId, localRows: localResult?.rows ?? [], db });
+    const result = combineQueryResults(localResult, pandaExecutions, input.requestedLimit);
+    const sourceSummary = [
+      ...(sql ? [{ type: "LOCAL_DATABASE", label: "Portfolio database", planner }] : []),
+      ...pandaExecutions.map(({ source, result: pandaResult, toolCallId, skillRunId }) => ({
+        type: "PANDADATA", label: source.dataset, method: source.method, asOfDate: pandaResult.asOfDate,
+        fresh: pandaResult.fresh, errorCategory: pandaResult.errorCategory, toolCallId, skillRunId,
+      })),
+    ];
+    const dataAsOf = pandaExecutions.map((item) => item.result.asOfDate).filter((value): value is string => Boolean(value)).sort().at(-1) ?? now;
     persistQueryResult({ queryId, result, getDb: () => db });
     db.prepare("UPDATE data_queries SET column_metadata_json = ?, data_as_of = ?, source_summary_json = ?, updated_at = ? WHERE id = ?")
-      .run(json(result.columns), now, json([{ type: "LOCAL_DATABASE", label: "Portfolio database", planner }]), isoNow(), queryId);
+      .run(json(result.columns), dataAsOf, json(sourceSummary), isoNow(), queryId);
     db.prepare("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?").run(isoNow(), analysisId);
     await persistSseEvent({ analysisId, type: "query.planned", payload: { queryId, datasets: plan.datasets, columns: result.columns, planner } });
     await persistSseEvent({ analysisId, type: "query.validated", payload: { queryId, safetyChecks: ["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] } });

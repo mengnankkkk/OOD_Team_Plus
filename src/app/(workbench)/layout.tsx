@@ -1,3 +1,7 @@
-import { AppShell } from "@/features/workbench/components/app-shell";
+import { Suspense } from "react";
 
-export default function WorkbenchLayout({ children }: { children: React.ReactNode }) { return <AppShell>{children}</AppShell>; }
+import MainLayout from "@/layouts/desktop/MainLayout";
+
+export default function WorkbenchLayout({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<div className="grid min-h-screen place-items-center text-muted-foreground">正在唤醒工作台…</div>}><MainLayout>{children}</MainLayout></Suspense>;
+}

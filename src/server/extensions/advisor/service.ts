@@ -1,21 +1,9 @@
-import { RequestContext } from "@mastra/core/request-context";
-
-import { supervisorAgent } from "@/mastra";
 import { createArtifact } from "@/server/extensions/artifacts/service";
-import { createAndRunDataQuery } from "@/server/extensions/query/service";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
 import { createClarification } from "./clarification-service";
+import { runProfessionalAdvisor } from "./professional";
 
-import {
-  buildDeterministicAnswer,
-  buildRecommendation,
-  classifyIntent,
-  defaultDisclaimer,
-  missingProfileQuestions,
-  normalizeOutputMode,
-  selectTarget,
-} from "./decision-engine";
 import type {
   AdvisorContext,
   AdvisorHolding,
@@ -36,55 +24,33 @@ export async function runConversationAgent(input: AdvisorRunInput) {
 
   try {
     const context = loadAdvisorContext(input.userId);
-    const missingQuestions = missingProfileQuestions(context.profile);
-    const intent = classifyIntent(input.content);
-    const target = selectTarget(input.content, context);
-    const requiresProfile = intent === "BUY" || intent === "SELL";
-    const requiresHolding = intent === "SELL" || intent === "DIAGNOSIS";
-    const blockedQuestions = [
-      ...(requiresProfile ? missingQuestions : []),
-      ...(requiresHolding && context.holdings.length === 0 ? ["请先录入当前持仓、成本和数量。"] : []),
-      ...((intent === "BUY" || intent === "SELL") && !target ? ["请说明要分析的股票、基金或指数代码。"] : []),
-    ];
-
-    if (blockedQuestions.length) {
-      const answer = `在给出交易倾向前还缺少关键信息：\n${blockedQuestions.map((question) => `- ${question}`).join("\n")}`;
-      return completeRun({ ...input, analysisId, userMessageId, outputMode, answer, status: "waiting_for_user", provider: "RULE_ENGINE", missingQuestions: blockedQuestions, recommendation: null, artifactRows: [] });
-    }
-
-    if (intent === "QUERY") {
-      const query = await createAndRunDataQuery({
-        userId: input.userId,
-        sessionId: input.sessionId,
-        sourceMessageId: userMessageId,
-        questionText: input.content,
-        requestedDatasets: queryDatasets(input.content),
-        outputMode,
-        requestedLimit: 2_000,
-      });
-      const answer = formatQueryAnswer(query.result.columns, query.result.rows, query.result.rowCount, query.result.isTruncated);
-      return completeRun({
-        ...input,
-        analysisId,
-        userMessageId,
-        outputMode,
-        answer,
-        status: "completed",
-        provider: "SAFE_QUERY",
-        missingQuestions: [],
-        recommendation: null,
-        artifactRows: query.result.rows,
-        artifactColumns: query.result.columns,
-        sourceQueryId: query.queryId,
-      });
-    }
-
-    const recommendation = target && (intent === "BUY" || intent === "SELL")
-      ? buildRecommendation(intent, target, context)
-      : null;
-    const deterministicAnswer = buildDeterministicAnswer(intent, context, recommendation);
-    const modelResult = await explainWithModel(input, context, recommendation, deterministicAnswer);
-    return completeRun({ ...input, analysisId, userMessageId, outputMode, answer: modelResult.answer, status: "completed", provider: modelResult.provider, missingQuestions: [], recommendation, artifactRows: context.holdings.map((holding) => ({ symbol: holding.symbol, name: holding.name, marketValue: Number(holding.market_value_decimal), unrealizedPnl: Number(holding.unrealized_pnl_decimal), weightPercent: Number(holding.weight_bps) / 100 })) });
+    const professional = await runProfessionalAdvisor({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      analysisId,
+      content: input.content,
+    });
+    const missingQuestions = clarificationQuestions(professional.missingInformation);
+    const waitingForUser = professional.status === "BLOCKED" && missingQuestions.length > 0;
+    return completeRun({
+      ...input,
+      analysisId,
+      userMessageId,
+      outputMode,
+      answer: waitingForUser ? formatClarificationAnswer(missingQuestions) : professional.answer,
+      status: waitingForUser ? "waiting_for_user" : professional.status === "BLOCKED" ? "blocked" : "completed",
+      provider: professional.provider,
+      missingQuestions,
+      recommendation: waitingForUser ? null : professional.recommendation,
+      recommendationStatus: professional.status,
+      artifactRows: context.holdings.map((holding) => ({
+        symbol: holding.symbol,
+        name: holding.name,
+        marketValue: holding.market_value_decimal,
+        unrealizedPnl: holding.unrealized_pnl_decimal,
+        weightPercent: holding.weight_bps,
+      })),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Conversation analysis failed";
     const db = getDatabase();
@@ -147,28 +113,7 @@ function loadAdvisorContext(userId: string): AdvisorContext {
   return { profile: profile ?? null, goals, snapshot: snapshot ?? null, holdings, instruments };
 }
 
-async function explainWithModel(input: AdvisorRunInput, context: AdvisorContext, recommendation: RecommendationDraft | null, fallback: string) {
-  if (!process.env.DEEPSEEK_API_KEY?.trim()) return { answer: fallback, provider: "RULE_ENGINE" };
-  const requestContext = new RequestContext();
-  requestContext.set("userId", input.userId);
-  requestContext.set("sessionId", input.sessionId);
-  requestContext.set("outputMode", input.outputMode ?? "SQL_ONLY");
-  const prompt = [
-    "请把下面经过确定性规则和合规检查的结果解释成简洁中文。",
-    "不得改变动作、仓位、价格区间、止损止盈、有效期或合规状态；不得承诺收益。",
-    `用户问题：${input.content}`,
-    `画像：${json({ riskLevel: context.profile?.risk_level ?? null, horizon: context.profile?.horizon ?? null, maxDrawdown: context.profile?.max_drawdown_decimal ?? null })}`,
-    `规则结论：${recommendation ? json(recommendation) : fallback}`,
-  ].join("\n");
-  try {
-    const result = await supervisorAgent.generate(prompt, { requestContext, maxSteps: 3, modelSettings: { maxOutputTokens: 500, temperature: 0.1 } });
-    return { answer: result.text.trim() || fallback, provider: "DEEPSEEK" };
-  } catch {
-    return { answer: fallback, provider: "RULE_ENGINE_FALLBACK" };
-  }
-}
-
-function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }) {
+function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }) {
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
@@ -182,14 +127,14 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     missingQuestions: input.missingQuestions,
     dataQueryId: input.sourceQueryId ?? null,
   };
-  const compliance = input.recommendation?.compliance ?? { status: input.status === "waiting_for_user" ? "BLOCKED" : "PASSED", reasons: input.missingQuestions, disclaimer: defaultDisclaimer() };
+  const compliance = input.recommendation?.compliance ?? { status: input.recommendationStatus, reasons: input.missingQuestions, disclaimer: defaultDisclaimer() };
   const db = getDatabase();
   const clarificationId = input.status === "waiting_for_user" ? createClarification(db, input) : null;
   if (clarificationId) result.clarificationId = clarificationId;
   const persist = db.transaction(() => {
     db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)").run(assistantMessageId, input.sessionId, "assistant", input.answer, now, input.analysisId, json({ provider: input.provider, recommendationId, outputMode: input.outputMode, compliance }));
-    if (input.recommendation && recommendationId) persistRecommendation(db, input.userId, input.sessionId, input.analysisId, recommendationId, input.recommendation, now);
-    db.prepare("UPDATE agent_runs SET status=?, completed_at=?, result_json=?, compliance_json=? WHERE id=? AND user_id=?").run(input.status, input.status === "completed" ? now : null, json(result), json(compliance), input.analysisId, input.userId);
+    if (input.recommendation && recommendationId) persistRecommendation(db, input.userId, input.sessionId, input.analysisId, recommendationId, input.recommendation, input.recommendationStatus, now);
+    db.prepare("UPDATE agent_runs SET status=?, completed_at=?, result_json=?, compliance_json=? WHERE id=? AND user_id=?").run(input.status, input.status === "waiting_for_user" ? null : now, json(result), json(compliance), input.analysisId, input.userId);
     db.prepare("UPDATE conversation_sessions SET updated_at=? WHERE id=? AND user_id=?").run(now, input.sessionId, input.userId);
   });
   persist();
@@ -217,34 +162,51 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   }
   if (recommendationId) persistSseEvent({ analysisId: input.analysisId, type: "recommendation.created", payload: { recommendationId, status: input.recommendation?.compliance.status } });
   if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider } });
+  if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED" } });
   return result;
 }
 
-function queryDatasets(content: string): string[] {
-  const datasets = ["PORTFOLIO_HOLDINGS"];
-  if (/(健康|风险|评分|指标|回撤|波动|集中度)/u.test(content)) datasets.push("PORTFOLIO_METRICS");
-  if (/(标的|股票|基金|指数|ETF|代码)/iu.test(content)) datasets.push("INSTRUMENTS");
-  return datasets;
-}
-
-function formatQueryAnswer(columns: Array<{ name: string; type: string }>, rows: Record<string, unknown>[], rowCount: number, truncated: boolean): string {
-  const header = columns.map((column) => column.name).join(" | ");
-  const body = rows.slice(0, 20).map((row) => columns.map((column) => String(row[column.name] ?? "")).join(" | ")).join("\n");
-  return [`查询完成，共 ${rowCount} 行${truncated ? "（结果已截断）" : ""}。`, header ? `列：${header}` : "", body ? body : "暂无符合条件的数据。"].filter(Boolean).join("\n");
-}
-
-function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: string, sessionId: string, analysisId: string, recommendationId: string, draft: RecommendationDraft, now: string) {
+function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: string, sessionId: string, analysisId: string, recommendationId: string, draft: RecommendationDraft, status: "ACTIVE" | "DEGRADED" | "BLOCKED", now: string) {
   db.prepare(`INSERT INTO recommendations
     (id,user_id,conversation_id,analysis_id,instrument_id,action,suitability,summary,confidence_decimal,position_range_json,first_position,add_conditions_json,reference_range_json,stop_loss,take_profit,horizon,expires_at,reasons_json,counter_evidence_json,risks_json,alternatives_json,invalidation,compliance_json,data_as_of,provenance_json,status,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?)`).run(
+    VALUES (?,?,?,?,?,?,?,
+            ?,?,?,?,?,?,?,
+            ?,?,?,?,?,?,?,
+            ?,?,?,?,?,?,?)`).run(
     recommendationId, userId, sessionId, analysisId, draft.instrumentId, draft.action, draft.suitability, draft.summary, draft.confidence,
     json(draft.positionRange), draft.firstPosition, json(draft.addConditions), json(draft.referenceRange), draft.stopLoss, draft.takeProfit,
     draft.horizon, draft.expiresAt, json(draft.reasons), json(draft.counterEvidence), json(draft.risks), json(draft.alternatives), draft.invalidation,
-    json(draft.compliance), draft.dataAsOf, json(draft.provenance), now, now,
+    json(draft.compliance), draft.dataAsOf, json(draft.provenance), status, now, now,
   );
-  const support = draft.reasons.map((summary, index) => ({ kind: "SUPPORT", title: `支持证据 ${index + 1}`, summary }));
-  const counter = draft.counterEvidence.map((summary, index) => ({ kind: "COUNTER", title: `反方证据 ${index + 1}`, summary }));
-  for (const evidence of [...support, ...counter]) {
-    db.prepare("INSERT INTO evidence_items (id,user_id,recommendation_id,kind,title,summary,source,created_at) VALUES (?,?,?,?,?,?,?,?)").run(createId("evidence"), userId, recommendationId, evidence.kind, evidence.title, evidence.summary, "DETERMINISTIC_ADVISOR", now);
-  }
+  db.prepare(`UPDATE evidence_items SET recommendation_id=?
+    WHERE user_id=? AND agent_run_id IN (SELECT id FROM agent_runs WHERE id=? OR root_run_id=?)`)
+    .run(recommendationId, userId, analysisId, analysisId);
+}
+
+function clarificationQuestions(missing: string[]): string[] {
+  const prompts: Record<string, string> = {
+    risk_level: "你能接受的风险等级是稳健、平衡还是进取？",
+    investment_amount: "这次计划投入多少资金？",
+    horizon: "计划持有多久：短线、中线还是长线？",
+    max_drawdown: "最大可以接受多少回撤？",
+    instrument_preference: "更偏好个股、行业 ETF 还是宽基指数？",
+    near_term_use: "这笔钱近期是否需要使用？",
+    instrument: "请说明要分析的股票、基金或指数代码。",
+    target_holding: "请先录入该标的当前持仓、成本和数量。",
+    holdings: "请先录入当前持仓、成本和数量。",
+  };
+  return [...new Set(missing.flatMap((key) => prompts[key] ? [prompts[key]] : []))];
+}
+
+function formatClarificationAnswer(questions: string[]): string {
+  return `在给出交易倾向前还缺少关键信息：\n${questions.map((question) => `- ${question}`).join("\n")}`;
+}
+
+function normalizeOutputMode(value: string | undefined): ConversationOutputMode {
+  const normalized = value?.toUpperCase();
+  return normalized === "CHART" || normalized === "FINANCIAL_REPORT" ? normalized : "SQL_ONLY";
+}
+
+function defaultDisclaimer(): string {
+  return "本结果用于投资研究和方案模拟，不构成收益承诺，不会创建真实订单，最终决策由用户自行作出。";
 }

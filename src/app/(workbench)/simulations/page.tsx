@@ -3,7 +3,7 @@
 import { ArrowDownRight, GitBranch, Play, Plus, RotateCcw, ShieldCheck, Split, WandSparkles } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
-import { apiGet, apiMutation, money, percent, shortDate } from "@/features/workbench/lib/api";
+import { apiMutation, money, percent, shortDate } from "@/features/workbench/lib/api";
 
 type WorkspaceSummary = { id: string; name: string; objectiveText: string; status: string; activeBranchId: string; version: number; updatedAt: string };
 type Branch = { id: string; parentBranchId: string | null; label: string; depth: number; status: string };

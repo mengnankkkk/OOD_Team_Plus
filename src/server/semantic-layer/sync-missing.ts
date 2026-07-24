@@ -1,6 +1,4 @@
-import type { InValue } from "@libsql/client";
-
-import type { SemanticLayerExecutor } from "@/server/semantic-layer/database";
+import type { InValue, SemanticLayerExecutor } from "@/server/semantic-layer/database";
 import type { SyncInput } from "@/server/semantic-layer/sync-types";
 
 async function markMissing(

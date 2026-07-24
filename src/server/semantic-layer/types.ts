@@ -1,6 +1,6 @@
-import type { ResultSet } from "@libsql/client";
+import type { SemanticResultSet } from "@/server/semantic-layer/database";
 
-type Row = ResultSet["rows"][number];
+type Row = SemanticResultSet["rows"][number];
 
 function text(row: Row, key: string) {
   const value = row[key];
@@ -16,7 +16,7 @@ function bool(row: Row, key: string) {
   return Boolean(numberValue(row, key));
 }
 
-export function countFrom(result: ResultSet) {
+export function countFrom(result: SemanticResultSet) {
   const value = result.rows[0]?.total;
   return typeof value === "number" ? value : 0;
 }

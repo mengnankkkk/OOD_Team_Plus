@@ -10,7 +10,9 @@ export async function apiGet<T>(path: string): Promise<T> {
 
 export async function apiMutation<T>(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   const finalHeaders = { ...headers };
-  if (method === "POST") finalHeaders["Idempotency-Key"] ??= crypto.randomUUID();
+  finalHeaders["Idempotency-Key"] ??= crypto.randomUUID();
+  const csrf = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("mw_csrf="))?.slice("mw_csrf=".length);
+  if (csrf) finalHeaders["X-CSRF-Token"] ??= decodeURIComponent(csrf);
   return apiRequest<T>(path, { method, body: body === undefined ? undefined : JSON.stringify(body), headers: finalHeaders });
 }
 

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { DEMO_USER_ID, getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
+import { authError, requireAdmin } from "@/server/auth/http";
+import { getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
 import { formatFeed, validateSourceUrls } from "../route";
 
 const UpdateSchema = z.object({
@@ -16,7 +17,7 @@ const UpdateSchema = z.object({
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PATCH(req: NextRequest, { params }: RouteContext) {
-  if (getRequestContext(req).userId !== DEMO_USER_ID) return notFound();
+  try { requireAdmin(getRequestContext(req).user); } catch (error) { return authError(error); }
   const { id } = await params;
   const expectedVersion = parseVersion(req);
   if (expectedVersion === null) return invalidVersion();
@@ -58,7 +59,7 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
 }
 
 export async function DELETE(req: NextRequest, { params }: RouteContext) {
-  if (getRequestContext(req).userId !== DEMO_USER_ID) return notFound();
+  try { requireAdmin(getRequestContext(req).user); } catch (error) { return authError(error); }
   const { id } = await params;
   const expectedVersion = parseVersion(req);
   if (expectedVersion === null) return invalidVersion();

@@ -1,52 +1,29 @@
-import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
-import {
-  createSemanticLayerDb,
-  initSemanticLayerDb,
-  type SemanticLayerDb,
-} from "@/server/semantic-layer/database";
+import { getDbClient } from "@/server/db/client";
+import { createSemanticLayerDb, type SemanticLayerDb } from "@/server/semantic-layer/database";
 
-const DEFAULT_DB_PATH = "./data/mw-dev.db";
-
-type SemanticLayerRuntime = {
-  db: SemanticLayerDb;
-  ready: Promise<void>;
-};
+type SemanticRuntime = { key: string; db: SemanticLayerDb };
 
 const globalSemanticLayer = globalThis as typeof globalThis & {
-  semanticLayerRuntime?: SemanticLayerRuntime;
+  semanticLayerRuntime?: SemanticRuntime;
 };
 
-function createRuntime(): SemanticLayerRuntime {
-  const db = createSemanticLayerDb(getSemanticLayerDbUrl());
-  return { db, ready: initSemanticLayerDb(db) };
+function runtimeKey(): string {
+  const configured = process.env.DB_PATH ?? "./data/mw-dev.db";
+  return configured === ":memory:" ? configured : path.resolve(process.cwd(), configured);
 }
 
-function getSemanticLayerDbUrl() {
-  if (process.env.SEMANTIC_LAYER_DB_URL) {
-    return process.env.SEMANTIC_LAYER_DB_URL;
+export async function getSemanticLayerDb(): Promise<SemanticLayerDb> {
+  const key = runtimeKey();
+  if (globalSemanticLayer.semanticLayerRuntime?.key !== key) {
+    globalSemanticLayer.semanticLayerRuntime?.db.close();
+    globalSemanticLayer.semanticLayerRuntime = { key, db: createSemanticLayerDb(getDbClient()) };
   }
-
-  const dbPath = process.env.DB_PATH ?? DEFAULT_DB_PATH;
-  if (dbPath === ":memory:") {
-    return dbPath;
-  }
-
-  const resolvedPath = path.resolve(process.cwd(), dbPath);
-  mkdirSync(path.dirname(resolvedPath), { recursive: true });
-  return pathToFileURL(resolvedPath).href;
+  return globalSemanticLayer.semanticLayerRuntime.db;
 }
 
-export const semanticLayerRuntime =
-  globalSemanticLayer.semanticLayerRuntime ?? createRuntime();
-
-if (process.env.NODE_ENV !== "production") {
-  globalSemanticLayer.semanticLayerRuntime = semanticLayerRuntime;
-}
-
-export async function getSemanticLayerDb() {
-  await semanticLayerRuntime.ready;
-  return semanticLayerRuntime.db;
+export function closeSemanticLayerRuntime(): void {
+  globalSemanticLayer.semanticLayerRuntime?.db.close();
+  delete globalSemanticLayer.semanticLayerRuntime;
 }

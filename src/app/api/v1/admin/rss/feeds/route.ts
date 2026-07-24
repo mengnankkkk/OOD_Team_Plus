@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
 import { assertPublicHttpUrl } from "@/server/extensions/security/public-url";
-import { createId, DEMO_USER_ID, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
+import { authError, requireAdmin } from "@/server/auth/http";
+import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
 
 const CreateSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
@@ -19,8 +20,9 @@ const CreateSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const userId = getRequestContext(req).userId;
-  if (userId !== DEMO_USER_ID) return notFound();
+  let context: ReturnType<typeof getRequestContext>;
+  try { context = getRequestContext(req); requireAdmin(context.user); } catch (error) { return authError(error); }
+  const userId = context.userId;
   const key = idempotencyKey(req);
   if (!key) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
   const parsed = CreateSchema.safeParse(await req.json().catch(() => null));
@@ -56,7 +58,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  if (getRequestContext(req).userId !== DEMO_USER_ID) return notFound();
+  try { requireAdmin(getRequestContext(req).user); } catch (error) { return authError(error); }
   const db = getDatabase();
   const rows = db.prepare("SELECT * FROM rss_feeds WHERE status!='deleted' ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
   db.close();
@@ -87,4 +89,3 @@ export async function validateSourceUrls(feedUrl: string, siteUrl?: string) {
 }
 
 function unsafeUrl() { return NextResponse.json({ error: { code: "UNSAFE_SOURCE_URL", message: "URL must resolve to a public HTTP(S) address" } }, { status: 422 }); }
-function notFound() { return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Resource not found" } }, { status: 404 }); }

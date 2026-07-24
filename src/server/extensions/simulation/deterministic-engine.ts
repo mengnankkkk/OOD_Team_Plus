@@ -1,14 +1,22 @@
-import type { PriceManifest, SimulationCandidate } from "./candidate-generator";
+import Decimal from "decimal.js";
+
+import { calculatePortfolioMetrics, FINANCIAL_FORMULA_VERSION, runPortfolioStressTests, type StressTestResult } from "@/server/extensions/analysis/financial-engine";
+
+import { hashPriceManifest, type PriceManifest, type SimulationCandidate } from "./candidate-generator";
 
 export interface SimulationMetrics {
   totalReturn: number;
   maxDrawdown: number;
-  volatility: number;
+  volatility: number | null;
   concentrationHHI: number;
   expectedReturn: number;
   bullCaseReturn: number;
   bearCaseReturn: number;
   riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  stressTests: StressTestResult[];
+  missingMetrics: string[];
+  formulaVersion: string;
+  assetConservationDelta: string;
 }
 
 export interface SimulationResult {
@@ -25,80 +33,148 @@ export interface SimulationResult {
   metrics: SimulationMetrics;
 }
 
+type ParentHolding = { instrumentId: string; quantity: string; marketValue: string; assetType?: string; sector?: string | null };
+
 export function executeSimulation(
   parentCashDecimal: string,
-  parentHoldings: Array<{ instrumentId: string; quantity: string; marketValue: string }>,
+  parentHoldings: ParentHolding[],
   candidate: SimulationCandidate,
   priceManifest: PriceManifest,
 ): SimulationResult {
-  const feeRate = 0.001;
-  const cash = Number(parentCashDecimal);
-  const states = new Map(parentHoldings.map((holding) => [holding.instrumentId, {
-    quantity: Number(holding.quantity),
-    marketValue: Number(holding.marketValue),
-  }]));
-  let newCash = Number.isFinite(cash) ? cash : 0;
-  let fees = 0;
-  let tradedNotional = 0;
+  if (hashPriceManifest(priceManifest) !== priceManifest.sha256) throw new Error("PRICE_MANIFEST_HASH_MISMATCH");
+  const feeRate = nonNegative(priceManifest.feeRate ?? "0.001", "feeRate");
+  const parentCash = nonNegative(parentCashDecimal, "parentCash");
+  const states = new Map(parentHoldings.map((holding) => {
+    const quantity = nonNegative(holding.quantity, `quantity:${holding.instrumentId}`);
+    assertQuantityPrecision(quantity, holding.instrumentId);
+    return [holding.instrumentId, {
+      quantity,
+      assetType: holding.assetType ?? priceManifest.assets?.[holding.instrumentId]?.assetType ?? "UNKNOWN",
+      sector: holding.sector ?? priceManifest.assets?.[holding.instrumentId]?.sector ?? null,
+    }];
+  }));
+  const parentMarketValue = sum(parentHoldings.map((holding) => {
+    const price = manifestPrice(priceManifest, holding.instrumentId);
+    return nonNegative(holding.quantity, `quantity:${holding.instrumentId}`).mul(price);
+  }));
+  const parentTotalAssets = parentCash.plus(parentMarketValue);
+  let cash = parentCash;
+  let fees = new Decimal(0);
 
   for (const trade of candidate.trades) {
-    const quantity = Number(trade.quantity);
-    const price = Number(trade.price ?? priceManifest.prices[trade.instrumentId]);
-    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0) continue;
-    const notional = quantity * price;
-    const fee = notional * feeRate;
-    const state = states.get(trade.instrumentId) ?? { quantity: 0, marketValue: 0 };
+    const quantity = positive(trade.quantity, `tradeQuantity:${trade.instrumentId}`);
+    assertQuantityPrecision(quantity, trade.instrumentId);
+    const price = manifestPrice(priceManifest, trade.instrumentId);
+    if (trade.price != null && !decimal(trade.price, `tradePrice:${trade.instrumentId}`).eq(price)) throw new Error("TRADE_PRICE_NOT_FROZEN");
+    const notional = quantity.mul(price);
+    const fee = notional.mul(feeRate);
+    const state = states.get(trade.instrumentId) ?? {
+      quantity: new Decimal(0),
+      assetType: priceManifest.assets?.[trade.instrumentId]?.assetType ?? "UNKNOWN",
+      sector: priceManifest.assets?.[trade.instrumentId]?.sector ?? null,
+    };
     if (trade.action === "BUY") {
-      if (newCash < notional + fee) throw new Error("INSUFFICIENT_SIMULATED_CASH");
-      newCash -= notional + fee;
-      state.quantity += quantity;
+      const requiredCash = notional.plus(fee);
+      if (cash.lt(requiredCash)) throw new Error("INSUFFICIENT_SIMULATED_CASH");
+      cash = cash.minus(requiredCash);
+      state.quantity = state.quantity.plus(quantity);
     } else {
-      if (state.quantity + 1e-9 < quantity) throw new Error("INSUFFICIENT_SIMULATED_HOLDING");
-      newCash += notional - fee;
-      state.quantity -= quantity;
+      if (state.quantity.lt(quantity)) throw new Error("INSUFFICIENT_SIMULATED_HOLDING");
+      cash = cash.plus(notional.minus(fee));
+      state.quantity = state.quantity.minus(quantity);
     }
-    state.marketValue = state.quantity * price;
+    if (cash.isNegative() || state.quantity.isNegative()) throw new Error("NEGATIVE_SIMULATED_ASSET");
     states.set(trade.instrumentId, state);
-    fees += fee;
-    tradedNotional += notional;
+    fees = fees.plus(fee);
   }
 
-  const holdings = [...states.entries()]
-    .map(([instrumentId, state]) => ({ instrumentId, quantity: state.quantity, price: Number(priceManifest.prices[instrumentId] ?? 0), marketValue: state.quantity * Number(priceManifest.prices[instrumentId] ?? 0) }))
-    .filter((holding) => holding.quantity > 1e-9 && holding.price > 0);
-  const totalMarketValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0);
-  const parentValue = parentHoldings.reduce((sum, holding) => sum + Number(holding.marketValue), 0);
-  const totalValue = newCash + totalMarketValue;
-  const weights = holdings.map((holding) => totalMarketValue > 0 ? holding.marketValue / totalMarketValue : 0);
-  const hhi = weights.reduce((sum, weight) => sum + weight * weight, 0);
-  const concentration = weights.length ? hhi : 0;
-  const totalReturn = parentValue + cash > 0 ? ((totalValue - (parentValue + cash)) / (parentValue + cash)) : 0;
-  const turnover = parentValue > 0 ? tradedNotional / parentValue : 0;
+  const financialHoldings = [...states.entries()]
+    .filter(([, state]) => state.quantity.gt(0))
+    .map(([instrumentId, state]) => ({
+      instrumentId,
+      assetType: state.assetType,
+      sector: state.sector,
+      quantity: clean(state.quantity),
+      price: clean(manifestPrice(priceManifest, instrumentId)),
+    }));
+  const portfolio = calculatePortfolioMetrics(clean(cash), financialHoldings);
+  const totalAssets = decimal(portfolio.totalAssets, "totalAssets");
+  const expectedAssets = parentTotalAssets.minus(fees);
+  const conservationDelta = totalAssets.minus(expectedAssets);
+  if (!conservationDelta.eq(0)) throw new Error(`SIMULATION_ASSET_CONSERVATION_FAILED:${clean(conservationDelta)}`);
+
+  const stressTests = runPortfolioStressTests(clean(cash), financialHoldings);
+  const bull = stressTests.find((item) => item.scenario === "BULL")!;
+  const bear = stressTests.find((item) => item.scenario === "BEAR")!;
+  const worst = stressTests.reduce((current, item) => Decimal.min(current, decimal(item.changeRatio, item.scenario)), new Decimal(0));
+  const lossMagnitude = worst.abs();
+  const riskLevel = lossMagnitude.gt("0.2") ? "HIGH" : lossMagnitude.gt("0.1") ? "MEDIUM" : "LOW";
+  const totalReturn = parentTotalAssets.gt(0) ? totalAssets.div(parentTotalAssets).minus(1) : new Decimal(0);
 
   return {
-    newCashDecimal: fixed(newCash),
-    newTotalMarketValue: fixed(totalMarketValue),
-    holdings: holdings.map((holding) => ({
+    newCashDecimal: clean(cash),
+    newTotalMarketValue: portfolio.totalMarketValue,
+    holdings: portfolio.holdings.map((holding) => ({
       instrumentId: holding.instrumentId,
-      quantity: fixed(holding.quantity),
-      price: fixed(holding.price),
-      marketValue: fixed(holding.marketValue),
-      weightBps: Math.round((holding.marketValue / Math.max(totalMarketValue, 1)) * 10_000),
+      quantity: holding.quantity,
+      price: holding.price,
+      marketValue: holding.marketValue,
+      weightBps: holding.weightBps,
     })),
-    tradingFees: fixed(fees),
+    tradingFees: clean(fees),
     metrics: {
-      totalReturn,
-      maxDrawdown: candidate.analysis?.forecast.maxDrawdown ?? Math.min(0, -turnover * 0.02),
-      volatility: candidate.analysis?.forecast.annualVolatility ?? Math.min(1, 0.08 + concentration * 0.25 + turnover * 0.05),
-      concentrationHHI: concentration,
-      expectedReturn: candidate.analysis?.forecast.expectedReturn ?? 0,
-      bullCaseReturn: candidate.analysis?.forecast.bullCaseReturn ?? 0,
-      bearCaseReturn: candidate.analysis?.forecast.bearCaseReturn ?? 0,
-      riskLevel: candidate.analysis?.riskLevel ?? "MEDIUM",
+      totalReturn: totalReturn.toNumber(),
+      maxDrawdown: worst.toNumber(),
+      volatility: null,
+      concentrationHHI: decimal(portfolio.concentrationHhi, "concentrationHhi").toNumber(),
+      expectedReturn: 0,
+      bullCaseReturn: decimal(bull.changeRatio, "bullCaseReturn").toNumber(),
+      bearCaseReturn: decimal(bear.changeRatio, "bearCaseReturn").toNumber(),
+      riskLevel,
+      stressTests,
+      missingMetrics: ["ANNUAL_VOLATILITY_REQUIRES_HISTORICAL_SERIES"],
+      formulaVersion: FINANCIAL_FORMULA_VERSION,
+      assetConservationDelta: clean(conservationDelta),
     },
   };
 }
 
-function fixed(value: number): string {
-  return (Number.isFinite(value) ? value : 0).toFixed(8).replace(/0+$/u, "").replace(/\.$/u, "") || "0";
+function manifestPrice(manifest: PriceManifest, instrumentId: string): Decimal {
+  const value = manifest.prices[instrumentId];
+  if (value == null) throw new Error(`MISSING_FROZEN_PRICE:${instrumentId}`);
+  return positive(value, `manifestPrice:${instrumentId}`);
+}
+
+function assertQuantityPrecision(value: Decimal, instrumentId: string): void {
+  if (value.decimalPlaces() > 8) throw new Error(`QUANTITY_PRECISION_EXCEEDED:${instrumentId}`);
+}
+
+function decimal(value: string, field: string): Decimal {
+  try {
+    const result = new Decimal(value);
+    if (!result.isFinite()) throw new Error();
+    return result;
+  } catch {
+    throw new Error(`INVALID_DECIMAL:${field}`);
+  }
+}
+
+function positive(value: string, field: string): Decimal {
+  const result = decimal(value, field);
+  if (!result.gt(0)) throw new Error(`INVALID_POSITIVE_DECIMAL:${field}`);
+  return result;
+}
+
+function nonNegative(value: string, field: string): Decimal {
+  const result = decimal(value, field);
+  if (result.isNegative()) throw new Error(`INVALID_NON_NEGATIVE_DECIMAL:${field}`);
+  return result;
+}
+
+function sum(values: Decimal[]): Decimal {
+  return values.reduce((total, value) => total.plus(value), new Decimal(0));
+}
+
+function clean(value: Decimal): string {
+  return value.toDecimalPlaces(12).toFixed().replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1");
 }
