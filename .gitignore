@@ -29,6 +29,8 @@ playwright-report/
 .omo/
 .data/
 data/
+!src/data/
+!src/data/a-share-stocks.json
 .serena/
 .next-visual/
 .artifacts
