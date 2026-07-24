@@ -60,6 +60,33 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(body.data.rootBranchId).toBe(body.data.activeBranchId);
   });
 
+  it("POST creates a simulation-only starter portfolio when no snapshot is available", async () => {
+    const userId = "starter-snapshot-user";
+    const req = authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({
+        label: "Starter portfolio",
+        objectiveText: "Compare beginner scenarios",
+      }),
+      headers: { "Idempotency-Key": "starter-portfolio-key" },
+    }, { userId });
+    const cleanup = getDatabase();
+    cleanup.prepare("DELETE FROM holding_snapshots WHERE portfolio_snapshot_id IN (SELECT id FROM portfolio_snapshots WHERE user_id=?)").run(userId);
+    cleanup.prepare("DELETE FROM portfolio_snapshots WHERE user_id=?").run(userId);
+    cleanup.prepare("DELETE FROM holdings WHERE user_id=?").run(userId);
+    cleanup.close();
+
+    const res = await POST(req);
+    const body = await res.json();
+    expect(res.status).toBe(202);
+    expect(body.data.portfolioSource).toBe("STARTER_PORTFOLIO");
+
+    const db = getDatabase();
+    const itemCount = db.prepare("SELECT COUNT(*) AS count FROM simulation_asset_snapshot_items WHERE snapshot_id IN (SELECT id FROM simulation_asset_snapshots WHERE workspace_id=?)").get(body.data.id) as { count: number };
+    db.close();
+    expect(itemCount.count).toBe(4);
+  });
+
   it("GET returns an empty items list", async () => {
     const res = await GET(authenticatedRequest(url));
     const body = await res.json();
