@@ -16,7 +16,7 @@ import {
 } from "@/server/semantic-layer/sync-upsert";
 
 export async function syncSemanticMetadata(db: SemanticLayerDb, input: SyncInput) {
-  const transaction = await db.transaction("write");
+  const transaction = await db.transaction();
   try {
     const stats = await syncMetadataSnapshot(transaction, input);
     await transaction.commit();

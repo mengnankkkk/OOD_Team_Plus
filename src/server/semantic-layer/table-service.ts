@@ -159,7 +159,6 @@ export async function deleteTables(db: SemanticLayerDb, ids: string[]) {
         args: [now, ...ids, ...ids],
       },
     ],
-    "write",
   );
   return { deleted: ids.length };
 }

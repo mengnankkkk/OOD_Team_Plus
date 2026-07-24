@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y curl ca-certificates openssh-client sshpass
           curl -Ls --tlsv1.2 --proto '=https' https://cli.doppler.com/install.sh | sudo sh
 
-      - name: Deploy on server
+      - name: Load deployment secrets
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
@@ -58,37 +58,47 @@ jobs:
           echo "::add-mask::$DOPPLER_TOKEN"
           echo "::add-mask::$DEPLOY_PASSWORD"
 
-          quote() {
-            printf '%q' "$1"
-          }
+          {
+            echo "DEPLOY_HOST=$DEPLOY_HOST"
+            echo "DEPLOY_PORT=$DEPLOY_PORT"
+            echo "DEPLOY_USER=$DEPLOY_USER"
+            echo "DEPLOY_PASSWORD=$DEPLOY_PASSWORD"
+            echo "DEPLOY_PATH=$DEPLOY_PATH"
+          } >> "$GITHUB_ENV"
 
-          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
-
+      - name: Upload Doppler CLI
+        shell: bash
+        run: |
+          set -euo pipefail
           export SSHPASS="$DEPLOY_PASSWORD"
           sshpass -e scp -P "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
             "$(command -v doppler)" \
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/doppler"
 
+      - name: Prepare server
+        shell: bash
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          quote() {
+            printf '%q' "$1"
+          }
+
+          export SSHPASS="$DEPLOY_PASSWORD"
           sshpass -e ssh \
             -p "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "$REMOTE_ENV bash -s" <<'REMOTE'
+            "DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") bash -s" <<'REMOTE'
           set -euo pipefail
 
           : "${DOPPLER_TOKEN:?}"
-          : "${DEPLOY_PATH:?}"
-          : "${DEPLOY_BRANCH:?}"
-          : "${GITHUB_REPOSITORY:?}"
-          : "${GITHUB_SHA:?}"
-          : "${DOPPLER_PROJECT:?}"
-          : "${DOPPLER_CONFIG:?}"
-
           export DOPPLER_TOKEN
-          export GIT_SHA="$GITHUB_SHA"
           export DEBIAN_FRONTEND=noninteractive
 
           SUDO=""
@@ -110,6 +120,7 @@ jobs:
             fi
           }
 
+          echo "::group::Install server packages"
           if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
             install_packages
           fi
@@ -119,7 +130,9 @@ jobs:
           else
             $SUDO service docker start || true
           fi
+          echo "::endgroup::"
 
+          echo "::group::Install Doppler CLI"
           if ! command -v doppler >/dev/null 2>&1; then
             if [ -s /tmp/doppler ]; then
               $SUDO install -m 0755 /tmp/doppler /usr/local/bin/doppler
@@ -129,7 +142,50 @@ jobs:
                 --tlsv1.2 --proto '=https' https://cli.doppler.com/install.sh | $SUDO sh
             fi
           fi
+          doppler --version
+          echo "::endgroup::"
+          REMOTE
 
+      - name: Build and restart containers
+        shell: bash
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          quote() {
+            printf '%q' "$1"
+          }
+
+          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
+
+          export SSHPASS="$DEPLOY_PASSWORD"
+          sshpass -e ssh \
+            -p "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "$REMOTE_ENV bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          : "${DOPPLER_TOKEN:?}"
+          : "${DEPLOY_PATH:?}"
+          : "${DEPLOY_BRANCH:?}"
+          : "${GITHUB_REPOSITORY:?}"
+          : "${GITHUB_SHA:?}"
+          : "${DOPPLER_PROJECT:?}"
+          : "${DOPPLER_CONFIG:?}"
+
+          export DOPPLER_TOKEN
+          export GIT_SHA="$GITHUB_SHA"
+
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            SUDO="sudo"
+          fi
+
+          echo "::group::Update repository"
           if [ -e "$DEPLOY_PATH" ] && [ ! -d "$DEPLOY_PATH/.git" ]; then
             echo "$DEPLOY_PATH exists but is not a Git checkout. Move it aside or choose another DEPLOY_PATH." >&2
             exit 1
@@ -144,12 +200,17 @@ jobs:
           $SUDO git fetch origin "$DEPLOY_BRANCH"
           $SUDO git checkout "$DEPLOY_BRANCH"
           $SUDO git reset --hard "$GITHUB_SHA"
+          echo "::endgroup::"
 
+          echo "::group::Docker compose build and up"
           doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
             -- docker compose up -d --build --remove-orphans
+          echo "::endgroup::"
 
+          echo "::group::Deployment status"
           $SUDO docker image prune -f
           $SUDO docker compose ps
+          echo "::endgroup::"
           REMOTE

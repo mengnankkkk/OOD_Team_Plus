@@ -136,7 +136,6 @@ export async function deleteDomains(db: SemanticLayerDb, ids: string[]) {
         args: [now, ...ids, ...ids],
       },
     ],
-    "write",
   );
   return { deleted: ids.length };
 }
