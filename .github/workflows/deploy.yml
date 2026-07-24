@@ -84,7 +84,10 @@ jobs:
             --exclude='./playwright-report' \
             --exclude='./test-results' \
             -czf "$SOURCE_ARCHIVE" .
+          SOURCE_ARCHIVE_SHA256="$(sha256sum "$SOURCE_ARCHIVE" | cut -d ' ' -f 1)"
           echo "SOURCE_ARCHIVE=$SOURCE_ARCHIVE" >> "$GITHUB_ENV"
+          echo "SOURCE_ARCHIVE_SHA256=$SOURCE_ARCHIVE_SHA256" >> "$GITHUB_ENV"
+          echo "[deploy] Packaged source archive: $(stat -c '%s bytes' "$SOURCE_ARCHIVE")"
 
       - name: Upload deployment assets
         shell: bash
@@ -96,6 +99,28 @@ jobs:
             "$(command -v doppler)" \
             "$SOURCE_ARCHIVE" \
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+
+      - name: Verify uploaded source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$DEPLOY_PASSWORD"
+          REMOTE_SOURCE_SHA256="$(
+            sshpass -e ssh \
+              -p "$DEPLOY_PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=4 \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sha256sum /tmp/money-whisperer-source.tgz | cut -d ' ' -f 1"
+          )"
+
+          if [ "$REMOTE_SOURCE_SHA256" != "$SOURCE_ARCHIVE_SHA256" ]; then
+            echo "Uploaded source archive checksum mismatch." >&2
+            exit 1
+          fi
+
+          echo "[deploy] Source archive upload verified by SHA-256."
 
       - name: Prepare server
         shell: bash
@@ -129,6 +154,32 @@ jobs:
 
           install_packages() {
             if command -v apt-get >/dev/null 2>&1; then
+              . /etc/os-release
+              for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+                [ -f "$source_file" ] || continue
+                case "${ID:-}" in
+                  debian)
+                    $SUDO sed -i \
+                      -e 's|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+                      -e 's|https://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+                      -e 's|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+                      -e 's|https://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+                      -e 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g' \
+                      -e 's|https://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g' \
+                      "$source_file"
+                    ;;
+                  ubuntu)
+                    $SUDO sed -i \
+                      -e 's|http://archive.ubuntu.com/ubuntu|https://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+                      -e 's|https://archive.ubuntu.com/ubuntu|https://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+                      -e 's|http://security.ubuntu.com/ubuntu|https://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+                      -e 's|https://security.ubuntu.com/ubuntu|https://mirrors.tuna.tsinghua.edu.cn/ubuntu|g' \
+                      -e 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
+                      -e 's|https://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
+                      "$source_file"
+                    ;;
+                esac
+              done
               $SUDO apt-get update
               $SUDO apt-get install -y git curl ca-certificates docker.io docker-compose-plugin
             elif command -v dnf >/dev/null 2>&1; then
@@ -213,11 +264,37 @@ jobs:
           cd "$DEPLOY_PATH/current"
           echo "::endgroup::"
 
-          echo "::group::Docker compose build and up"
+          echo "[deploy] Starting Docker image build at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          build_heartbeat() {
+            while sleep 20; do
+              echo "[deploy] Docker image build is still running at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            done
+          }
+
+          build_heartbeat &
+          HEARTBEAT_PID=$!
+          stop_heartbeat() {
+            kill "$HEARTBEAT_PID" >/dev/null 2>&1 || true
+            wait "$HEARTBEAT_PID" >/dev/null 2>&1 || true
+          }
+          trap stop_heartbeat EXIT
+
           doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
-            -- docker compose -p money-whisperer up -d --build --remove-orphans
+            -- env BUILDKIT_PROGRESS=plain COMPOSE_PROGRESS=plain \
+              stdbuf -oL -eL docker compose -p money-whisperer build money-whisperer
+
+          stop_heartbeat
+          trap - EXIT
+          echo "[deploy] Docker image build completed at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          echo "::group::Restart containers"
+          doppler run \
+            --project "$DOPPLER_PROJECT" \
+            --config "$DOPPLER_CONFIG" \
+            -- docker compose -p money-whisperer up -d --no-build --remove-orphans
           echo "::endgroup::"
 
           echo "::group::Deployment status"
