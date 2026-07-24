@@ -1,6 +1,7 @@
 import type { HealthMetrics as HealthMetricsData } from "@/types/app/asset";
 import { ASSET_CLASS_LABEL } from "@/types/app/asset";
 import type { UserProfile } from "@/types/app/user";
+import { Loader } from "@/components/ui/loader";
 
 interface HealthMetricsProps {
   metrics: HealthMetricsData | null;
@@ -52,16 +53,16 @@ const HealthMetrics = ({ metrics, profile, loading }: HealthMetricsProps) => {
 
   if (loading) {
     return (
-      <section className="grid h-full grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border">
+      <section className="grid h-full grid-cols-2 gap-px overflow-hidden border border-foreground bg-foreground">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="animate-pulse bg-card p-5"><div className="h-3 w-20 rounded bg-muted" /><div className="mt-6 h-8 w-24 rounded bg-muted" /></div>
+          <div key={i} className="grid min-h-32 place-items-center bg-card p-5"><Loader label={i === 0 ? "加载指标…" : ""} size="sm" /></div>
         ))}
       </section>
     );
   }
 
   return (
-    <section className="grid h-full grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border">
+    <section className="grid h-full grid-cols-2 gap-px overflow-hidden border border-foreground bg-foreground">
       {cards.map((metric) => (
         <article key={metric.label} className="relative bg-card p-5 md:p-6">
           {metric.alert && <span className="status-led" />}

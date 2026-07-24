@@ -11,10 +11,11 @@ export type SyncStats = {
   created: number;
   updated: number;
   missing: number;
+  skipped: number;
 };
 
 export function blankStats(): SyncStats {
-  return { created: 0, updated: 0, missing: 0 };
+  return { created: 0, updated: 0, missing: 0, skipped: 0 };
 }
 
 export function syncKey(table: string, column?: string) {

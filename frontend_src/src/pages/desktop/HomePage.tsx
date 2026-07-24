@@ -49,11 +49,11 @@ const HomePage = () => {
   };
 
   return (
-    <div>
-      <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
+    <div className="newsprint-texture">
+      <div className="newsprint-masthead mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="eyebrow">{todayStamp} · 数据更新至上一交易日</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">你好，{displayName}。先看目标，再看市场。</h1>
+          <p className="newsprint-date-line">{todayStamp} · 数据更新至上一交易日 · MONEY WHISPERER DAILY</p>
+          <h1 className="newsprint-headline mt-4 max-w-5xl text-4xl sm:text-5xl lg:text-5xl">你好，{displayName}。先看目标，再看市场。</h1>
         </div>
         <div className="flex items-center gap-3">
           {judgeMode && <span className="judge-note">评委批注已开启 · 完整证据链可见</span>}

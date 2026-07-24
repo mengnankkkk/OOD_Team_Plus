@@ -1,4 +1,5 @@
 import type { HealthMetrics } from "@/types/app/asset";
+import { Loader } from "@/components/ui/loader";
 
 interface AllocationPanelProps {
   metrics: HealthMetrics | null;
@@ -17,7 +18,7 @@ const CLASS_COLOR: Record<string, string> = {
 
 const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
   if (loading) {
-    return <section className="paper-card p-6 animate-pulse"><div className="h-24 rounded bg-muted" /></section>;
+    return <section className="paper-card grid min-h-36 place-items-center p-6"><Loader label="加载资产配置…" /></section>;
   }
   const allocation = metrics?.allocation ?? [];
   if (!allocation.length) {
@@ -38,7 +39,7 @@ const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
         <div><p className="eyebrow">资产配置</p><h2 className="mt-2 text-lg font-semibold">{alert ? "风险集中在单一赛道" : "配置比例概览"}</h2></div>
         <span className="judge-note">{allocation.length} 类资产</span>
       </div>
-      <div className="mt-8 flex h-5 overflow-hidden rounded-sm">
+      <div className="mt-8 flex h-5 overflow-hidden border border-foreground">
         {allocation.map((a) => <div key={a.assetClass} className={CLASS_COLOR[a.assetClass] ?? "bg-muted"} style={{ width: `${Math.max(a.ratio * 100, 0.5)}%` }} />)}
       </div>
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -47,7 +48,7 @@ const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
         ))}
       </div>
       {alert && (
-        <div className="mt-6 rounded-md border-l-4 border-destructive bg-destructive/5 px-4 py-3 text-sm">
+        <div className="mt-6 border border-destructive border-l-4 bg-destructive/5 px-4 py-3 text-sm">
           <strong>同一动因：</strong>{metrics?.concentration.topClass && `${allocation[0]?.label}` } 集中度 {Math.round(topClassRatio * 100)}%，超过 40% 上限。
         </div>
       )}

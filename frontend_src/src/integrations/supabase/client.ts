@@ -4,18 +4,64 @@ import type { Database } from "./types";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
+
+function offlineQuery() {
+  const result = { data: [], error: null, count: 0 };
+  const query = {
+    select: () => query,
+    eq: () => query,
+    in: () => query,
+    order: () => query,
+    range: () => query,
+    insert: () => query,
+    update: () => query,
+    delete: () => query,
+    maybeSingle: async () => ({ data: null, error: null }),
+    single: async () => ({ data: null, error: null }),
+    then: (resolve: (value: typeof result) => unknown) => Promise.resolve(result).then(resolve),
+  };
+  return query;
+}
+
+function createOfflineClient() {
+  const channel = {
+    on: () => channel,
+    subscribe: () => channel,
+    unsubscribe: () => undefined,
+  };
+
+  return {
+    from: () => offlineQuery(),
+    auth: {
+      getSession: async () => ({ data: { session: null }, error: null }),
+      signInAnonymously: async () => ({ data: { session: null }, error: null }),
+      signInWithPassword: async () => ({ data: { session: null, user: null }, error: new Error("Supabase is not configured") }),
+      signUp: async () => ({ data: { session: null, user: null }, error: new Error("Supabase is not configured") }),
+      signOut: async () => ({ error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => undefined } } }),
+    },
+    functions: {
+      invoke: async () => ({ data: null, error: new Error("Supabase is not configured") }),
+    },
+    channel: () => channel,
+    removeChannel: () => undefined,
+  };
+}
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(
-  SUPABASE_URL,
-  SUPABASE_PUBLISHABLE_KEY,
-  {
-    auth: {
-      storage: localStorage,
-      persistSession: true,
-      autoRefreshToken: true,
-    },
-  }
-);
+export const supabase = isSupabaseConfigured
+  ? createClient<Database>(
+      SUPABASE_URL,
+      SUPABASE_PUBLISHABLE_KEY,
+      {
+        auth: {
+          storage: localStorage,
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      }
+    )
+  : createOfflineClient() as ReturnType<typeof createClient<Database>>;

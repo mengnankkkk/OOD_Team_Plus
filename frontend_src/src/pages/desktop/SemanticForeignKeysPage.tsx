@@ -56,13 +56,11 @@ const RELATION_TYPES = [
   { value: "many_to_one", label: "many-to-one 多对一" },
   { value: "one_to_many", label: "one-to-many 一对多" },
   { value: "one_to_one", label: "one-to-one 一对一" },
-  { value: "many_to_many", label: "many-to-many 多对多" },
 ];
 
 const SOURCE_TYPES = [
   { value: "manual", label: "manual 手工" },
   { value: "physical", label: "physical 物理外键" },
-  { value: "inferred", label: "inferred AI 推断" },
 ];
 
 interface FormState {

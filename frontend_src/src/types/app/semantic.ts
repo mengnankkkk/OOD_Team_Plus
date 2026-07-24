@@ -10,7 +10,7 @@ export interface SemanticDomain {
 export interface SemanticTable {
   id: string;
   domainId: string;
-  datasourceKey: string | null;
+  datasourceKey?: string | null;
   schemaName: string | null;
   physicalTableName: string;
   physicalDescription: string | null;
@@ -195,6 +195,17 @@ export interface SyncPayload {
     isVisible?: boolean;
   };
   tables: SyncTableInput[];
+  foreignKeys?: {
+    sourcePhysicalTableName: string;
+    sourcePhysicalColumnName: string;
+    targetPhysicalTableName: string;
+    targetPhysicalColumnName: string;
+    relationType?: string;
+    confidence?: number;
+    physicalDescription?: string | null;
+    semanticDescription?: string | null;
+    isVisible?: boolean;
+  }[];
   markMissing?: boolean;
 }
 

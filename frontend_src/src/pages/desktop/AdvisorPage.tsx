@@ -9,7 +9,23 @@ import {
 } from "@/services/advisorService";
 import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, OnboardingMessage } from "@/types/app/onboarding";
 import { toast } from "sonner";
-import { MessageSquarePlus, MessageSquareText, Paperclip, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import {
+  Camera,
+  FileText,
+  Image,
+  MessageSquarePlus,
+  MessageSquareText,
+  Mic,
+  Paperclip,
+  Plus,
+  SearchCheck,
+  Send,
+  Sparkles,
+  Table2,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 
@@ -18,6 +34,43 @@ const SUGGESTIONS = [
   "我 28 岁，存款 15 万，怕股票暴跌，想学理财",
   "我有房贷，孩子明年上幼儿园，想给她攒教育金",
   "帮我算算这笔钱够不够 60 岁前退休",
+];
+
+const PLUS_UPLOAD_TOOLS = [
+  {
+    label: "截图上传",
+    icon: Camera,
+    upload: true,
+    prompt: "请帮我识别这张截图，并提取其中的关键信息：",
+  },
+  {
+    label: "文件上传",
+    icon: Upload,
+    upload: true,
+  },
+];
+
+const ACTION_TOOLS = [
+  {
+    label: "AI 表格",
+    icon: Table2,
+    prompt: "请帮我生成一张结构清晰的 AI 表格，用来整理：",
+  },
+  {
+    label: "图像生成",
+    icon: Image,
+    prompt: "请帮我生成一张图像，画面要求是：",
+  },
+  {
+    label: "报告生成",
+    icon: FileText,
+    prompt: "请帮我生成一份专业报告，主题是：",
+  },
+  {
+    label: "深度研究",
+    icon: SearchCheck,
+    prompt: "请围绕这个主题做一次深度研究，并给出结论、证据和风险：",
+  },
 ];
 
 const relativeTime = (iso: string) => {
@@ -42,6 +95,8 @@ const AdvisorPage = () => {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [toolboxOpen, setToolboxOpen] = useState(false);
+  const [pendingUploadPrompt, setPendingUploadPrompt] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -185,10 +240,23 @@ const AdvisorPage = () => {
     setAttachment(null);
   };
 
+  const handleToolAction = (tool: (typeof ACTION_TOOLS)[number] | (typeof PLUS_UPLOAD_TOOLS)[number]) => {
+    setToolboxOpen(false);
+    if (tool.upload) {
+      setPendingUploadPrompt(tool.prompt ?? null);
+      fileInputRef.current?.click();
+      return;
+    }
+    if (tool.prompt) {
+      setDraft((current) => current.trim() ? current : tool.prompt);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  };
+
   const emptyChatState = messages.length === 0 && !loadingHistory;
 
   return (
-    <div className="mx-auto flex h-[75vh] min-h-[560px] max-w-[1280px] gap-0 overflow-hidden rounded-md border border-border bg-card">
+    <div className="flex h-full min-h-[640px] w-full gap-0 overflow-hidden border-y border-border bg-card">
       <aside className="flex w-[264px] shrink-0 flex-col border-r border-border bg-background/60">
         <div className="p-3">
           <Button
@@ -317,12 +385,15 @@ const AdvisorPage = () => {
           )}
         </div>
 
-        <div>
-          <div className="mx-auto mb-6 max-w-2xl">
+        <div className="px-6">
+          <div className="mx-auto mb-6 max-w-[1100px]">
             <div
-              className="bg-white p-3 border rounded-3xl transition-all hover:border-transparent hover:shadow-[0_1px_6px_rgba(37,99,235,0.28)]"
+              className="relative rounded-[28px] border bg-white p-3 shadow-[0_18px_48px_rgba(37,99,235,0.12)] transition-all hover:border-transparent hover:shadow-[0_18px_54px_rgba(37,99,235,0.22)]"
               style={{ borderColor: "rgba(96, 165, 250, 0.35)" }}
-              onClick={() => textareaRef.current?.focus()}
+              onClick={() => {
+                setToolboxOpen(false);
+                textareaRef.current?.focus();
+              }}
             >
               <textarea
                 ref={textareaRef}
@@ -340,7 +411,7 @@ const AdvisorPage = () => {
               />
 
               {attachment ? (
-                <div className="mx-2 mb-1 flex w-fit items-center gap-1.5 rounded-md bg-blue-50 px-2 py-1 text-xs text-blue-700">
+                <div className="mx-2 mb-1 flex w-fit items-center gap-1.5 rounded-xl bg-blue-50 px-2 py-1 text-xs text-blue-700">
                   <Paperclip className="size-3" />
                   <span className="max-w-[220px] truncate">{attachment.name}</span>
                   <button
@@ -357,18 +428,42 @@ const AdvisorPage = () => {
                 </div>
               ) : null}
 
-              <div className="mt-1 flex items-center justify-between">
+              <div className="mt-1 flex items-center gap-2 overflow-x-auto px-1 pb-0.5">
                 <button
                   type="button"
                   onClick={(ev) => {
                     ev.stopPropagation();
-                    fileInputRef.current?.click();
+                    setToolboxOpen((open) => !open);
                   }}
-                  className="grid size-9 place-items-center rounded-full text-neutral-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                  aria-label="上传本地文件"
+                  className="grid size-12 shrink-0 place-items-center rounded-full bg-neutral-100 text-neutral-900 transition-colors hover:bg-neutral-200"
+                  aria-label="展开工具"
                 >
-                  <Plus className="size-5" />
+                  <Plus className="size-6" />
                 </button>
+                {toolboxOpen ? (
+                  <div
+                    className="absolute bottom-[70px] left-3 z-20 w-[236px] overflow-hidden rounded-2xl border border-neutral-200 bg-white p-1.5 shadow-[0_18px_48px_rgba(15,23,42,0.16)]"
+                    onClick={(ev) => ev.stopPropagation()}
+                  >
+                    <div className="py-1">
+                      {PLUS_UPLOAD_TOOLS.map((tool) => {
+                        const Icon = tool.icon;
+                        return (
+                          <button
+                            key={tool.label}
+                            type="button"
+                            onClick={() => handleToolAction(tool)}
+                            className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium text-neutral-900 transition-colors hover:bg-neutral-100"
+                          >
+                            <Icon className="size-4" />
+                            <span>{tool.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+                <span className="h-7 w-px shrink-0 bg-neutral-200" />
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -377,23 +472,56 @@ const AdvisorPage = () => {
                     const f = e.target.files?.[0] ?? null;
                     if (f) {
                       setAttachment(f);
+                      if (pendingUploadPrompt) {
+                        setDraft((current) => current.trim() ? current : pendingUploadPrompt);
+                      }
                       toast.info(`已选择文件：${f.name}`);
                     }
+                    setPendingUploadPrompt(null);
                     e.target.value = "";
                   }}
                 />
-                <Button
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  {ACTION_TOOLS.map((tool) => {
+                    const Icon = tool.icon;
+                    return (
+                      <button
+                        key={tool.label}
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handleToolAction(tool);
+                        }}
+                        className="flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-neutral-900 transition-colors hover:bg-neutral-100"
+                      >
+                        <Icon className="size-4" />
+                        <span>{tool.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    toast.info("语音输入入口已准备好，后续可接入录音转写。");
+                  }}
+                  className="grid size-11 shrink-0 place-items-center rounded-full bg-neutral-100 text-neutral-900 transition-colors hover:bg-neutral-200"
+                  aria-label="语音输入"
+                >
+                  <Mic className="size-5" />
+                </button>
+                <button
                   onClick={(ev) => {
                     ev.stopPropagation();
                     handleSend();
                   }}
                   disabled={sending || (!draft.trim() && !attachment)}
-                  size="icon"
-                  className="size-9 shrink-0 rounded-full bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-40"
+                  className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="发送"
                 >
                   <Send className="size-4" />
-                </Button>
+                </button>
               </div>
             </div>
           </div>

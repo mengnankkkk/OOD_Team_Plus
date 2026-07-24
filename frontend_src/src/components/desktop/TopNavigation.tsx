@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Bell, ChevronDown, ClipboardList, FlaskConical, Layers, Link2, LogIn, LogOut, Table2, User } from "lucide-react";
+import { Bell, ChevronDown, LogIn, LogOut, User } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useDemoMode } from "@/hooks/useDemoMode";
 import { useAlerts } from "@/hooks/useAlerts";
@@ -14,15 +14,9 @@ const navItems: { path: string; label: string }[] = [
   { path: "/watchlist", label: "持仓观测" },
 ];
 
-const historyEntries: { path: string; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
-  { path: "/decision-log", label: "决策日志", Icon: ClipboardList },
-  { path: "/evidence-lab", label: "Evidence Lab", Icon: FlaskConical },
-];
-
-const semanticEntries: { path: string; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
-  { path: "/assets/semantic/domains", label: "领域管理", Icon: Layers },
-  { path: "/assets/semantic/tables", label: "表管理", Icon: Table2 },
-  { path: "/assets/semantic/foreign-keys", label: "外键管理", Icon: Link2 },
+const historyEntries: { path: string; label: string }[] = [
+  { path: "/decision-log", label: "决策日志" },
+  { path: "/evidence-lab", label: "Evidence Lab" },
 ];
 
 const TopNavigation = () => {
@@ -32,20 +26,9 @@ const TopNavigation = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [semanticOpen, setSemanticOpen] = useState(false);
-  const semanticWrapRef = useRef<HTMLDivElement | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
-  const semanticCloseTimer = useRef<number | null>(null);
   const historyCloseTimer = useRef<number | null>(null);
 
-  const openSemantic = () => {
-    if (semanticCloseTimer.current) window.clearTimeout(semanticCloseTimer.current);
-    setSemanticOpen(true);
-  };
-  const scheduleCloseSemantic = () => {
-    if (semanticCloseTimer.current) window.clearTimeout(semanticCloseTimer.current);
-    semanticCloseTimer.current = window.setTimeout(() => setSemanticOpen(false), 180);
-  };
   const openHistory = () => {
     if (historyCloseTimer.current) window.clearTimeout(historyCloseTimer.current);
     setHistoryOpen(true);
@@ -54,24 +37,6 @@ const TopNavigation = () => {
     if (historyCloseTimer.current) window.clearTimeout(historyCloseTimer.current);
     historyCloseTimer.current = window.setTimeout(() => setHistoryOpen(false), 180);
   };
-
-  useEffect(() => {
-    if (!semanticOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (semanticWrapRef.current && !semanticWrapRef.current.contains(e.target as Node)) {
-        setSemanticOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSemanticOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [semanticOpen]);
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -93,7 +58,6 @@ const TopNavigation = () => {
 
   const unreadCount = alerts.filter((a) => a.status === "unread").length;
   const historyActive = historyEntries.some((e) => location.pathname.startsWith(e.path));
-  const semanticActive = location.pathname.startsWith("/assets/semantic");
 
   const handleSignOut = async () => {
     await signOut();
@@ -105,63 +69,32 @@ const TopNavigation = () => {
     navigate(path);
   };
 
-  const goSemanticEntry = (path: string) => {
-    setSemanticOpen(false);
-    navigate(path);
-  };
-
   const displayLabel = isAnonymous ? (profile?.displayName || "游客") : (profile?.displayName ?? user?.email ?? "登录中");
 
   return (
     <>
       <header className={`sticky top-0 z-40 border-b border-neutral-800 bg-neutral-950 text-neutral-100 ${judgeMode ? "border-b-destructive/60" : ""}`}>
         <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-3 px-5 md:px-10 xl:px-16">
-          <NavLink to="/" className="flex items-center gap-3"><img src="https://b.ux-cdn.com/uxarts/20260723/6c0b917fe63b40afa9e1651719b9712f.png" alt="Money Whisperer logo" className="size-10 shrink-0 object-contain" /><span className="hidden font-semibold tracking-tight text-white sm:inline">Money Whisperer</span></NavLink>
+          <NavLink to="/" className="flex items-center gap-3">
+            <img
+              src="https://b.ux-cdn.com/uxarts/20260723/6c0b917fe63b40afa9e1651719b9712f.png"
+              alt="Money Whisperer logo"
+              className="size-10 shrink-0 object-contain drop-shadow-[0_4px_12px_rgba(239,68,45,0.5)]"
+            />
+            <span
+              className="brand-wordmark hidden bg-gradient-to-br from-white via-[#fff2bc] to-[#d49b2f] bg-clip-text font-semibold tracking-tight text-transparent drop-shadow-[0_4px_12px_rgba(212,155,47,0.34)] sm:inline-block"
+              style={{ filter: "drop-shadow(0 2px 8px rgba(255,255,255,0.18)) drop-shadow(0 8px 16px rgba(0,0,0,0.72))" }}
+            >
+              Money Whisperer
+            </span>
+          </NavLink>
 
           <nav className="ml-auto hidden items-center gap-8 md:flex">
             {navItems.map((item) => (
-              <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>{item.label}</NavLink>
+              <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}><span>{item.label}</span></NavLink>
             ))}
 
-            <div
-              ref={semanticWrapRef}
-              className="relative"
-              onMouseEnter={openSemantic}
-              onMouseLeave={scheduleCloseSemantic}
-            >
-              <button
-                type="button"
-                onClick={() => setSemanticOpen((o) => !o)}
-                className={cn(
-                  "nav-link inline-flex items-center gap-1.5",
-                  semanticActive && "active",
-                  semanticOpen && "text-primary",
-                )}
-              >
-                语义层
-                <ChevronDown className={cn("size-3.5 transition-transform", semanticOpen && "rotate-180")} />
-              </button>
-              {semanticOpen && (
-                <div className="absolute left-[calc(50%-10px)] top-full z-50 min-w-[8rem] -translate-x-1/2 pt-1 origin-top animate-in fade-in-0 zoom-in-90 slide-in-from-top-4 duration-500">
-                  <div className="overflow-hidden rounded-md bg-popover shadow-xl">
-                    <div className="flex flex-col">
-                      {semanticEntries.map(({ path, label }, idx) => (
-                        <button
-                          key={path}
-                          onClick={() => goSemanticEntry(path)}
-                          className={cn(
-                            "px-0 py-2.5 text-center text-sm text-popover-foreground transition-colors hover:bg-accent hover:text-primary",
-                            idx > 0 && "border-t border-border/40",
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <NavLink to="/assets/semantic" className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}><span>语义层</span></NavLink>
 
             <div
               ref={historyWrapRef}
@@ -175,11 +108,11 @@ const TopNavigation = () => {
                 className={cn(
                   "nav-link inline-flex items-center gap-1.5",
                   historyActive && "active",
-                  historyOpen && "text-primary",
+                  historyOpen && "open",
                 )}
               >
-                历史记录
-                <ChevronDown className={cn("size-3.5 transition-transform", historyOpen && "rotate-180")} />
+                <span>历史记录</span>
+                <ChevronDown className={cn("relative z-10 size-3.5 transition-transform", historyOpen && "rotate-180")} />
               </button>
               {historyOpen && (
                 <div className="absolute left-[calc(50%-10px)] top-full z-50 min-w-[8rem] -translate-x-1/2 pt-1 origin-top animate-in fade-in-0 zoom-in-90 slide-in-from-top-4 duration-500">
@@ -205,16 +138,24 @@ const TopNavigation = () => {
           </nav>
 
           <div className="ml-4 flex items-center gap-4">
-            <button onClick={() => navigate("/alerts")} className="relative rounded-full border border-neutral-800 bg-neutral-900 p-2 transition-colors hover:border-primary" aria-label="提醒中心">
-              <Bell className="size-4 text-neutral-300" />
+            <button onClick={() => navigate("/alerts")} className="press-shell press-shell-icon" aria-label="提醒中心">
+              <span className="press-outer">
+                <span className="press-inner">
+                  <Bell className="size-4" />
+                </span>
+              </span>
               {unreadCount > 0 && <span className="absolute -right-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">{unreadCount > 99 ? "99+" : unreadCount}</span>}
             </button>
 
             <DropdownMenu>
-              <DropdownMenuTrigger className="flex items-center gap-2 rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100">
-                <div className={`grid size-7 place-items-center rounded-full ${isAnonymous ? "bg-neutral-800 text-neutral-400" : "bg-primary/20 text-primary"}`}><User className="size-4" /></div>
-                <span className="hidden max-w-[8rem] truncate lg:inline">{displayLabel}</span>
-                {isAnonymous && <span className="hidden rounded-sm bg-neutral-800 px-1.5 py-0.5 text-[10px] tracking-wide text-neutral-400 lg:inline">游客</span>}
+              <DropdownMenuTrigger className="press-shell press-shell-account">
+                <span className="press-outer">
+                  <span className="press-inner press-inner-account">
+                    <span className={`grid size-8 place-items-center rounded-full ${isAnonymous ? "bg-neutral-800/70 text-neutral-300" : "bg-primary/20 text-primary"}`}><User className="size-4" /></span>
+                    <span className="hidden max-w-[8rem] truncate lg:inline">{displayLabel}</span>
+                    {isAnonymous && <span className="hidden rounded-md bg-neutral-800/80 px-2 py-1 text-[10px] tracking-wide text-neutral-300 lg:inline">游客</span>}
+                  </span>
+                </span>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel className="text-xs text-muted-foreground">

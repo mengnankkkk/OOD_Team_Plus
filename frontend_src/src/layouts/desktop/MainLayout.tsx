@@ -4,10 +4,10 @@ import TopNavigation from "@/components/desktop/TopNavigation";
 const MainLayout = () => {
   const location = useLocation();
   const isAdvisor = location.pathname.startsWith("/advisor");
-  const mainClassName = isAdvisor ? "" : "mx-auto w-full max-w-[1440px] px-5 pb-16 pt-8 md:px-10 xl:px-16";
+  const mainClassName = isAdvisor ? "flex-1 min-w-0" : "mx-auto w-full max-w-[1440px] flex-1 px-5 pb-16 pt-8 md:px-10 xl:px-16";
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
       <TopNavigation />
       <main className={mainClassName}>
         <Outlet />

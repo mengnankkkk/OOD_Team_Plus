@@ -9,17 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { MOCK_DATASOURCES, getMockDatasource } from "@/lib/mockDatasources";
-import {
-  getColumns,
-  getDomains,
-  getTables,
-  setColumns,
-  setDomains,
-  setTables,
-  useDomains,
-} from "@/lib/mockSemanticStore";
-import { nextId, nowIso } from "@/lib/mockSemanticData";
-import type { SemanticColumn, SemanticDomain, SemanticTable, SyncCounter } from "@/types/app/semantic";
+import { reloadSemanticLayer, useDomains } from "@/lib/mockSemanticStore";
+import { syncSemanticLayer } from "@/services/semanticService";
+import type { SyncCounter } from "@/types/app/semantic";
 
 interface Props {
   open: boolean;
@@ -27,7 +19,6 @@ interface Props {
 }
 
 const CREATE_NEW = "__create__";
-const empty = (): SyncCounter => ({ created: 0, updated: 0, missing: 0, skipped: 0 });
 
 export function SemanticSyncDialog({ open, onOpenChange }: Props) {
   const domains = useDomains();
@@ -62,7 +53,7 @@ export function SemanticSyncDialog({ open, onOpenChange }: Props) {
     });
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!datasource) {
       toast.error("请选择数据源");
       return;
@@ -81,201 +72,31 @@ export function SemanticSyncDialog({ open, onOpenChange }: Props) {
     }
 
     setSubmitting(true);
-    // Fake async so the UI feedback feels realistic
-    window.setTimeout(() => {
-      try {
-        const now = nowIso();
-        const counters = { domain: empty(), tables: empty(), columns: empty() };
+    try {
+      const result = await syncSemanticLayer({
+        datasourceKey: datasource.key,
+        schemaName: datasource.schemaName,
+        domain: {
+          name: domainName,
+          description: `来自数据源 ${datasource.label}`,
+          isVisible: true,
+        },
+        tables: datasource.tables.filter((t) => selectedTables.has(t.physicalTableName)),
+        markMissing,
+      });
+      await reloadSemanticLayer();
 
-        // Domain upsert
-        const currentDomains = getDomains();
-        let dom = currentDomains.find((d) => d.name === domainName);
-        if (dom) {
-          counters.domain.updated += 1;
-          setDomains(
-            currentDomains.map((d) =>
-              d.id === dom!.id
-                ? { ...d, description: `来自数据源 ${datasource.label}`, updatedAt: now }
-                : d,
-            ),
-          );
-        } else {
-          const created: SemanticDomain = {
-            id: nextId("dom"),
-            name: domainName,
-            description: `来自数据源 ${datasource.label}`,
-            isVisible: true,
-            createdAt: now,
-            updatedAt: now,
-          };
-          dom = created;
-          counters.domain.created += 1;
-          setDomains([created, ...currentDomains]);
-        }
-        const domainId = dom.id;
-
-        // Tables upsert
-        const incomingTableNames = new Set(
-          datasource.tables
-            .filter((t) => selectedTables.has(t.physicalTableName))
-            .map((t) => t.physicalTableName),
-        );
-        let currentTables = getTables();
-        const existingInScope = currentTables.filter(
-          (t) => t.domainId === domainId && t.datasourceKey === datasource.key,
-        );
-        const tableIdByName = new Map<string, string>();
-
-        // upsert incoming
-        for (const inTbl of datasource.tables.filter((t) =>
-          selectedTables.has(t.physicalTableName),
-        )) {
-          const existing = existingInScope.find(
-            (t) => t.physicalTableName === inTbl.physicalTableName,
-          );
-          if (existing) {
-            const nextStatus = existing.syncStatus === "missing" ? "active" : existing.syncStatus;
-            currentTables = currentTables.map((t) =>
-              t.id === existing.id
-                ? {
-                    ...t,
-                    physicalDescription: inTbl.physicalDescription ?? t.physicalDescription,
-                    semanticName: inTbl.semanticName ?? t.semanticName,
-                    semanticDescription: inTbl.semanticDescription ?? t.semanticDescription,
-                    isVisible: inTbl.isVisible ?? t.isVisible,
-                    schemaName: datasource.schemaName ?? t.schemaName,
-                    syncStatus: nextStatus,
-                    updatedAt: now,
-                  }
-                : t,
-            );
-            tableIdByName.set(inTbl.physicalTableName, existing.id);
-            counters.tables.updated += 1;
-          } else {
-            const created: SemanticTable = {
-              id: nextId("tbl"),
-              domainId,
-              datasourceKey: datasource.key,
-              schemaName: datasource.schemaName,
-              physicalTableName: inTbl.physicalTableName,
-              physicalDescription: inTbl.physicalDescription ?? null,
-              semanticName: inTbl.semanticName ?? null,
-              semanticDescription: inTbl.semanticDescription ?? null,
-              isVisible: inTbl.isVisible ?? true,
-              syncStatus: "active",
-              createdAt: now,
-              updatedAt: now,
-            };
-            currentTables = [created, ...currentTables];
-            tableIdByName.set(inTbl.physicalTableName, created.id);
-            counters.tables.created += 1;
-          }
-        }
-
-        // Mark missing in scope
-        if (markMissing) {
-          for (const existing of existingInScope) {
-            if (!incomingTableNames.has(existing.physicalTableName)) {
-              if (existing.syncStatus !== "missing") {
-                currentTables = currentTables.map((t) =>
-                  t.id === existing.id ? { ...t, syncStatus: "missing", updatedAt: now } : t,
-                );
-                counters.tables.missing += 1;
-              } else {
-                counters.tables.skipped += 1;
-              }
-            }
-          }
-        }
-        setTables(currentTables);
-
-        // Columns upsert per synced table
-        let currentColumns = getColumns();
-        for (const inTbl of datasource.tables.filter((t) =>
-          selectedTables.has(t.physicalTableName),
-        )) {
-          const tableId = tableIdByName.get(inTbl.physicalTableName);
-          if (!tableId) continue;
-          const existingCols = currentColumns.filter((c) => c.tableId === tableId);
-          const incomingColNames = new Set(inTbl.columns.map((c) => c.physicalColumnName));
-          for (const inCol of inTbl.columns) {
-            const existing = existingCols.find(
-              (c) => c.physicalColumnName === inCol.physicalColumnName,
-            );
-            if (existing) {
-              const nextStatus = existing.syncStatus === "missing" ? "active" : existing.syncStatus;
-              currentColumns = currentColumns.map((c) =>
-                c.id === existing.id
-                  ? {
-                      ...c,
-                      ordinalPosition: inCol.ordinalPosition ?? c.ordinalPosition,
-                      dataType: inCol.dataType ?? c.dataType,
-                      isNullable: inCol.isNullable ?? c.isNullable,
-                      isPrimaryKey: inCol.isPrimaryKey ?? c.isPrimaryKey,
-                      defaultValue: inCol.defaultValue ?? c.defaultValue,
-                      physicalDescription: inCol.physicalDescription ?? c.physicalDescription,
-                      semanticName: inCol.semanticName ?? c.semanticName,
-                      semanticDescription: inCol.semanticDescription ?? c.semanticDescription,
-                      businessType: inCol.businessType ?? c.businessType,
-                      exampleValues: inCol.exampleValues ?? c.exampleValues,
-                      isVisible: inCol.isVisible ?? c.isVisible,
-                      syncStatus: nextStatus,
-                      updatedAt: now,
-                    }
-                  : c,
-              );
-              counters.columns.updated += 1;
-            } else {
-              const created: SemanticColumn = {
-                id: nextId("col"),
-                tableId,
-                physicalColumnName: inCol.physicalColumnName,
-                ordinalPosition: inCol.ordinalPosition ?? null,
-                dataType: inCol.dataType ?? null,
-                isNullable: inCol.isNullable ?? true,
-                isPrimaryKey: inCol.isPrimaryKey ?? false,
-                defaultValue: inCol.defaultValue ?? null,
-                physicalDescription: inCol.physicalDescription ?? null,
-                semanticName: inCol.semanticName ?? null,
-                semanticDescription: inCol.semanticDescription ?? null,
-                businessType: inCol.businessType ?? null,
-                exampleValues: inCol.exampleValues ?? [],
-                isVisible: inCol.isVisible ?? true,
-                syncStatus: "active",
-                createdAt: now,
-                updatedAt: now,
-              };
-              currentColumns = [created, ...currentColumns];
-              counters.columns.created += 1;
-            }
-          }
-          if (markMissing) {
-            for (const existing of existingCols) {
-              if (!incomingColNames.has(existing.physicalColumnName)) {
-                if (existing.syncStatus !== "missing") {
-                  currentColumns = currentColumns.map((c) =>
-                    c.id === existing.id ? { ...c, syncStatus: "missing", updatedAt: now } : c,
-                  );
-                  counters.columns.missing += 1;
-                } else {
-                  counters.columns.skipped += 1;
-                }
-              }
-            }
-          }
-        }
-        setColumns(currentColumns);
-
-        const c = (label: string, x: SyncCounter) =>
-          `${label} 新增 ${x.created} · 更新 ${x.updated} · 缺失 ${x.missing} · 跳过 ${x.skipped}`;
-        toast.success(
-          `同步完成 · ${c("领域", counters.domain)} / ${c("表", counters.tables)} / ${c("字段", counters.columns)}`,
-        );
-        onOpenChange(false);
-      } finally {
-        setSubmitting(false);
-      }
-    }, 300);
+      const c = (label: string, x: SyncCounter) =>
+        `${label} 新增 ${x.created} · 更新 ${x.updated} · 缺失 ${x.missing} · 跳过 ${x.skipped ?? 0}`;
+      toast.success(
+        `同步完成 · ${c("领域", result.domain)} / ${c("表", result.tables)} / ${c("字段", result.columns)}`,
+      );
+      onOpenChange(false);
+    } catch (error: any) {
+      toast.error(error?.message ?? "同步失败");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (

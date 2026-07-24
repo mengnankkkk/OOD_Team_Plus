@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 import { ensureProfile, fetchCurrentProfile } from "@/services/profileService";
 import type { UserProfile } from "@/types/app/user";
 
@@ -17,6 +17,37 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const offlineCreatedAt = new Date().toISOString();
+const offlineUser = {
+  id: "local-demo-user",
+  email: "local-demo@example.com",
+  is_anonymous: true,
+  user_metadata: { display_name: "本地演示" },
+} as unknown as User;
+const offlineSession = {
+  access_token: "offline",
+  refresh_token: "offline",
+  expires_in: 0,
+  token_type: "bearer",
+  user: offlineUser,
+} as unknown as Session;
+const offlineProfile: UserProfile = {
+  id: offlineUser.id,
+  displayName: "本地演示",
+  age: null,
+  household: null,
+  monthlyIncome: null,
+  monthlyExpense: null,
+  liabilities: null,
+  emergencyTargetMonths: 6,
+  riskLevel: "R3",
+  riskSubjective: null,
+  riskCapacity: null,
+  behaviorNotes: null,
+  onboardingCompleted: true,
+  createdAt: offlineCreatedAt,
+  updatedAt: offlineCreatedAt,
+};
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
@@ -53,6 +84,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setSession(offlineSession);
+      setProfile(offlineProfile);
+      setLoading(false);
+      return;
+    }
+
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (data.session?.user) {
@@ -89,10 +127,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (fresh) setProfile(fresh);
     },
     async signInWithPassword(email, password) {
+      if (!isSupabaseConfigured) return { error: new Error("当前为本地演示模式，未接入登录服务") };
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       return { error: error ?? null };
     },
     async signUpWithPassword(email, password, displayName) {
+      if (!isSupabaseConfigured) return { error: new Error("当前为本地演示模式，未接入注册服务") };
       const emailRedirectTo = `${window.location.origin}/auth/callback`;
       const { error } = await supabase.auth.signUp({
         email,
@@ -102,6 +142,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return { error: error ?? null };
     },
     async signOut() {
+      if (!isSupabaseConfigured) return;
       await supabase.auth.signOut();
     },
   }), [session, profile, loading]);
