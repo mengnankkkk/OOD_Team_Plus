@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { evaluateWatchConditions } from "./alert-engine";
 
 describe("evaluateWatchConditions", () => {
-  it("exposes the expected function signature", () => {
-    expect(evaluateWatchConditions).toHaveLength(2);
+  it("accepts an optional user scope", () => {
+    expect(evaluateWatchConditions).toHaveLength(3);
   });
 
-  it("resolves without doing any work yet", async () => {
+  it("resolves when no matching conditions exist", async () => {
     await expect(evaluateWatchConditions(["condition_1"], "threshold-crossed")).resolves.toBeUndefined();
   });
 });

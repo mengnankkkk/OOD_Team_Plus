@@ -9,12 +9,13 @@ const MAX_RESULT_BYTES = 5 * 1024 * 1024;
 const QUERY_TIMEOUT_MS = 30_000;
 
 interface QueryStatement {
-  all(): unknown[];
+  all(...parameters: unknown[]): unknown[];
   columns(): Array<{ name: string; type: string | null }>;
 }
 
 interface QueryDatabase {
-  authorizer: Parameters<typeof applyReadOnlyAuthorizer>[0]["authorizer"];
+  authorizer?: Parameters<typeof applyReadOnlyAuthorizer>[0]["authorizer"];
+  pragma?: Parameters<typeof applyReadOnlyAuthorizer>[0]["pragma"];
   prepare(sql: string): QueryStatement;
 }
 
@@ -32,6 +33,7 @@ export async function executeQuery(
   getDb: () => SqliteDb = () => {
     throw new Error("No DB factory provided");
   },
+  parameters: readonly unknown[] = [],
 ): Promise<QueryExecutionResult> {
   if (!validateSql(sql, ALLOWED_TABLES).valid) {
     throw createExtensionError(
@@ -42,7 +44,7 @@ export async function executeQuery(
 
   const safeLimit = Math.min(Math.max(1, Math.trunc(limit)), MAX_ROWS);
   const database = getDb() as unknown as QueryDatabase;
-  applyReadOnlyAuthorizer(database);
+  const releaseReadOnlyGuard = applyReadOnlyAuthorizer(database);
 
   const timeout = new Promise<never>((_, reject) => {
     setTimeout(
@@ -63,20 +65,24 @@ export async function executeQuery(
     const statement = database.prepare(ensureLimit(sql, safeLimit));
     return {
       columns: statement.columns().map(({ name, type }) => ({ name, type: type ?? "TEXT" })),
-      rows: statement.all() as Record<string, unknown>[],
+      rows: statement.all(...parameters) as Record<string, unknown>[],
     };
   });
-  const { columns, rows } = await Promise.race([query, timeout]);
-  const serializedSize = Buffer.byteLength(JSON.stringify(rows), "utf8");
-  const finalRows = serializedSize > MAX_RESULT_BYTES ? truncateRows(rows) : rows;
+  try {
+    const { columns, rows } = await Promise.race([query, timeout]);
+    const serializedSize = Buffer.byteLength(JSON.stringify(rows), "utf8");
+    const finalRows = serializedSize > MAX_RESULT_BYTES ? truncateRows(rows) : rows;
 
-  return {
-    rows: finalRows,
-    columns,
-    rowCount: finalRows.length,
-    isTruncated: finalRows.length < rows.length,
-    resultSizeBytes: Buffer.byteLength(JSON.stringify(finalRows), "utf8"),
-  };
+    return {
+      rows: finalRows,
+      columns,
+      rowCount: finalRows.length,
+      isTruncated: finalRows.length < rows.length,
+      resultSizeBytes: Buffer.byteLength(JSON.stringify(finalRows), "utf8"),
+    };
+  } finally {
+    releaseReadOnlyGuard();
+  }
 }
 
 function ensureLimit(sql: string, limit: number): string {

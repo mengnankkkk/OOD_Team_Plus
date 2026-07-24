@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createWorkspace } from "@/server/extensions/simulation/service";
 import { getDatabase, getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 import { SimulationWorkspaceRequestSchema } from "@/server/extensions/schemas";
+import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
 
 export const runtime = "nodejs";
 
@@ -10,9 +11,14 @@ export async function POST(req: NextRequest) {
   if (!idempotencyKey(req)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
   const parsed = SimulationWorkspaceRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Invalid request", details: parsed.error.format() } }, { status: 400 });
+  const { userId } = getRequestContext(req); const key = idempotencyKey(req)!; const idem = await beginIdempotentRequest(userId, "simulation_workspace", key, parsed.data);
+  if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
+  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const result = createWorkspace(getRequestContext(req).userId, parsed.data);
-    return NextResponse.json({ data: { id: result.workspaceId, status: "ACTIVE", portfolioSnapshotId: parsed.data.portfolioSnapshotId, rootBranchId: result.branchId, activeBranchId: result.branchId, version: result.version, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() }, { status: 202 });
+    const result = createWorkspace(userId, parsed.data);
+    const payload = { data: { id: result.workspaceId, status: "ACTIVE", portfolioSnapshotId: parsed.data.portfolioSnapshotId, rootBranchId: result.branchId, activeBranchId: result.branchId, version: result.version, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
+    await saveIdempotentResponse(userId, "simulation_workspace", key, idem.requestHash, payload);
+    return NextResponse.json(payload, { status: 202 });
   } catch (error) {
     return NextResponse.json({ error: { code: "SNAPSHOT_NOT_USABLE", message: error instanceof Error ? error.message : "Snapshot not found" } }, { status: 422 });
   }

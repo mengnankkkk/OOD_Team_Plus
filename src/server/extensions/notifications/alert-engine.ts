@@ -2,17 +2,20 @@ import { createId, getDatabase, isoNow } from "@/server/http/context";
 
 export type ObservationConditionType = "UNREALIZED_GAIN_REACH" | "PRICE_ABOVE" | "PRICE_BELOW" | "DRAWDOWN_REACH";
 
-export async function evaluateWatchConditions(conditionIds: string[], reason: string): Promise<void> {
-  evaluateConditions(conditionIds, reason);
+export async function evaluateWatchConditions(conditionIds: string[], reason: string, userId?: string): Promise<void> {
+  evaluateConditions(conditionIds, reason, userId);
 }
 
-export function evaluateConditions(conditionIds: string[] | undefined, reason: string) {
+export function evaluateConditions(conditionIds: string[] | undefined, reason: string, userId?: string) {
   const db = getDatabase();
+  const ownerClause = userId ? " AND user_id = ?" : "";
+  const ownerParams = userId ? [userId] : [];
   const conditions = conditionIds?.length
-    ? db.prepare("SELECT * FROM observation_conditions WHERE id IN (" + conditionIds.map(() => "?").join(",") + ") AND status='active'").all(...conditionIds)
-    : db.prepare("SELECT * FROM observation_conditions WHERE status='active'").all();
+    ? db.prepare("SELECT * FROM observation_conditions WHERE id IN (" + conditionIds.map(() => "?").join(",") + ") AND status='active'" + ownerClause).all(...conditionIds, ...ownerParams)
+    : db.prepare("SELECT * FROM observation_conditions WHERE status='active'" + ownerClause).all(...ownerParams);
   const results: Array<Record<string, unknown>> = [];
   const now = isoNow();
+
   for (const condition of conditions as Array<Record<string, unknown>>) {
     const observed = readObservedValue(db, condition);
     const conditionType = String(condition.condition_type) as ObservationConditionType;
@@ -23,6 +26,7 @@ export function evaluateConditions(conditionIds: string[] | undefined, reason: s
       results.push({ conditionId: condition.id, triggered: false, observedValue: observed });
       continue;
     }
+
     const evaluationKey = `${condition.id}:${String(condition.condition_type)}:${String(condition.threshold_decimal)}:${observed}`;
     const eventId = createId("watch_event");
     const inserted = db.prepare(`INSERT INTO observation_condition_events
@@ -33,11 +37,18 @@ export function evaluateConditions(conditionIds: string[] | undefined, reason: s
       const title = conditionTitle(String(condition.condition_type), observed, String(condition.threshold_decimal));
       const groupKey = `${condition.instrument_id ?? condition.holding_id ?? condition.id}:${condition.condition_type}`;
       db.prepare(`INSERT INTO notifications
-        (id, user_id, severity, title, body_text, source_type, source_id, group_key, condition_id, event_id, created_at)
-        VALUES (?, ?, 'important', ?, ?, 'WATCH_CONDITION', ?, ?, ?, ?, ?)`).run(
-        createId("notification"), condition.user_id, title,
+        (id, user_id, severity, title, body_text, source_type, source_id, group_key, condition_id, event_id, created_at, updated_at)
+        VALUES (?, ?, 'important', ?, ?, 'WATCH_CONDITION', ?, ?, ?, ?, ?, ?)`).run(
+        createId("notification"),
+        condition.user_id,
+        title,
         `${title}。当前值 ${formatNumber(observed)}，阈值 ${formatNumber(Number(condition.threshold_decimal))}。`,
-        condition.id, groupKey, condition.id, eventId, now,
+        condition.id,
+        groupKey,
+        condition.id,
+        eventId,
+        now,
+        now,
       );
       results.push({ conditionId: condition.id, triggered: true, eventId, observedValue: observed });
     } else {
@@ -84,7 +95,12 @@ function hasCrossed(type: ObservationConditionType, previous: number | null, cur
 }
 
 function conditionTitle(type: string, value: number, threshold: string): string {
-  const labels: Record<string, string> = { UNREALIZED_GAIN_REACH: "持仓浮盈达到提醒阈值", PRICE_ABOVE: "标的价格上穿提醒阈值", PRICE_BELOW: "标的价格下穿提醒阈值", DRAWDOWN_REACH: "持仓回撤达到提醒阈值" };
+  const labels: Record<string, string> = {
+    UNREALIZED_GAIN_REACH: "持仓浮盈达到提醒阈值",
+    PRICE_ABOVE: "标的价格上穿提醒阈值",
+    PRICE_BELOW: "标的价格下穿提醒阈值",
+    DRAWDOWN_REACH: "持仓回撤达到提醒阈值",
+  };
   return `${labels[type] ?? "观察条件已触发"}（${formatNumber(value)} / ${formatNumber(Number(threshold))}）`;
 }
 

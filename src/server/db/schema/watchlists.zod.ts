@@ -44,9 +44,13 @@ const notificationBaseSchema = z.object({
   sourceType: nonEmptyText,
   sourceId: optionalText,
   groupKey: optionalText,
+  conditionId: optionalText,
+  eventId: optionalText,
   readAt: optionalText,
   dismissedAt: optionalText,
   createdAt: nonEmptyText,
+  updatedAt: nonEmptyText,
+  rowVersion: z.number().int().min(1).default(1),
 });
 
 const notificationPreferencesBaseSchema = z.object({
@@ -64,6 +68,7 @@ const notificationPreferencesBaseSchema = z.object({
 const rssFeedBaseSchema = z.object({
   id: nonEmptyText,
   url: z.string().trim().url(),
+  siteUrl: z.string().trim().url().nullable().optional(),
   title: nonEmptyText,
   description: optionalText,
   language: z.string().trim().min(1).default("zh"),

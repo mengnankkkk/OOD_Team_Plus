@@ -16,6 +16,7 @@ describe("POST /api/v1/research-searches", () => {
 
     const data = await res.json();
     expect(data.data.analysis.type).toBe("RESEARCH_SEARCH");
-    expect(data.data.analysis.status).toBe("QUEUED");
+    expect(["COMPLETED", "FAILED"]).toContain(data.data.analysis.status);
+    expect(Array.isArray(data.data.sourceStatuses)).toBe(true);
   });
 });

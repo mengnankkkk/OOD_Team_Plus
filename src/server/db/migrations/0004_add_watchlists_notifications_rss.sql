@@ -39,9 +39,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   source_type TEXT NOT NULL,
   source_id TEXT,
   group_key TEXT,
+  condition_id TEXT,
+  event_id TEXT,
   read_at TEXT,
   dismissed_at TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  row_version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC, id DESC);
@@ -64,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_notification_preferences_user_updated ON notifica
 CREATE TABLE IF NOT EXISTS rss_feeds (
   id TEXT PRIMARY KEY,
   url TEXT NOT NULL UNIQUE,
+  site_url TEXT,
   title TEXT NOT NULL,
   description TEXT,
   language TEXT NOT NULL DEFAULT 'zh',

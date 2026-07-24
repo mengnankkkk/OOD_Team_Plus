@@ -1,9 +1,26 @@
-import { NextRequest } from "next/server";
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-vi.mock("better-sqlite3", () => ({ default: vi.fn() }));
+import { NextRequest } from "next/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET, POST } from "./route";
+
+let dbPath = "";
+
+beforeEach(() => {
+  dbPath = join(tmpdir(), `money-whisperer-data-query-${randomUUID()}.db`);
+  vi.stubEnv("DB_PATH", dbPath);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try { rmSync(`${dbPath}${suffix}`, { force: true }); } catch { /* Windows may retain a failed SQLite handle briefly. */ }
+  }
+});
 
 describe("POST /api/v1/data-queries", () => {
   it("returns 400 when Idempotency-Key is missing", async () => {
@@ -52,17 +69,19 @@ describe("POST /api/v1/data-queries", () => {
 
     const data = await res.json();
     expect(data.data.analysis.type).toBe("DATA_QUERY");
-    expect(data.data.analysis.status).toBe("QUEUED");
+    expect(data.data.analysis.status).toBe("COMPLETED");
+    expect(data.data.result.rowCount).toBeGreaterThan(0);
     expect(data.data.analysis.streamUrl).toContain("/api/v1/analyses/");
   });
 
-  it("GET returns empty list", async () => {
+  it("GET returns a persisted list", async () => {
     const req = new NextRequest("http://localhost/api/v1/data-queries");
     const res = await GET(req);
 
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(Array.isArray(data.data.items)).toBe(true);
+    expect(data.data.items).toEqual([]);
     expect(data.meta.pagination.limit).toBe(20);
   });
 });

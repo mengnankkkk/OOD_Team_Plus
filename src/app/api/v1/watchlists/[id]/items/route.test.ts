@@ -18,14 +18,14 @@ describe("watchlist item routes", () => {
     const req = new NextRequest(collectionUrl, {
       method: "POST",
       body: JSON.stringify({ instrumentId: "AAPL", reason: "Review earnings" }),
+      headers: { "Idempotency-Key": "item-key-1" },
     });
     expect((await POST(req, context)).status).toBe(404);
   });
 
-  it("GET returns an empty paginated list", async () => {
-    const body = await (await GET(new NextRequest(collectionUrl), context)).json();
-    expect(body.data.items).toEqual([]);
-    expect(body.meta.pagination.limit).toBe(20);
+  it("GET enforces watchlist ownership", async () => {
+    const response = await GET(new NextRequest(collectionUrl), context);
+    expect(response.status).toBe(404);
   });
 
   it("PATCH returns 400 without If-Match", async () => {

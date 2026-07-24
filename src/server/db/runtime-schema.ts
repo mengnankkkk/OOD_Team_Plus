@@ -7,6 +7,15 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS api_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_sessions_user_expires ON api_sessions(user_id, expires_at);
     CREATE TABLE IF NOT EXISTS user_profiles (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL UNIQUE,
@@ -56,7 +65,10 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       session_id TEXT,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      client_message_id TEXT,
+      agent_run_id TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS agent_runs (
       id TEXT PRIMARY KEY,
@@ -64,8 +76,26 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       type TEXT NOT NULL,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      completed_at TEXT
+      completed_at TEXT,
+      failure_code TEXT,
+      failure_message TEXT,
+      result_json TEXT,
+      compliance_json TEXT
     );
+    CREATE TABLE IF NOT EXISTS information_requests (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      analysis_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      fields_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      answers_json TEXT,
+      created_at TEXT NOT NULL,
+      answered_at TEXT,
+      expires_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_information_requests_session_status ON information_requests(session_id, status, created_at);
     CREATE TABLE IF NOT EXISTS idempotency_records (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -81,6 +111,8 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       portfolio_id TEXT NOT NULL,
       cash_decimal TEXT NOT NULL DEFAULT '10000',
       total_market_value_decimal TEXT NOT NULL DEFAULT '0',
+      data_quality TEXT NOT NULL DEFAULT 'complete',
+      source_statuses_json TEXT NOT NULL DEFAULT '[]',
       as_of TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -105,6 +137,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       cost_decimal TEXT NOT NULL,
       opened_at TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -242,11 +275,31 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       content_type TEXT NOT NULL,
       content_json TEXT,
       content_markdown TEXT,
+      content_sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_by_type TEXT NOT NULL DEFAULT 'system',
+      created_by_id TEXT,
       edited_by TEXT,
       edit_note TEXT,
       created_at TEXT NOT NULL,
       UNIQUE(artifact_id, version_no)
     );
+    CREATE TABLE IF NOT EXISTS message_artifacts (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      artifact_type TEXT NOT NULL,
+      risk_assessment_id TEXT,
+      goal_id TEXT,
+      portfolio_snapshot_id TEXT,
+      diagnostic_run_id TEXT,
+      recommendation_id TEXT,
+      simulation_id TEXT,
+      generated_artifact_id TEXT,
+      display_order INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      UNIQUE(message_id, artifact_type, display_order)
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_artifacts_generated ON message_artifacts(generated_artifact_id);
     CREATE TABLE IF NOT EXISTS simulation_workspaces (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -256,6 +309,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       label TEXT NOT NULL,
       objective_text TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      root_branch_id TEXT,
       active_branch_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -359,9 +413,13 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       source_type TEXT NOT NULL,
       source_id TEXT,
       group_key TEXT,
+      condition_id TEXT,
+      event_id TEXT,
       read_at TEXT,
       dismissed_at TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      row_version INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS notification_preferences (
       id TEXT PRIMARY KEY,
@@ -377,6 +435,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
     CREATE TABLE IF NOT EXISTS rss_feeds (
       id TEXT PRIMARY KEY,
       url TEXT NOT NULL UNIQUE,
+      site_url TEXT,
       title TEXT NOT NULL,
       description TEXT,
       language TEXT NOT NULL DEFAULT 'zh',
@@ -425,8 +484,11 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       user_id TEXT NOT NULL,
       conversation_id TEXT,
       analysis_id TEXT,
+      instrument_id TEXT,
       action TEXT NOT NULL,
       suitability TEXT NOT NULL,
+      summary TEXT,
+      confidence_decimal TEXT,
       position_range_json TEXT NOT NULL,
       first_position TEXT,
       add_conditions_json TEXT NOT NULL,
@@ -440,6 +502,9 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       risks_json TEXT NOT NULL,
       alternatives_json TEXT NOT NULL,
       invalidation TEXT,
+      compliance_json TEXT NOT NULL DEFAULT '{}',
+      data_as_of TEXT,
+      provenance_json TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -467,6 +532,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       source_recommendation_id TEXT,
       last_observed_decimal TEXT,
       last_evaluated_at TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -488,7 +554,9 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       candidates_json TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL,
-      confirmed_at TEXT
+      confirmed_holding_ids_json TEXT,
+      confirmed_at TEXT,
+      row_version INTEGER NOT NULL DEFAULT 1
     );
   `);
 
@@ -506,32 +574,64 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
   ensureColumn("conversation_sessions", "status", "TEXT NOT NULL DEFAULT 'active'");
   ensureColumn("conversation_sessions", "updated_at", "TEXT");
   ensureColumn("conversation_sessions", "row_version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("messages", "client_message_id", "TEXT");
+  ensureColumn("messages", "agent_run_id", "TEXT");
+  ensureColumn("messages", "metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("agent_runs", "failure_code", "TEXT");
+  ensureColumn("agent_runs", "failure_message", "TEXT");
+  ensureColumn("agent_runs", "result_json", "TEXT");
+  ensureColumn("agent_runs", "compliance_json", "TEXT");
+  ensureColumn("portfolio_snapshots", "data_quality", "TEXT NOT NULL DEFAULT 'complete'");
+  ensureColumn("portfolio_snapshots", "source_statuses_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("user_profiles", "max_drawdown_decimal", "TEXT");
+  ensureColumn("holdings", "version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("observation_conditions", "version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("recommendations", "instrument_id", "TEXT");
+  ensureColumn("recommendations", "summary", "TEXT");
+  ensureColumn("recommendations", "confidence_decimal", "TEXT");
+  ensureColumn("recommendations", "compliance_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("recommendations", "data_as_of", "TEXT");
+  ensureColumn("recommendations", "provenance_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("notifications", "condition_id", "TEXT");
   ensureColumn("notifications", "event_id", "TEXT");
+  ensureColumn("notifications", "updated_at", "TEXT");
+  ensureColumn("notifications", "row_version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("simulation_workspaces", "root_branch_id", "TEXT");
   ensureColumn("observation_conditions", "last_observed_decimal", "TEXT");
+  ensureColumn("holding_parses", "confirmed_holding_ids_json", "TEXT");
+  ensureColumn("holding_parses", "row_version", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("rss_feeds", "etag", "TEXT");
+  ensureColumn("rss_feeds", "site_url", "TEXT");
   ensureColumn("rss_feeds", "last_modified", "TEXT");
   ensureColumn("rss_feeds", "last_error_message", "TEXT");
   ensureColumn("rss_feeds", "sync_interval_minutes", "INTEGER NOT NULL DEFAULT 60");
+  ensureColumn("generated_artifact_versions", "content_sha256", "TEXT");
+  ensureColumn("generated_artifact_versions", "size_bytes", "INTEGER");
+  ensureColumn("generated_artifact_versions", "created_by_type", "TEXT NOT NULL DEFAULT 'system'");
+  ensureColumn("generated_artifact_versions", "created_by_id", "TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_client ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL");
 
   const now = new Date().toISOString();
   const user = db.prepare("SELECT id FROM users WHERE id = ?").get("demo-user") as { id: string } | undefined;
   if (!user) {
     db.prepare("INSERT INTO users (id, display_name, created_at) VALUES (?, ?, ?)").run("demo-user", "Demo Investor", now);
-    for (const instrument of [
-      ["AAPL", "Apple", "NASDAQ", "stock", "Technology", 1],
-      ["MSFT", "Microsoft", "NASDAQ", "stock", "Technology", 1],
-      ["SPY", "SPDR S&P 500 ETF", "NYSE", "fund", "Broad Market", 1],
-      ["GLD", "SPDR Gold Shares", "NYSE", "fund", "Commodities", 1],
-    ]) {
-      db.prepare("INSERT INTO instruments (id, symbol, name, market, asset_type, sector, tradable) VALUES (?, ?, ?, ?, ?, ?, ?)").run(...instrument);
-    }
-    db.prepare("INSERT INTO portfolio_snapshots (id, user_id, portfolio_id, cash_decimal, total_market_value_decimal, as_of, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run("portfolio-snapshot-demo", "demo-user", "portfolio-demo", "10000", "5000", now, now);
-    const holdings = [["holding-aapl", "AAPL", "10", "120", "150", "1500", "300", 3000], ["holding-msft", "MSFT", "5", "200", "220", "1100", "100", 2200], ["holding-spy", "SPY", "5", "250", "280", "1400", "150", 2800]];
-    for (const holding of holdings) {
-      db.prepare("INSERT INTO holding_snapshots (id, portfolio_snapshot_id, instrument_id, quantity_decimal, cost_decimal, price_decimal, market_value_decimal, unrealized_pnl_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(holding[0], "portfolio-snapshot-demo", ...holding.slice(1), now);
-      db.prepare("INSERT INTO holdings (id, user_id, portfolio_id, instrument_id, quantity_decimal, cost_decimal, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(`holding-${holding[0]}`, "demo-user", "portfolio-demo", holding[1], holding[2], holding[3], now, now, now);
-    }
+  }
+  for (const instrument of [
+    ["AAPL", "AAPL", "Apple", "NASDAQ", "stock", "Technology", 1],
+    ["MSFT", "MSFT", "Microsoft", "NASDAQ", "stock", "Technology", 1],
+    ["SPY", "SPY", "SPDR S&P 500 ETF", "NYSE", "fund", "Broad Market", 1],
+    ["GLD", "GLD", "SPDR Gold Shares", "NYSE", "fund", "Commodities", 1],
+    ["000300.SH", "000300.SH", "沪深300指数", "SH", "index", "Broad Market", 0],
+    ["DEMO300.SH", "DEMO300.SH", "沪深300示例ETF", "SH", "etf", "Broad Market", 1],
+    ["DEMO300.OF", "DEMO300.OF", "沪深300示例指数基金", "CN", "fund", "Broad Market", 1],
+  ]) {
+    db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, name, market, asset_type, sector, tradable) VALUES (?, ?, ?, ?, ?, ?, ?)").run(...instrument);
+  }
+  db.prepare("INSERT OR IGNORE INTO portfolio_snapshots (id, user_id, portfolio_id, cash_decimal, total_market_value_decimal, data_quality, source_statuses_json, as_of, created_at) VALUES (?, ?, ?, ?, ?, 'fixture', ?, ?, ?)").run("portfolio-snapshot-demo", "demo-user", "portfolio-demo", "10000", "5000", JSON.stringify([{ source: "LOCAL_FIXTURE", status: "SUCCEEDED" }]), now, now);
+  db.prepare("UPDATE portfolio_snapshots SET data_quality='fixture', source_statuses_json=? WHERE id='portfolio-snapshot-demo'").run(JSON.stringify([{ source: "LOCAL_FIXTURE", status: "SUCCEEDED" }]));
+  const holdings = [["holding-aapl", "AAPL", "10", "120", "150", "1500", "300", 3000], ["holding-msft", "MSFT", "5", "200", "220", "1100", "100", 2200], ["holding-spy", "SPY", "5", "250", "280", "1400", "150", 2800]];
+  for (const holding of holdings) {
+    db.prepare("INSERT OR IGNORE INTO holding_snapshots (id, portfolio_snapshot_id, instrument_id, quantity_decimal, cost_decimal, price_decimal, market_value_decimal, unrealized_pnl_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(holding[0], "portfolio-snapshot-demo", ...holding.slice(1), now);
+    db.prepare("INSERT OR IGNORE INTO holdings (id, user_id, portfolio_id, instrument_id, quantity_decimal, cost_decimal, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(`holding-${holding[0]}`, "demo-user", "portfolio-demo", holding[1], holding[2], holding[3], now, now, now);
   }
 }

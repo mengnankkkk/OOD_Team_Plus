@@ -67,9 +67,13 @@ export const notifications = sqliteTable(
     sourceType: text("source_type").notNull(),
     sourceId: text("source_id"),
     groupKey: text("group_key"),
+    conditionId: text("condition_id"),
+    eventId: text("event_id"),
     readAt: text("read_at"),
     dismissedAt: text("dismissed_at"),
     createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    rowVersion: integer("row_version").notNull().default(1),
   },
   (t) => [index("idx_notifications_user_created").on(t.userId, t.createdAt), index("idx_notifications_user_group").on(t.userId, t.groupKey, t.createdAt)],
 );
@@ -95,6 +99,7 @@ export const rssFeeds = sqliteTable(
   {
     id: text("id").primaryKey(),
     url: text("url").notNull().unique(),
+    siteUrl: text("site_url"),
     title: text("title").notNull(),
     description: text("description"),
     language: text("language").notNull().default("zh"),

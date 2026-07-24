@@ -8,6 +8,10 @@ export const SSE_EVENT_TYPES = [
   "search.source.completed",
   "portfolio.refreshed",
   "rss.synced",
+  "agent.started",
+  "agent.completed",
+  "agent.failed",
+  "recommendation.created",
 ] as const;
 
 export type SseEventType = (typeof SSE_EVENT_TYPES)[number];
@@ -28,10 +32,10 @@ export function persistSseEvent(event: Omit<SseEvent, "id" | "createdAt">): void
 
 export function getSseEvents(analysisId: string, lastEventId?: string | null): SseEvent[] {
   const db = getDatabase();
-  const rows = lastEventId
-    ? db.prepare("SELECT * FROM agent_run_events WHERE agent_run_id = ? AND id > ? ORDER BY created_at, id").all(analysisId, lastEventId)
-    : db.prepare("SELECT * FROM agent_run_events WHERE agent_run_id = ? ORDER BY created_at, id").all(analysisId);
+  const rows = db.prepare("SELECT * FROM agent_run_events WHERE agent_run_id = ? ORDER BY created_at, id").all(analysisId) as Array<Record<string, unknown>>;
   db.close();
-  return (rows as Array<Record<string, unknown>>).map((row) => ({ id: String(row.id), analysisId: String(row.agent_run_id), type: String(row.event_type) as SseEventType, payload: JSON.parse(String(row.payload_json)), createdAt: String(row.created_at) }));
+  const matchedIndex = lastEventId ? rows.findIndex((row) => row.id === lastEventId) : -1;
+  const selected = matchedIndex >= 0 ? rows.slice(matchedIndex + 1) : rows;
+  return selected.map((row) => ({ id: String(row.id), analysisId: String(row.agent_run_id), type: String(row.event_type) as SseEventType, payload: JSON.parse(String(row.payload_json)), createdAt: String(row.created_at) }));
 }
 import { createId, getDatabase, isoNow, json } from "@/server/http/context";

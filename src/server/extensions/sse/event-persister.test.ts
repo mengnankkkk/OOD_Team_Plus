@@ -14,6 +14,10 @@ describe("SSE_EVENT_TYPES", () => {
       "search.source.completed",
       "portfolio.refreshed",
       "rss.synced",
+      "agent.started",
+      "agent.completed",
+      "agent.failed",
+      "recommendation.created",
     ]);
   });
 });

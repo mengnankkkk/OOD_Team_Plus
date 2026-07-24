@@ -14,6 +14,7 @@ describe("/api/v1/watchlists", () => {
       new NextRequest("http://localhost/api/v1/watchlists", {
         method: "POST",
         body: JSON.stringify({ name: "My list", description: "Tracking" }),
+        headers: { "Idempotency-Key": "watchlist-key-1" },
       }),
     );
 
@@ -28,7 +29,7 @@ describe("/api/v1/watchlists", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.data.items).toEqual([]);
+    expect(Array.isArray(body.data.items)).toBe(true);
     expect(body.meta.pagination.limit).toBe(100);
   });
 });

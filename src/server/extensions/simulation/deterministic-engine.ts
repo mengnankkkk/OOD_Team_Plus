@@ -65,7 +65,7 @@ export function executeSimulation(
   const totalMarketValue = holdings.reduce((sum, holding) => sum + holding.marketValue, 0);
   const parentValue = parentHoldings.reduce((sum, holding) => sum + Number(holding.marketValue), 0);
   const totalValue = newCash + totalMarketValue;
-  const weights = holdings.map((holding) => totalValue > 0 ? holding.marketValue / totalMarketValue : 0);
+  const weights = holdings.map((holding) => totalMarketValue > 0 ? holding.marketValue / totalMarketValue : 0);
   const hhi = weights.reduce((sum, weight) => sum + weight * weight, 0);
   const concentration = weights.length ? hhi : 0;
   const totalReturn = parentValue + cash > 0 ? ((totalValue - (parentValue + cash)) / (parentValue + cash)) : 0;

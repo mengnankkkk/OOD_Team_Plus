@@ -23,8 +23,9 @@ export const BLOCKED_PATTERNS = [
 
 export function isSSRFBlocked(url: string): boolean {
   try {
-    const hostname = new URL(url).hostname;
-    return BLOCKED_PATTERNS.some((pattern) => pattern.test(hostname));
+    const parsed = new URL(url);
+    const hostname = parsed.hostname;
+    return (parsed.protocol !== "http:" && parsed.protocol !== "https:") || Boolean(parsed.username || parsed.password) || BLOCKED_PATTERNS.some((pattern) => pattern.test(hostname));
   } catch {
     return true;
   }

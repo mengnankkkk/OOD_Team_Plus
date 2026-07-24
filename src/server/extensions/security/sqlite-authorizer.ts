@@ -11,6 +11,7 @@ const ALLOWED_READ_TABLES = new Set([
   "holding_snapshots",
   "market_snapshots",
   "market_snapshot_metrics",
+  "portfolio_score_snapshots",
   "instruments",
   "data_queries",
   "data_query_result_chunks",
@@ -25,14 +26,20 @@ type AuthorizerCallback = (
 ) => number;
 
 interface AuthorizableDatabase {
-  authorizer(callback: AuthorizerCallback): unknown;
+  authorizer?: (callback: AuthorizerCallback) => unknown;
+  pragma?: (sql: string) => unknown;
 }
 
 /** Installs a deny-by-default policy before statements are prepared by SQLite. */
 export function applyReadOnlyAuthorizer(
   database: AuthorizableDatabase,
   allowedTables: ReadonlySet<string> = ALLOWED_READ_TABLES,
-): void {
+): () => void {
+  if (!database.authorizer) {
+    if (!database.pragma) throw new Error("SQLite read-only guard is unavailable");
+    database.pragma("query_only = ON");
+    return () => { database.pragma?.("query_only = OFF"); };
+  }
   database.authorizer((action, arg1, arg2) => {
     if (action === SQLITE_SELECT) return SQLITE_OK;
 
@@ -48,6 +55,7 @@ export function applyReadOnlyAuthorizer(
 
     return SQLITE_DENY;
   });
+  return () => undefined;
 }
 
 export { ALLOWED_READ_TABLES };

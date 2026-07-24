@@ -32,8 +32,18 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
 
 export async function DELETE(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
-  if (!req.headers.get("If-Match")) return invalid("If-Match required");
-  deleteArtifact(getRequestContext(req).userId, id);
+  const header = req.headers.get("If-Match");
+  if (!header) return invalid("If-Match required");
+  const expectedVersion = Number.parseInt(header.replaceAll('"', ""), 10);
+  if (!Number.isFinite(expectedVersion)) return invalid("Invalid If-Match");
+  try {
+    const deleted = deleteArtifact(getRequestContext(req).userId, id, expectedVersion);
+    if (!deleted) return notFound();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Artifact delete failed";
+    if (message === "VERSION_CONFLICT") return NextResponse.json({ error: { code: message, message } }, { status: 412 });
+    throw error;
+  }
   return new Response(null, { status: 204 });
 }
 

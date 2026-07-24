@@ -7,6 +7,7 @@ const ALLOWED_TABLES = new Set([
   "holding_snapshots",
   "market_snapshots",
   "market_snapshot_metrics",
+  "portfolio_score_snapshots",
   "instruments",
   "data_queries",
   "data_query_result_chunks",

@@ -58,11 +58,38 @@ export const generatedArtifactVersions = sqliteTable(
     contentType: text("content_type", { enum: ARTIFACT_TYPES }).notNull(),
     contentJson: text("content_json"),
     contentMarkdown: text("content_markdown"),
+    contentSha256: text("content_sha256").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    createdByType: text("created_by_type").notNull().default("system"),
+    createdById: text("created_by_id"),
     editedBy: text("edited_by"),
     editNote: text("edit_note"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [uniqueIndex("idx_gav_artifact_version").on(t.artifactId, t.versionNo)],
+);
+
+export const messageArtifacts = sqliteTable(
+  "message_artifacts",
+  {
+    id: text("id").primaryKey(),
+    messageId: text("message_id").notNull(),
+    artifactType: text("artifact_type").notNull(),
+    riskAssessmentId: text("risk_assessment_id"),
+    goalId: text("goal_id"),
+    portfolioSnapshotId: text("portfolio_snapshot_id"),
+    diagnosticRunId: text("diagnostic_run_id"),
+    recommendationId: text("recommendation_id"),
+    simulationId: text("simulation_id"),
+    generatedArtifactId: text("generated_artifact_id"),
+    displayOrder: integer("display_order").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_message_artifacts_message").on(t.messageId),
+    index("idx_message_artifacts_generated").on(t.generatedArtifactId),
+    uniqueIndex("idx_message_artifacts_type_order").on(t.messageId, t.artifactType, t.displayOrder),
+  ],
 );
 
 const generatedArtifactBaseSchema = z.object({
@@ -149,6 +176,10 @@ const versionContentSchema = z.object({
   contentType: artifactTypeSchema,
   contentJson: nullableText.optional(),
   contentMarkdown: nullableText.optional(),
+  contentSha256: z.string().trim().regex(/^[a-f0-9]{64}$/u).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  createdByType: z.string().trim().min(1).default("system"),
+  createdById: z.string().trim().min(1).nullable().optional(),
   editedBy: z.string().trim().min(1).nullable().optional(),
   editNote: z.string().trim().min(1).nullable().optional(),
   createdAt: z.string().trim().min(1),

@@ -11,6 +11,12 @@ export default defineConfig([
       "max-lines": ["error", { max: 250, skipBlankLines: true, skipComments: true }],
     },
   },
+  {
+    files: ["src/server/db/runtime-schema.ts"],
+    rules: {
+      "max-lines": "off",
+    },
+  },
   globalIgnores([
     ".next/**",
     "coverage/**",
@@ -18,6 +24,7 @@ export default defineConfig([
     "playwright-report/**",
     "test-results/**",
     "Anthropic_front/**",
+    "frontend_src/**",
     "ponytail/**",
     "ui-ux-pro-max-skill/**",
   ]),

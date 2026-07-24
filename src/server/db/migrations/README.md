@@ -14,3 +14,4 @@ Incremental columns tracked by the extension schema layer:
 - `watch_condition_events.previous_value_decimal` -> nullable `TEXT`
 - `watch_condition_events.metric_snapshot_json` -> nullable `TEXT`
 - `watch_condition_events.dedupe_key` -> nullable `TEXT`
+- `information_requests` -> persisted Agent clarification questions and answers

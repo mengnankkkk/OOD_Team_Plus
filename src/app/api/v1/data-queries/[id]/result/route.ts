@@ -12,6 +12,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const offset = Math.max(0, Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0);
   const result = getQueryResult(getRequestContext(req).userId, id, limit, offset);
   if (!result) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Data query not found" } }, { status: 404 });
+  if ("expired" in result) return NextResponse.json({ error: { code: "QUERY_RESULT_EXPIRED", message: "Query result has expired", retryable: false } }, { status: 410 });
   if ("notReady" in result) return NextResponse.json({ error: { code: "QUERY_RESULT_NOT_READY", message: "Query result is not ready", retryable: true } }, { status: 409 });
   return NextResponse.json({ data: result, meta: meta({ pagination: { limit, nextCursor: result.items.length === limit ? String(offset + limit) : null, hasMore: result.items.length === limit } }) });
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
-import { evaluateConditions } from "@/server/extensions/notifications/alert-engine";
+import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
 
 const Schema = z.object({
   holdingId: z.string().optional(),
@@ -24,7 +24,14 @@ export async function POST(req: NextRequest) {
   const parsed = Schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Invalid observation condition", details: parsed.error.format() } }, { status: 422 });
   const { userId } = getRequestContext(req);
+  const key = idempotencyKey(req)!;
+  const idem = await beginIdempotentRequest(userId, "observation_condition", key, parsed.data);
+  if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
+  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   const db = getDatabase();
+  if (parsed.data.holdingId && !db.prepare("SELECT id FROM holdings WHERE id=? AND user_id=? AND status='active'").get(parsed.data.holdingId, userId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Holding not found" } }, { status: 404 }); }
+  if (parsed.data.instrumentId && !db.prepare("SELECT id FROM instruments WHERE id=?").get(parsed.data.instrumentId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Instrument not found" } }, { status: 404 }); }
+  if (parsed.data.sourceRecommendationId && !db.prepare("SELECT id FROM recommendations WHERE id=? AND user_id=?").get(parsed.data.sourceRecommendationId, userId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation not found" } }, { status: 404 }); }
   const now = isoNow();
   const id = createId("condition");
   const result = db.prepare(`INSERT INTO observation_conditions
@@ -33,5 +40,7 @@ export async function POST(req: NextRequest) {
   void result;
   const row = db.prepare("SELECT * FROM observation_conditions WHERE id = ?").get(id);
   db.close();
-  return NextResponse.json({ data: row, meta: meta() }, { status: 201 });
+  const payload = { data: row, meta: meta() };
+  await saveIdempotentResponse(userId, "observation_condition", key, idem.requestHash, payload);
+  return NextResponse.json(payload, { status: 201 });
 }

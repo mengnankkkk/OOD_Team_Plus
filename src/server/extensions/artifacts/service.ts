@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 
-import { getDatabase, createId, isoNow, json, meta, parseJson } from "@/server/http/context";
+import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/context";
 import { sanitizeEChartsOption } from "@/server/extensions/sanitizers/echarts-sanitizer";
 import { sanitizeMarkdown } from "@/server/extensions/sanitizers/markdown-sanitizer";
-import { getDataQuery } from "@/server/extensions/query/service";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
+
+import { resolveArtifactSource } from "./source";
 
 export type ArtifactType = "ECHARTS_OPTION" | "MARKDOWN";
 
@@ -15,18 +16,16 @@ type ArtifactInput = {
   sourceMessageId?: string;
   sourceQueryId?: string;
   sessionId?: string;
+  sourceRows?: Record<string, unknown>[];
+  sourceColumns?: Array<{ name: string; type?: string }>;
 };
 
 type ArtifactRow = Record<string, unknown>;
 
 export function createArtifact(input: ArtifactInput) {
-  const query = input.sourceQueryId ? getDataQuery(input.userId, input.sourceQueryId) : null;
-  if (input.sourceQueryId && (!query || query.status !== "succeeded")) {
-    throw new Error("Query result is not ready");
-  }
-
-  const rows = query?.rows ?? [];
-  const columns = query?.columns ?? [];
+  const source = resolveArtifactSource(input);
+  const rows = source.rows;
+  const columns = source.columns;
   const content = input.artifactType === "MARKDOWN"
     ? createMarkdownReport(input.title, rows, columns)
     : createChartOption(input.title, rows, columns);
@@ -40,37 +39,47 @@ export function createArtifact(input: ArtifactInput) {
   const now = isoNow();
   const artifactId = createId("artifact");
   const analysisId = createId("analysis");
-  const sourceSnapshot = { sourceMessageId: input.sourceMessageId ?? null, sourceQueryId: input.sourceQueryId ?? null, rowCount: rows.length, dataAsOf: query?.data_as_of ?? now };
-  const sourceSnapshotJson = json(sourceSnapshot);
-  const sourceHash = createHash("sha256").update(sourceSnapshotJson).digest("hex");
   const contentJson = input.artifactType === "ECHARTS_OPTION" ? JSON.stringify(sanitized.sanitized) : null;
   const contentMarkdown = input.artifactType === "MARKDOWN" ? String(sanitized.sanitized) : null;
+  const serializedContent = contentJson ?? contentMarkdown ?? "";
+  const contentHash = createHash("sha256").update(serializedContent).digest("hex");
+  const contentSize = Buffer.byteLength(serializedContent, "utf8");
   const db = getDatabase();
-  db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)").run(analysisId, input.userId, "artifact_generation", "completed", now, now);
-  db.prepare(`INSERT INTO generated_artifacts
-    (id, user_id, session_id, source_message_id, source_query_id, agent_run_id, artifact_type, status,
-     title, current_version_no, source_snapshot_json, source_snapshot_sha256, provenance_json,
-     ready_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?, ?, ?, ?, ?)`)
-    .run(artifactId, input.userId, input.sessionId ?? null, input.sourceMessageId ?? null, input.sourceQueryId ?? null,
-      analysisId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", input.title,
-      sourceSnapshotJson, sourceHash, json({ analysisId, modelName: "local-deterministic", algorithmVersion: "artifact-v1" }), now, now, now);
-  db.prepare(`INSERT INTO generated_artifact_versions
-    (id, artifact_id, version_no, content_type, content_json, content_markdown, edited_by, created_at)
-    VALUES (?, ?, 1, ?, ?, ?, ?, ?)`)
-    .run(createId("artifact_version"), artifactId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", contentJson, contentMarkdown, input.userId, now);
+  const publish = db.transaction(() => {
+    db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)").run(analysisId, input.userId, "artifact_generation", "completed", now, now);
+    db.prepare(`INSERT INTO generated_artifacts
+      (id, user_id, session_id, source_message_id, source_query_id, agent_run_id, artifact_type, status,
+       title, current_version_no, source_snapshot_json, source_snapshot_sha256, provenance_json,
+       ready_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?, ?, ?, ?, ?)`)
+      .run(artifactId, input.userId, source.sessionId, input.sourceMessageId ?? null, input.sourceQueryId ?? null,
+        analysisId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", input.title,
+        source.snapshotJson, source.snapshotSha256, json({ analysisId, modelName: "local-deterministic", algorithmVersion: "artifact-v1", sourceSnapshotSha256: source.snapshotSha256 }), now, now, now);
+    db.prepare(`INSERT INTO generated_artifact_versions
+      (id, artifact_id, version_no, content_type, content_json, content_markdown, content_sha256, size_bytes, created_by_type, created_by_id, edited_by, created_at)
+      VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'agent', ?, ?, ?)`)
+      .run(createId("artifact_version"), artifactId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", contentJson, contentMarkdown, contentHash, contentSize, analysisId, input.userId, now);
+    if (input.sourceMessageId && source.sourceMessageRole === "assistant") {
+      db.prepare(`INSERT INTO message_artifacts
+        (id,message_id,artifact_type,generated_artifact_id,display_order,created_at)
+        VALUES (?,?,'generated_artifact',?,COALESCE((SELECT MAX(display_order)+1 FROM message_artifacts WHERE message_id=?),1),?)`)
+        .run(createId("message_artifact"), input.sourceMessageId, artifactId, input.sourceMessageId, now);
+    }
+  });
+  publish();
   db.close();
   void persistSseEvent({ analysisId, type: "artifact.completed", payload: { artifactId, type: input.artifactType } });
   return { artifactId, analysisId, status: "READY", version: 1 };
 }
 
-export function listArtifacts(userId: string, limit: number, filters: { sourceMessageId?: string; artifactType?: string; status?: string } = {}) {
+export function listArtifacts(userId: string, limit: number, filters: { sourceMessageId?: string; artifactType?: string; status?: string; sessionId?: string } = {}) {
   const db = getDatabase();
   const conditions = ["user_id = ?", "status != 'deleted'"];
   const params: unknown[] = [userId];
   if (filters.sourceMessageId) { conditions.push("source_message_id = ?"); params.push(filters.sourceMessageId); }
   if (filters.artifactType) { conditions.push("artifact_type = ?"); params.push(filters.artifactType.toLowerCase()); }
   if (filters.status) { conditions.push("status = ?"); params.push(filters.status.toLowerCase()); }
+  if (filters.sessionId) { conditions.push("session_id = ?"); params.push(filters.sessionId); }
   params.push(limit);
   const rows = db.prepare(`SELECT * FROM generated_artifacts WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as ArtifactRow[];
   db.close();
@@ -107,18 +116,34 @@ export function updateArtifact(userId: string, id: string, expectedVersion: numb
   const db = getDatabase();
   const nextVersion = expectedVersion + 1;
   const safeContent = sanitized.sanitized;
-  db.prepare("INSERT INTO generated_artifact_versions (id, artifact_id, version_no, content_type, content_json, content_markdown, edited_by, edit_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(createId("artifact_version"), id, nextVersion, artifact.type === "MARKDOWN" ? "markdown" : "echarts_option", artifact.type === "MARKDOWN" ? null : JSON.stringify(safeContent), artifact.type === "MARKDOWN" ? String(safeContent) : null, userId, patch.editSummary ?? null, now);
-  db.prepare("UPDATE generated_artifacts SET title = COALESCE(?, title), current_version_no = ?, updated_at = ?, row_version = row_version + 1 WHERE id = ? AND user_id = ?")
-    .run(patch.title ?? null, nextVersion, now, id, userId);
+  const contentJson = artifact.type === "MARKDOWN" ? null : JSON.stringify(safeContent);
+  const contentMarkdown = artifact.type === "MARKDOWN" ? String(safeContent) : null;
+  const serializedContent = contentJson ?? contentMarkdown ?? "";
+  const update = db.transaction(() => {
+    const result = db.prepare("UPDATE generated_artifacts SET title = COALESCE(?, title), current_version_no = ?, updated_at = ?, row_version = row_version + 1 WHERE id = ? AND user_id = ? AND status = 'ready' AND current_version_no = ?")
+      .run(patch.title ?? null, nextVersion, now, id, userId, expectedVersion);
+    if (!result.changes) throw new Error("VERSION_CONFLICT");
+    db.prepare(`INSERT INTO generated_artifact_versions
+      (id, artifact_id, version_no, content_type, content_json, content_markdown, content_sha256, size_bytes, created_by_type, created_by_id, edited_by, edit_note, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?, ?, ?)`)
+      .run(createId("artifact_version"), id, nextVersion, artifact.type === "MARKDOWN" ? "markdown" : "echarts_option", contentJson, contentMarkdown,
+        createHash("sha256").update(serializedContent).digest("hex"), Buffer.byteLength(serializedContent, "utf8"), userId, userId, patch.editSummary ?? null, now);
+  });
+  update();
   db.close();
   return getArtifact(userId, id);
 }
 
-export function deleteArtifact(userId: string, id: string) {
+export function deleteArtifact(userId: string, id: string, expectedVersion: number) {
   const db = getDatabase();
-  const result = db.prepare("UPDATE generated_artifacts SET status = 'deleted', deleted_at = ?, updated_at = ?, row_version = row_version + 1 WHERE id = ? AND user_id = ? AND status != 'deleted'").run(isoNow(), isoNow(), id, userId);
+  const current = db.prepare("SELECT current_version_no, status FROM generated_artifacts WHERE id = ? AND user_id = ?").get(id, userId) as { current_version_no?: number; status?: string } | undefined;
+  if (!current) { db.close(); return false; }
+  if (current.status === "deleted") { db.close(); return true; }
+  if (current.current_version_no !== expectedVersion) { db.close(); throw new Error("VERSION_CONFLICT"); }
+  const now = isoNow();
+  const result = db.prepare("UPDATE generated_artifacts SET status = 'deleted', deleted_at = ?, updated_at = ?, row_version = row_version + 1 WHERE id = ? AND user_id = ? AND status != 'deleted' AND current_version_no = ?").run(now, now, id, userId, expectedVersion);
   db.close();
+  if (!result.changes) throw new Error("VERSION_CONFLICT");
   return result.changes > 0;
 }
 

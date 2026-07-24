@@ -17,7 +17,7 @@ describe("generated artifact detail routes", () => {
   });
 
   it("PATCH returns 404 with If-Match", async () => {
-    const req = new NextRequest(url, { method: "PATCH", headers: { "If-Match": "v1" } });
+    const req = new NextRequest(url, { method: "PATCH", body: JSON.stringify({ title: "Updated" }), headers: { "If-Match": "1" } });
     expect((await PATCH(req, context)).status).toBe(404);
   });
 

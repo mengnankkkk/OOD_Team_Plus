@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS generated_artifact_versions (
   content_type TEXT NOT NULL CHECK(content_type IN ('echarts_option','markdown')),
   content_json TEXT,
   content_markdown TEXT,
+  content_sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+  created_by_type TEXT NOT NULL DEFAULT 'system',
+  created_by_id TEXT,
   edited_by TEXT,
   edit_note TEXT,
   created_at TEXT NOT NULL,
@@ -39,3 +43,22 @@ CREATE TABLE IF NOT EXISTS generated_artifact_versions (
   CHECK(content_json IS NULL OR content_markdown IS NULL),
   CHECK(content_json IS NOT NULL OR content_markdown IS NOT NULL)
 );
+
+CREATE TABLE IF NOT EXISTS message_artifacts (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  artifact_type TEXT NOT NULL,
+  risk_assessment_id TEXT,
+  goal_id TEXT,
+  portfolio_snapshot_id TEXT,
+  diagnostic_run_id TEXT,
+  recommendation_id TEXT,
+  simulation_id TEXT,
+  generated_artifact_id TEXT REFERENCES generated_artifacts(id) ON DELETE RESTRICT,
+  display_order INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  UNIQUE(message_id, artifact_type, display_order)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_artifacts_message ON message_artifacts(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_artifacts_generated ON message_artifacts(generated_artifact_id);

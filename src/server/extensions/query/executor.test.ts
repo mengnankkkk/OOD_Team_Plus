@@ -7,12 +7,14 @@ import type { SqliteDb } from "../../db/client.runtime";
 import { executeQuery } from "./executor";
 
 function createMockDb(rows: Record<string, unknown>[] = []) {
+  const all = vi.fn(() => rows);
   return {
     authorizer: vi.fn(),
     prepare: vi.fn().mockReturnValue({
-      all: () => rows,
+      all,
       columns: () => [{ name: "id", type: null }],
     }),
+    all,
   };
 }
 
@@ -42,6 +44,19 @@ describe("executeQuery", () => {
     );
 
     expect(database.prepare).toHaveBeenCalledWith("SELECT id FROM portfolio_snapshots LIMIT 10000");
+  });
+
+  it("binds query parameters instead of interpolating values", async () => {
+    const database = createMockDb();
+
+    await executeQuery(
+      "SELECT id FROM portfolio_snapshots WHERE user_id = ?",
+      10,
+      () => database as unknown as SqliteDb,
+      ["user-with-'quote"],
+    );
+
+    expect(database.all).toHaveBeenCalledWith("user-with-'quote");
   });
 
   it("rejects invalid SQL before opening the database", async () => {

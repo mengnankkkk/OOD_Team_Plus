@@ -7,9 +7,10 @@ export const ALLOWED_PANDA_METHODS = [
   "get_stock_daily",
   "get_fund_daily",
   "get_index_daily",
-  "get_stock_info",
-  "get_fund_info",
-  "get_market_snapshot",
+  "get_stock_detail",
+  "get_fund_detail",
+  "get_us_daily",
+  "get_hk_daily",
 ] as const;
 
 export type PandaDataMethod = (typeof ALLOWED_PANDA_METHODS)[number];
