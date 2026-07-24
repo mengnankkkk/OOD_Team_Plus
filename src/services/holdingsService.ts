@@ -37,9 +37,18 @@ const mapRow = (row: HoldingRow): Holding => {
 };
 
 async function resolveInstrument(input: HoldingInput): Promise<InstrumentSearchRow> {
-  const query = encodeURIComponent(input.symbol?.trim() || input.name.trim());
+  const symbol = input.symbol?.trim();
+  if (symbol && input.name.trim()) {
+    return apiPost<InstrumentSearchRow>("/api/v1/instruments/resolve", {
+      symbol,
+      name: input.name.trim(),
+      assetType: input.assetClass === "index_fund" ? "index" : input.assetClass === "stock" ? "stock" : "fund",
+      sector: input.industry ?? undefined,
+    });
+  }
+  const query = encodeURIComponent(symbol || input.name.trim());
   const result = await apiGet<{ items: InstrumentSearchRow[] }>(`/api/v1/instruments/search?q=${query}&limit=20`);
-  const exact = result.items.find((item) => item.tradable && (item.symbol.toLowerCase() === input.symbol?.toLowerCase() || item.name === input.name));
+  const exact = result.items.find((item) => item.tradable && (item.symbol.toLowerCase() === symbol?.toLowerCase() || item.name === input.name));
   const match = exact ?? result.items.find((item) => item.tradable);
   if (!match) throw new Error("未找到可交易标的，请先在标的库中确认代码");
   return match;

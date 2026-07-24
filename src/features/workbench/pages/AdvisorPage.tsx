@@ -30,7 +30,6 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { createClientId } from "@/lib/client-id";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
@@ -81,7 +80,7 @@ const ACTION_TOOLS = [
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string>(() => createClientId());
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -96,6 +95,7 @@ const AdvisorPage = () => {
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const historyRequestRef = useRef(0);
 
   const visibleSessions = sessions;
 
@@ -129,37 +129,48 @@ const AdvisorPage = () => {
 
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     if (!user) return;
+    const requestId = ++historyRequestRef.current;
     setLoadingHistory(true);
     try {
       const rows = await listOnboardingMessages(user.id, sessionId);
+      if (requestId !== historyRequestRef.current) return;
       setMessages(rows);
     } catch (err: any) {
+      if (requestId !== historyRequestRef.current) return;
       toast.error(err?.message ?? "对话加载失败");
     } finally {
-      setLoadingHistory(false);
+      if (requestId === historyRequestRef.current) setLoadingHistory(false);
     }
   }, [user]);
 
-  const handleNewSession = useCallback(() => {
-    if (sending) return;
+  const resetToNewSession = useCallback(() => {
+    historyRequestRef.current += 1;
     setMessages([]);
     setDraft("");
     setSessionMenuId(null);
-    setActiveSessionId(createClientId());
-  }, [sending]);
+    setLoadingHistory(false);
+    setActiveSessionId(null);
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    if (sending) return;
+    resetToNewSession();
+  }, [resetToNewSession, sending]);
 
   useEffect(() => {
     if (!user) return;
     (async () => {
+      const selectionVersion = historyRequestRef.current;
       const data = await refreshSessions();
+      if (selectionVersion !== historyRequestRef.current) return;
       if (data && data.length) {
         setActiveSessionId(data[0].sessionId);
         await loadSessionMessages(data[0].sessionId);
       } else {
-        handleNewSession();
+        resetToNewSession();
       }
     })();
-  }, [user, refreshSessions, loadSessionMessages, handleNewSession]);
+  }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -168,6 +179,7 @@ const AdvisorPage = () => {
   const openSession = async (sessionId: string) => {
     if (sending) return;
     setSessionMenuId(null);
+    setMessages([]);
     setActiveSessionId(sessionId);
     await loadSessionMessages(sessionId);
   };

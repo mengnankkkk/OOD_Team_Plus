@@ -16,6 +16,8 @@ export const PANDA_CONTRACTS = {
   get_stock_detail: z.object({ symbol: Symbol.optional(), fields: Fields, status: z.number().int().min(-1).max(1).optional() }).strict(),
   get_fund_detail: z.object({ symbol: Symbol.optional(), exchange: Symbol.optional(), type: Symbol.optional(), operation_mode: Symbol.optional(), etf_lof_type: Symbol.optional(), is_class_fund: z.union([z.number().int(), z.array(z.number().int())]).optional(), index_fund_type: Symbol.optional(), status: Symbol.optional(), fund_status: Symbol.optional(), fields: Fields }).strict(),
   get_index_detail: z.object({ symbol: Symbol.optional(), fields: Fields, status: z.number().int().min(-1).max(1).optional() }).strict(),
+  get_hk_detail: z.object({ symbol: Symbol.optional(), fields: Fields, status: z.number().int().min(-1).max(1).optional() }).strict(),
+  get_us_detail: z.object({ symbol: Symbol.optional(), fields: Fields, status: z.number().int().min(-1).max(1).optional() }).strict(),
   get_index_indicator: z.object({ symbol: Symbol.optional(), start_date: DateString.optional(), end_date: DateString.optional(), fields: Fields }).strict(),
   get_fina_reports: z.object({ symbol: Symbol.optional(), start_quarter: z.string().regex(/^\d{4}q[1-4]$/), end_quarter: z.string().regex(/^\d{4}q[1-4]$/), date: DateString.optional(), is_latest: z.boolean().optional(), fields: Fields }).strict(),
 } as const;

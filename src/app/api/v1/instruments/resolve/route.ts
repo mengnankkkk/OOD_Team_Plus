@@ -44,11 +44,14 @@ export async function POST(req: NextRequest) {
 
 function normalizeSymbol(value: string): string {
   const trimmed = value.trim().toUpperCase();
+  if (trimmed.includes(".") || /[A-Z]/u.test(trimmed)) return trimmed;
   const digits = trimmed.replace(/\D/g, "");
   return digits.length > 0 && digits.length <= 6 ? digits.padStart(6, "0") : trimmed;
 }
 
 function inferMarket(symbol: string): string {
+  if (symbol.endsWith(".HK")) return "HK";
+  if (!symbol.includes(".") && /[A-Z]/u.test(symbol)) return "US";
   if (symbol.startsWith("6")) return "SH";
   if (symbol.startsWith("8") || symbol.startsWith("9")) return "BJ";
   return "SZ";

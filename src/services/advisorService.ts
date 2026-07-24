@@ -70,7 +70,11 @@ export async function listAdvisorSessions(_userId: string): Promise<AdvisorSessi
   }));
 }
 
-async function ensureConversation(sessionId: string, title: string): Promise<string> {
+async function ensureConversation(sessionId: string | null, title: string): Promise<string> {
+  if (!sessionId) {
+    const created = await apiPost<ConversationRow>("/api/v1/conversations", { title: title.slice(0, 60) });
+    return created.id;
+  }
   try {
     await apiGet(`/api/v1/conversations/${sessionId}`);
     return sessionId;
@@ -81,7 +85,7 @@ async function ensureConversation(sessionId: string, title: string): Promise<str
   }
 }
 
-export async function sendAdvisorMessage(message: string, sessionId: string, outputMode: ConversationOutputMode): Promise<AdvisorReply> {
+export async function sendAdvisorMessage(message: string, sessionId: string | null, outputMode: ConversationOutputMode): Promise<AdvisorReply> {
   const activeSessionId = await ensureConversation(sessionId, message);
   const result = await apiPost<Record<string, unknown>>(`/api/v1/conversations/${activeSessionId}/messages`, {
     clientMessageId: createClientId(),
@@ -104,7 +108,7 @@ export async function sendAdvisorMessage(message: string, sessionId: string, out
 
 export async function sendAdvisorMessageStream(
   message: string,
-  sessionId: string,
+  sessionId: string | null,
   outputMode: ConversationOutputMode,
   observer: AdvisorStreamObserver = {},
 ): Promise<AdvisorReply> {

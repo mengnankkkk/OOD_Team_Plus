@@ -15,6 +15,9 @@ ALLOWED_METHODS = {
     "get_index_daily",
     "get_stock_detail",
     "get_fund_detail",
+    "get_index_detail",
+    "get_hk_detail",
+    "get_us_detail",
     "get_us_daily",
     "get_hk_daily",
 }

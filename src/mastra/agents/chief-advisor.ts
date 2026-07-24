@@ -72,8 +72,10 @@ export function createChiefAdvisorAgent() {
 export async function runChiefAdvisor(input: {
   prompt: string;
   requiredAgents: AgentFinding["agent"][];
+  fallbackFindings?: AgentFinding[];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
+  onAgentFailed?: (agent: AgentFinding["agent"], error: unknown) => void;
   onStreamEvent?: (event: ChiefAdvisorStreamEvent) => void;
 }): Promise<ChiefAdvisorResult> {
   const chief = createChiefAdvisorAgent();
@@ -86,21 +88,32 @@ export async function runChiefAdvisor(input: {
     const prompt = specialistPrompt(input.prompt, role, findings);
     delegated.add(role);
     input.onAgentStarted?.(role, prompt.slice(0, 160));
-    const stream = await specialistAgent.stream<AgentFinding>(prompt, {
-      maxSteps: 1,
-      modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
-      structuredOutput: {
-        schema: ChiefAgentFindingSchema,
-        instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
-      },
-    });
-    const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
-    const consumeObject = consumeObjectStream<AgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial }));
-    const object = await stream.object;
-    await Promise.allSettled([consumeText, consumeObject]);
-    const finding = AgentFindingSchema.parse({ ...object, agent: role });
+    let finding: AgentFinding;
+    let completedByModel = false;
+    try {
+      const stream = await specialistAgent.stream<AgentFinding>(prompt, {
+        maxSteps: 1,
+        modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
+        structuredOutput: {
+          schema: ChiefAgentFindingSchema,
+          instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
+          jsonPromptInjection: "system",
+        },
+      });
+      const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
+      const consumeObject = consumeObjectStream<AgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial }));
+      const [objectResult] = await Promise.allSettled([stream.object, consumeText, consumeObject]);
+      if (objectResult.status === "rejected") throw objectResult.reason;
+      finding = AgentFindingSchema.parse({ ...objectResult.value, agent: role });
+      completedByModel = true;
+    } catch (error) {
+      const fallback = input.fallbackFindings?.find((item) => item.agent === role);
+      if (!fallback) throw error;
+      finding = fallback;
+      input.onAgentFailed?.(role, error);
+    }
     findings.push(finding);
-    input.onAgentCompleted?.(finding);
+    if (completedByModel) input.onAgentCompleted?.(finding);
   }
 
   const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
@@ -109,6 +122,7 @@ export async function runChiefAdvisor(input: {
     structuredOutput: {
       schema: ChiefAdvisorDecisionSchema,
       instructions: "只输出符合 AdvisorDecision schema 的候选建议 JSON，不要 Markdown 或隐藏推理。",
+      jsonPromptInjection: "system",
     },
   });
   const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserGoals } from "@/hooks/useUserGoals";
 import { addWatchlistItem, listWatchlistItems, removeWatchlistItem, type WatchlistItem } from "@/services/watchlistService";
@@ -9,16 +9,15 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { PlusCircle, Trash2, Eye, Search } from "lucide-react";
-import { findAShareStock, normalizeAShareCode, searchAShareStocks, type AShareStock } from "@/lib/a-share-stocks";
+import { PlusCircle, Trash2, Eye } from "lucide-react";
+import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker";
+import { findAShareStock, normalizeAShareCode } from "@/lib/a-share-stocks";
 
 const WatchlistPage = () => {
   const { user } = useAuth();
   const { data: goals = [] } = useUserGoals();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [stockSearch, setStockSearch] = useState("");
-  const [stockSuggestOpen, setStockSuggestOpen] = useState(false);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [reason, setReason] = useState("");
@@ -32,43 +31,6 @@ const WatchlistPage = () => {
     enabled: !!user,
   });
 
-  const stockMatches = useMemo(() => stockSearch.trim() ? searchAShareStocks(stockSearch, 8) : [], [stockSearch]);
-
-  const applyStock = (stock: AShareStock) => {
-    setName(stock.name);
-    setSymbol(stock.code);
-    setStockSearch(`${stock.code} ${stock.name}`);
-    setStockSuggestOpen(false);
-  };
-
-  const handleSearchChange = (value: string) => {
-    setStockSearch(value);
-    setStockSuggestOpen(true);
-    const exact = findAShareStock(value);
-    if (exact) {
-      setName(exact.name);
-      setSymbol(exact.code);
-    }
-  };
-
-  const handleNameChange = (value: string) => {
-    setName(value);
-    const exact = findAShareStock(value);
-    if (exact) {
-      setSymbol(exact.code);
-      setStockSearch(`${exact.code} ${exact.name}`);
-    }
-  };
-
-  const handleSymbolChange = (value: string) => {
-    setSymbol(value);
-    const exact = findAShareStock(value);
-    if (exact) {
-      setName(exact.name);
-      setStockSearch(`${exact.code} ${exact.name}`);
-    }
-  };
-
   const handleAdd = async () => {
     if (!user) return;
     const matched = findAShareStock(symbol) ?? findAShareStock(name);
@@ -78,7 +40,7 @@ const WatchlistPage = () => {
     try {
       await addWatchlistItem({ name: finalName, symbol: finalSymbol || finalName, reason, plannedHorizon: horizon });
       toast.success("已加入持仓观测");
-      setOpen(false); setStockSearch(""); setStockSuggestOpen(false); setName(""); setSymbol(""); setReason(""); setThreshold("15"); setHorizon(""); setGoalId("__none__");
+      setOpen(false); setName(""); setSymbol(""); setReason(""); setThreshold("15"); setHorizon(""); setGoalId("__none__");
       qc.invalidateQueries({ queryKey: ["watchlist"] });
     } catch (err: any) {
       toast.error(err?.message ?? "保存失败");
@@ -106,32 +68,7 @@ const WatchlistPage = () => {
           <DialogContent className="max-w-lg">
             <DialogHeader><DialogTitle>加入观察名单</DialogTitle></DialogHeader>
             <div className="grid gap-4">
-              <div className="space-y-2">
-                <Label>搜索标的</Label>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input value={stockSearch} onFocus={() => setStockSuggestOpen(true)} onChange={(e) => handleSearchChange(e.target.value)} placeholder="输入代码或名称，例如 600519 / 贵州茅台" className="pl-9" />
-                  {stockSuggestOpen && stockMatches.length ? (
-                    <div className="absolute inset-x-0 top-[calc(100%+6px)] z-50 max-h-64 overflow-auto rounded-md border border-border bg-popover p-1 shadow-xl">
-                      {stockMatches.map((stock) => (
-                        <button
-                          key={stock.code}
-                          type="button"
-                          onClick={() => applyStock(stock)}
-                          className="flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent hover:text-primary"
-                        >
-                          <span className="font-medium">{stock.name}</span>
-                          <span className="font-mono text-xs text-muted-foreground">{stock.code}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-              <div className="grid gap-2 md:grid-cols-[1fr_140px]">
-                <div className="space-y-2"><Label>标的名称</Label><Input value={name} onChange={(e) => handleNameChange(e.target.value)} placeholder="贵州茅台" /></div>
-                <div className="space-y-2"><Label>代码</Label><Input value={symbol} onChange={(e) => handleSymbolChange(e.target.value)} placeholder="600519" /></div>
-              </div>
+              <AShareInstrumentPicker name={name} symbol={symbol} onChange={(next) => { setName(next.name); setSymbol(next.symbol); }} />
               <div className="space-y-2"><Label>关注理由</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="宽基分散，估值处于历史低位" /></div>
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="space-y-2"><Label>计划持有期限</Label><Input value={horizon} onChange={(e) => setHorizon(e.target.value)} placeholder="3-5 年" /></div>

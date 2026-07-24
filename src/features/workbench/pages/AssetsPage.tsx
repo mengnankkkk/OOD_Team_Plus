@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { BarChart3, FileText, PlusCircle, Trash2, Upload } from "lucide-react";
+import { BarChart3, FileText, PlusCircle, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useHoldings, useHoldingsInvalidator } from "@/hooks/useHoldings";
@@ -17,7 +17,9 @@ import { computeHealthMetrics } from "@/lib/financialHealth";
 import HealthMetrics from "@/components/desktop/HealthMetrics";
 import AllocationPanel from "@/components/desktop/AllocationPanel";
 import DrawdownChart from "@/components/desktop/DrawdownChart";
-import { apiGet } from "@/features/frontend-migration/api";
+import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker";
+import { apiGet, apiPost } from "@/features/frontend-migration/api";
+import { findAShareStock, normalizeAShareCode } from "@/lib/a-share-stocks";
 
 const CLASS_OPTIONS: AssetClass[] = ["cash", "money_market", "bond_fund", "equity_fund", "index_fund", "stock", "other"];
 type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; createdAt: string; updatedAt: string };
@@ -46,6 +48,7 @@ const AssetsPage = () => {
   const [costBasis, setCostBasis] = useState("");
   const [goalId, setGoalId] = useState<string>("__none__");
   const [selectedArtifactId, setSelectedArtifactId] = useState("");
+  const [catalogSyncing, setCatalogSyncing] = useState(false);
 
   const artifacts = useQuery({
     queryKey: ["asset-artifacts", user?.id],
@@ -71,13 +74,16 @@ const AssetsPage = () => {
 
   const handleAdd = async () => {
     if (!user) return;
-    if (!name.trim() || !quantity || !currentPrice) { toast.error("请至少填写名称、数量、当前价格"); return; }
+    const matched = findAShareStock(symbol) ?? findAShareStock(name);
+    const finalName = matched?.name ?? name.trim();
+    const finalSymbol = matched?.code ?? normalizeAShareCode(symbol.trim());
+    if (!finalName || !quantity || !currentPrice) { toast.error("请至少填写名称、数量、当前价格"); return; }
     try {
       await createHolding(user.id, {
-        name: name.trim(),
-        symbol: symbol.trim() || undefined,
-        assetClass,
-        industry: industry.trim() || null,
+        name: finalName,
+        symbol: finalSymbol || undefined,
+        assetClass: matched ? "stock" : assetClass,
+        industry: matched ? industry.trim() || "A股" : industry.trim() || null,
         quantity: Number(quantity),
         currentPrice: Number(currentPrice),
         costBasis: costBasis ? Number(costBasis) : 0,
@@ -130,6 +136,19 @@ const AssetsPage = () => {
     }
   };
 
+  const handleCatalogSync = async () => {
+    setCatalogSyncing(true);
+    try {
+      const result = await apiPost<{ imported: number; summary: Array<{ method: string; rows: number; error?: string }> }>("/api/v1/instruments/sync", {});
+      const failed = result.summary.filter((item) => item.error);
+      toast.success(`资产目录已更新，写入 ${result.imported.toLocaleString()} 条标的${failed.length ? `，${failed.length} 个数据源待重试` : ""}`);
+    } catch (err: any) {
+      toast.error(err?.message ?? "资产目录同步失败");
+    } finally {
+      setCatalogSyncing(false);
+    }
+  };
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -139,6 +158,9 @@ const AssetsPage = () => {
           <p className="mt-2 text-sm text-muted-foreground">财务健康指标全部按当前持仓实时计算，服务端只返回你自己的数据。</p>
         </div>
         <div className="flex gap-3">
+          <Button variant="outline" className="rounded-sm" onClick={handleCatalogSync} disabled={catalogSyncing} title="同步 A 股、基金、指数、港股、美股基础资料">
+            <RefreshCw className={`size-4 ${catalogSyncing ? "animate-spin" : ""}`} />{catalogSyncing ? "同步中…" : "更新资产目录"}
+          </Button>
           <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
             <DialogTrigger asChild><Button variant="outline" className="rounded-sm"><Upload className="size-4" />智能体解析 CSV</Button></DialogTrigger>
             <DialogContent className="max-w-2xl">
@@ -174,10 +196,19 @@ const AssetsPage = () => {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle>新增持仓</DialogTitle></DialogHeader>
               <div className="grid gap-4">
-                <div className="grid gap-2 md:grid-cols-[1fr_140px]">
-                  <div className="space-y-2"><Label htmlFor="holding-name">标的名称</Label><Input id="holding-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="招商中证白酒 / 沪深300ETF / 贵州茅台" /></div>
-                  <div className="space-y-2"><Label htmlFor="holding-symbol">代码（可选）</Label><Input id="holding-symbol" value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="161725" /></div>
-                </div>
+                <AShareInstrumentPicker
+                  name={name}
+                  symbol={symbol}
+                  symbolLabel="代码（可选）"
+                  namePlaceholder="招商中证白酒 / 沪深300ETF / 贵州茅台"
+                  symbolPlaceholder="161725 / 600519"
+                  onChange={(next) => { setName(next.name); setSymbol(next.symbol); }}
+                  onSelect={(instrument) => {
+                    const type = instrument.assetType.toLowerCase();
+                    setAssetClass(type === "index" ? "index_fund" : type === "bond" ? "bond_fund" : type === "money_market" ? "money_market" : type === "fund" ? "equity_fund" : "stock");
+                    setIndustry((current) => current.trim() || instrument.sector || (instrument.market === "HK" ? "港股" : instrument.market === "US" ? "美股" : "A股"));
+                  }}
+                />
                 <div className="grid gap-2 md:grid-cols-2">
                   <div className="space-y-2"><Label>资产类别</Label>
                     <Select value={assetClass} onValueChange={(v) => setAssetClass(v as AssetClass)}>

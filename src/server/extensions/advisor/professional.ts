@@ -141,11 +141,17 @@ export async function runProfessionalAdvisor(input: {
         const model = await runChiefAdvisor({
           prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
           requiredAgents: requiredRoles,
+          fallbackFindings: findings,
           onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } }),
           onAgentCompleted: (finding) => {
             persistModelFinding(db, roleRunIds.get(finding.agent), finding);
             persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
           },
+          onAgentFailed: (agent, error) => persistSseEvent({
+            analysisId: input.analysisId,
+            type: "agent.failed",
+            payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
+          }),
           onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event),
         });
         findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
@@ -174,6 +180,7 @@ export async function runProfessionalAdvisor(input: {
       findings,
       modelFallback,
       unresolvedConflict,
+      marketDataRequired: requiredRoles.includes("DATA_RESEARCH"),
     });
     const recommendation = target
       ? buildRecommendationDraft({ status, candidate, target, holding: targetHolding, profile, research, snapshot })
@@ -451,18 +458,20 @@ function explanationReportFinding(findings: AgentFinding[]): AgentFinding {
   });
 }
 
-function enforcePublicationStatus(input: {
+export function enforcePublicationStatus(input: {
   candidate: AdvisorDecision;
   criticalMissing: string[];
   dataState: DataState;
   findings: AgentFinding[];
   modelFallback: boolean;
   unresolvedConflict: boolean;
+  marketDataRequired: boolean;
 }): PublicationStatus {
   if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
-  if (!input.modelFallback && input.dataState === "LIVE_FRESH" && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
+  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
+  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
   return "DEGRADED";
 }
 

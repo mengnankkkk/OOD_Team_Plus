@@ -52,9 +52,19 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await expect(page.getByRole("button", { name: "撤回到父分支" })).toBeVisible();
 
   await page.goto("/advisor");
-  await page.getByPlaceholder("发消息…").fill("请诊断当前组合健康度、集中度和压力情景，并给出支持证据与反方证据。");
+  const advisorPrompt = "请诊断当前组合健康度、集中度和压力情景，并给出支持证据与反方证据。";
+  await page.getByPlaceholder("发消息…").fill(advisorPrompt);
   await page.getByPlaceholder("发消息…").press("Control+Enter");
-  await expect(page.getByText(/建议状态：DEGRADED/u)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/建议状态：(ACTIVE|DEGRADED)/u)).toBeVisible({ timeout: 60_000 });
+
+  await page.getByRole("button", { name: "新对话" }).click();
+  const newConversationPrompt = "新对话回归测试：请总结当前最重要的一条理财原则。";
+  await page.getByPlaceholder("发消息…").fill(newConversationPrompt);
+  await page.getByPlaceholder("发消息…").press("Control+Enter");
+  const activeConversation = page.locator("section");
+  await expect(activeConversation.getByText(advisorPrompt, { exact: true })).toHaveCount(0);
+  await expect(activeConversation.getByText(newConversationPrompt, { exact: true })).toBeVisible();
+  await expect(activeConversation.getByText(/建议状态：(ACTIVE|DEGRADED)/u)).toBeVisible({ timeout: 60_000 });
   await page.screenshot({ path: testInfo.outputPath("user-business-flow.png"), fullPage: true });
 });
 
