@@ -18,8 +18,10 @@ export function requestIp(request: NextRequest): string | null {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip");
 }
 
-export function setSessionCookies(response: NextResponse, session: { token: string; csrfToken: string; maxAge: number }): void {
-  const secure = process.env.NODE_ENV === "production";
+export function setSessionCookies(response: NextResponse, session: { token: string; csrfToken: string; maxAge: number }, request?: NextRequest): void {
+  const forwardedProto = request?.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  const requestProtocol = request?.nextUrl.protocol.replace(":", "").toLowerCase();
+  const secure = (forwardedProto ?? requestProtocol) === "https";
   response.cookies.set("mw_session", session.token, { httpOnly: true, sameSite: "lax", secure, path: "/", maxAge: session.maxAge });
   response.cookies.set("mw_csrf", session.csrfToken, { httpOnly: false, sameSite: "lax", secure, path: "/", maxAge: session.maxAge });
 }

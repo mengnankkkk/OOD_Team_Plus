@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
     const user = await registerUser(parsed.data);
     const session = createSession(user, { userAgent: request.headers.get("user-agent"), ip: requestIp(request) });
     const response = NextResponse.json({ data: { user, csrfToken: session.csrfToken, expiresAt: session.expiresAt }, meta: meta() }, { status: 201 });
-    setSessionCookies(response, session);
+    setSessionCookies(response, session, request);
     return response;
   } catch (error) {
     return authError(error);

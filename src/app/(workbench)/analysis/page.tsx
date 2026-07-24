@@ -2,7 +2,7 @@
 
 import { RefreshCw, RotateCw, ShieldAlert } from "lucide-react";
 import { useState } from "react";
-import { ErrorBlock, LoadingBlock, MetricCard, PageHeading, Sparkline, Status, useApiResource } from "@/features/workbench/components/shared";
+import { EmptyBlock, ErrorBlock, LoadingBlock, MetricCard, PageHeading, Sparkline, Status, useApiResource } from "@/features/workbench/components/shared";
 import { apiMutation, money, percent } from "@/features/workbench/lib/api";
 
 type Holding = { holdingId: string; symbol: string; name: string; assetType: string; sector: string; quantity: string; averageCost: string; marketPrice: string; marketValue: string; weight: number; unrealizedPnl: string; unrealizedPnlRate: number; drawdown: number };
@@ -25,6 +25,9 @@ export default function AnalysisPage() {
     finally { setSyncing(false); }
   };
   if (holdings.loading || metrics.loading) return <LoadingBlock label="正在计算组合健康度与风险敞口" />;
+  if ((holdings.error || metrics.error).includes("Portfolio snapshot not found")) {
+    return <EmptyBlock title="还没有可分析的组合快照" detail="请先到资产页导入或创建持仓，系统会生成第一份组合快照后再计算健康度、风险和趋势。" />;
+  }
   if (holdings.error || metrics.error) return <ErrorBlock message={holdings.error || metrics.error} retry={reload} />;
   const m = metrics.data; const h = holdings.data;
   const returnPoints = trends.data?.trends.find((item) => item.metric === "total_return")?.points.map((point) => point.value) ?? [];
