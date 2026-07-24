@@ -3,18 +3,16 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bell, Blocks, BookOpenText, ChartNoAxesCombined, DatabaseZap, FileChartColumn, FlaskConical, Menu, MessageSquareText, Search, X } from "lucide-react";
+import { Activity, Bell, Blocks, BookOpenText, ChartNoAxesCombined, FlaskConical, History, Menu, MessageSquareText, X } from "lucide-react";
 import { useState } from "react";
 import { useFrontendAuth } from "@/features/frontend-migration/auth";
 
 const NAV = [
   { href: "/", label: "投资总览", detail: "Portfolio desk", icon: Blocks },
   { href: "/analysis", label: "资产分析", detail: "Health & risk", icon: ChartNoAxesCombined },
-  { href: "/query", label: "智能查数", detail: "Semantic SQL", icon: DatabaseZap },
+  { href: "/history", label: "历史记录", detail: "Reports & logs", icon: History },
   { href: "/simulations", label: "分支模拟", detail: "Scenario lab", icon: FlaskConical },
-  { href: "/artifacts", label: "报告中心", detail: "Charts & files", icon: FileChartColumn },
   { href: "/observatory", label: "自选与提醒", detail: "Signals", icon: Bell },
-  { href: "/research", label: "信息雷达", detail: "Search & RSS", icon: Search },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

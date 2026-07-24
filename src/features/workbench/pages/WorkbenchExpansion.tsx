@@ -406,7 +406,7 @@ export function GeneratedArtifactDetailPage() {
   async function remove() {
     if (!id || !detail.data) return;
     if (!confirm("确认删除这个产物？")) return;
-    try { await apiMutation(`/api/v1/generated-artifacts/${id}`, "DELETE", undefined, { "If-Match": String(detail.data.currentVersion) }); navigate("/artifacts"); } catch (error) { toast.error(error instanceof Error ? error.message : "删除失败"); }
+    try { await apiMutation(`/api/v1/generated-artifacts/${id}`, "DELETE", undefined, { "If-Match": String(detail.data.currentVersion) }); navigate("/history/artifacts"); } catch (error) { toast.error(error instanceof Error ? error.message : "删除失败"); }
   }
   if (detail.loading) return <LoadingBlock label="正在读取产物…" />;
   if (detail.error) return <ErrorBlock message={detail.error} retry={detail.reload} />;
