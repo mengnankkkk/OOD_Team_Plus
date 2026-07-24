@@ -216,7 +216,7 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
       id: item.id,
       name: item.agent,
       label: item.agent,
-      kind: "reasoning",
+      kind: item.modelProvider && item.modelProvider !== "deterministic" ? "llm" : "reasoning",
       tool: null,
       input: item.purpose ?? null,
       output: item.summary ?? item.failure?.message ?? null,

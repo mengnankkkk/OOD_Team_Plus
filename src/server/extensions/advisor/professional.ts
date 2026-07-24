@@ -54,6 +54,11 @@ type ResearchState = {
   asOfDate: string | null;
 };
 
+type RoleRunResult = {
+  childRunId: string;
+  finding: AgentFinding;
+};
+
 export type ProfessionalAdvisorResult = {
   runId: string;
   status: PublicationStatus;
@@ -91,36 +96,40 @@ export async function runProfessionalAdvisor(input: {
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
   const requiredRoles = rolesFor(intent, Boolean(target));
   const findings: AgentFinding[] = [];
+  const roleRunIds = new Map<ProfessionalAgentRole, string>();
+
+  const registerFinding = (result: RoleRunResult): AgentFinding => {
+    roleRunIds.set(result.finding.agent, result.childRunId);
+    findings.push(result.finding);
+    return result.finding;
+  };
 
   try {
-    const profileFinding = await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile));
-    findings.push(profileFinding);
+    registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile)));
 
     let research: ResearchState = { dataState: target ? "UNAVAILABLE" : "NOT_REQUIRED", execution: null, closes: [], latest: null, asOfDate: null };
     if (requiredRoles.includes("DATA_RESEARCH")) {
-      const researchFinding = await runRole(db, input, "DATA_RESEARCH", async (childRunId) => {
+      registerFinding(await runRole(db, input, "DATA_RESEARCH", async (childRunId) => {
         const result = await researchInstrument(db, input.analysisId, childRunId, target);
         research = result.state;
         return result.finding;
-      });
-      findings.push(researchFinding);
+      }));
     }
 
-    const riskFinding = await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot));
-    findings.push(riskFinding);
+    const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot)));
 
     const deterministicDecision = deterministicDecisionFor({ intent, requestedDirection, target, targetHolding, profile, research, riskFinding });
     if (requiredRoles.includes("RECOMMENDATION")) {
-      findings.push(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings)));
+      registerFinding(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings)));
     }
 
     const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding);
     const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings);
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
-      findings.push(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding));
+      registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding));
     }
     if (requiredRoles.includes("EXPLANATION_REPORT")) {
-      findings.push(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings)));
+      registerFinding(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings)));
     }
 
     let candidate = deterministicDecision;
@@ -131,10 +140,14 @@ export async function runProfessionalAdvisor(input: {
       try {
         const model = await runChiefAdvisor({
           prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
-          requiredAgents: requiredRoles.filter((role) => role !== "EXPLANATION_REPORT"),
-          onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label } }),
-          onAgentCompleted: (finding) => persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, conclusion: finding.conclusion } }),
+          requiredAgents: requiredRoles,
+          onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } }),
+          onAgentCompleted: (finding) => {
+            persistModelFinding(db, roleRunIds.get(finding.agent), finding);
+            persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
+          },
         });
+        findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
         const preserved = preserveDirection(model.decision, deterministicDecision);
         unresolvedConflict = preserved.conflict;
         candidate = preserved.decision;
@@ -186,7 +199,7 @@ async function runRole(
   input: { userId: string; sessionId: string; analysisId: string },
   role: ProfessionalAgentRole,
   operation: (childRunId: string) => AgentFinding | Promise<AgentFinding>,
-): Promise<AgentFinding> {
+): Promise<RoleRunResult> {
   const childRunId = createId("agent_run");
   const startedAt = isoNow();
   db.prepare(`INSERT INTO agent_runs
@@ -200,13 +213,28 @@ async function runRole(
     db.prepare("UPDATE agent_runs SET status='completed',completed_at=?,output_summary=?,result_json=? WHERE id=?")
       .run(isoNow(), finding.conclusion, json(finding), childRunId);
     persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: role, childRunId, conclusion: finding.conclusion } });
-    return finding;
+    return { childRunId, finding };
   } catch (error) {
     db.prepare("UPDATE agent_runs SET status='failed',completed_at=?,failure_code='AGENT_NODE_FAILED',failure_message=? WHERE id=?")
       .run(isoNow(), safeMessage(error), childRunId);
     persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { agent: role, childRunId, code: "AGENT_NODE_FAILED" } });
     throw error;
   }
+}
+
+function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, finding: AgentFinding): void {
+  if (!childRunId) return;
+  db.prepare(`UPDATE agent_runs
+    SET status='completed',completed_at=?,model_provider='deepseek',model_name=?,output_summary=?,result_json=?,
+        failure_code=NULL,failure_message=NULL
+    WHERE id=?`).run(isoNow(), process.env.DEEPSEEK_MODEL ?? null, finding.conclusion, json(finding), childRunId);
+}
+
+function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding[]): AgentFinding[] {
+  const byAgent = new Map<ProfessionalAgentRole, AgentFinding>();
+  for (const finding of current) byAgent.set(finding.agent, finding);
+  for (const finding of modelFindings) byAgent.set(finding.agent, finding);
+  return [...byAgent.values()];
 }
 
 function profileFindingFor(profile: Profile | undefined): AgentFinding {
