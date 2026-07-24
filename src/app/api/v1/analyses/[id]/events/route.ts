@@ -39,6 +39,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           statusDb.close();
           const status = current?.status?.toLowerCase();
           if (!current || status === "completed" || status === "failed" || status === "cancelled" || status === "blocked" || status === "waiting_for_user") {
+            await delay(250);
+            const finalEvents = getSseEvents(id, lastEventId);
+            for (const event of finalEvents) {
+              controller.enqueue(encoder.encode(formatEvent(event)));
+              lastEventId = event.id;
+            }
             close();
             break;
           }

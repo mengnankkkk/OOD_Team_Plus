@@ -151,6 +151,7 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
+  persistAdvisorAnswerStream(input.analysisId, input.answer, input.recommendationStatus);
   const result: Record<string, unknown> = {
     messageId: input.userMessageId,
     assistantMessageId,
@@ -198,6 +199,38 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider } });
   if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED" } });
   return result;
+}
+
+function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED"): void {
+  const lines = answer.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return;
+  persistSseEvent({
+    analysisId,
+    type: "advisor.thinking",
+    payload: {
+      phase: "final_summary",
+      title: status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",
+      content: lines[0]?.slice(0, 500) ?? "",
+    },
+  });
+  for (const line of lines.slice(1, 4)) {
+    persistSseEvent({
+      analysisId,
+      type: "advisor.thinking",
+      payload: {
+        phase: "final_summary",
+        title: "公开结论片段",
+        content: line.slice(0, 500),
+      },
+    });
+  }
+  for (const line of lines) {
+    persistSseEvent({
+      analysisId,
+      type: "assistant.delta",
+      payload: { delta: `${line}\n` },
+    });
+  }
 }
 
 function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: string, sessionId: string, analysisId: string, recommendationId: string, draft: RecommendationDraft, status: "ACTIVE" | "DEGRADED" | "BLOCKED", now: string) {

@@ -15,6 +15,8 @@ type StreamStarted = {
 type AdvisorStreamObserver = {
   onSessionId?: (sessionId: string) => void;
   onProgress?: (message: string) => void;
+  onThinking?: (message: string) => void;
+  onDelta?: (delta: string) => void;
 };
 
 const ADVISOR_STREAM_EVENTS = [
@@ -26,6 +28,8 @@ const ADVISOR_STREAM_EVENTS = [
   "tool.completed",
   "tool.failed",
   "evidence.added",
+  "advisor.thinking",
+  "assistant.delta",
   "compliance.completed",
   "recommendation.created",
 ] as const;
@@ -151,6 +155,15 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
     for (const type of ADVISOR_STREAM_EVENTS) {
       source.addEventListener(type, (event) => {
         const payload = parseStreamPayload(event);
+        if (type === "assistant.delta") {
+          const delta = typeof payload.delta === "string" ? payload.delta : "";
+          if (delta) observer.onDelta?.(delta);
+          return;
+        }
+        if (type === "advisor.thinking") {
+          observer.onThinking?.(streamThinkingLabel(payload));
+          return;
+        }
         observer.onProgress?.(streamLabel(type, payload));
         if (type === "agent.completed" && !payload.agent) finish();
         if (type === "agent.failed" && payload.code === "ADVISOR_RUN_FAILED") finish();
@@ -186,6 +199,13 @@ function streamLabel(type: string, payload: Record<string, unknown>): string {
   if (type === "compliance.completed") return "合规检查完成，正在生成最终说明";
   if (type === "recommendation.created") return "建议卡已生成";
   return "顾问 Agent 正在处理";
+}
+
+function streamThinkingLabel(payload: Record<string, unknown>): string {
+  const title = typeof payload.title === "string" ? payload.title : "顾问正在整理过程";
+  const content = typeof payload.content === "string" ? payload.content : "";
+  if (!content) return title;
+  return `${title}：${content}`;
 }
 
 async function waitForAssistantMessage(sessionId: string, analysisId: string): Promise<OnboardingMessage | null> {

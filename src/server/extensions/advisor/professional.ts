@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 
-import { runChiefAdvisor } from "@/mastra/agents/chief-advisor";
+import { runChiefAdvisor, type ChiefAdvisorStreamEvent } from "@/mastra/agents/chief-advisor";
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
@@ -146,6 +146,7 @@ export async function runProfessionalAdvisor(input: {
             persistModelFinding(db, roleRunIds.get(finding.agent), finding);
             persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
           },
+          onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event),
         });
         findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
         const preserved = preserveDirection(model.decision, deterministicDecision);
@@ -155,6 +156,11 @@ export async function runProfessionalAdvisor(input: {
         provider = "CHIEF_ADVISOR";
         modelFallback = false;
       } catch (error) {
+        persistSseEvent({
+          analysisId: input.analysisId,
+          type: "advisor.thinking",
+          payload: { phase: "model_fallback", title: "模型编排未完成", content: "已保留服务端事实节点和合规门控，等待模型配置或输出恢复后可重试。" },
+        });
         persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true } });
         db.prepare("UPDATE agent_runs SET model_provider='deterministic',failure_code=?,failure_message=? WHERE id=?")
           .run("MODEL_UNAVAILABLE", safeMessage(error), input.analysisId);
@@ -228,6 +234,37 @@ function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: str
     SET status='completed',completed_at=?,model_provider='deepseek',model_name=?,output_summary=?,result_json=?,
         failure_code=NULL,failure_message=NULL
     WHERE id=?`).run(isoNow(), process.env.DEEPSEEK_MODEL ?? null, finding.conclusion, json(finding), childRunId);
+}
+
+function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEvent): void {
+  if (event.type === "agent.object") {
+    const conclusion = typeof event.partial.conclusion === "string" ? event.partial.conclusion.trim() : "";
+    if (!conclusion) return;
+    persistSseEvent({
+      analysisId,
+      type: "advisor.thinking",
+      payload: {
+        phase: "specialist",
+        agent: event.agent,
+        title: `${event.agent} 正在形成可公开结论`,
+        content: conclusion.slice(0, 500),
+      },
+    });
+    return;
+  }
+  if (event.type === "decision.object") {
+    const summary = typeof event.partial.summary === "string" ? event.partial.summary.trim() : "";
+    if (!summary) return;
+    persistSseEvent({
+      analysisId,
+      type: "advisor.thinking",
+      payload: {
+        phase: "decision",
+        title: "Chief Advisor 正在整合最终建议",
+        content: summary.slice(0, 500),
+      },
+    });
+  }
 }
 
 function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding[]): AgentFinding[] {

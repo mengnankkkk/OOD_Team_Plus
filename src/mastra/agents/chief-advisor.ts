@@ -16,11 +16,31 @@ const ChiefAgentFindingSchema = z.object({
   suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent,
 });
 
+const ChiefAdvisorDecisionSchema = z.object({
+  action: AdvisorDecisionSchema.shape.action,
+  requestedDirection: AdvisorDecisionSchema.shape.requestedDirection,
+  summary: AdvisorDecisionSchema.shape.summary,
+  suitability: AdvisorDecisionSchema.shape.suitability,
+  confidence: AdvisorDecisionSchema.shape.confidence,
+  rationales: AdvisorDecisionSchema.shape.rationales,
+  counterEvidence: AdvisorDecisionSchema.shape.counterEvidence,
+  risks: AdvisorDecisionSchema.shape.risks,
+  portfolioImpact: AdvisorDecisionSchema.shape.portfolioImpact,
+  invalidationConditions: AdvisorDecisionSchema.shape.invalidationConditions,
+  compliance: AdvisorDecisionSchema.shape.compliance,
+});
+
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
   findings: AgentFinding[];
   delegatedAgents: AgentFinding["agent"][];
 };
+
+export type ChiefAdvisorStreamEvent =
+  | { type: "agent.chunk"; agent: AgentFinding["agent"]; text: string }
+  | { type: "agent.object"; agent: AgentFinding["agent"]; partial: Partial<AgentFinding> }
+  | { type: "decision.chunk"; text: string }
+  | { type: "decision.object"; partial: Partial<AdvisorDecision> };
 
 export function createChiefAdvisorAgent() {
   const profile = specialist("professional-profile-context", "Profile Context", "PROFILE_CONTEXT");
@@ -53,6 +73,7 @@ export async function runChiefAdvisor(input: {
   requiredAgents: AgentFinding["agent"][];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
+  onStreamEvent?: (event: ChiefAdvisorStreamEvent) => void;
 }): Promise<ChiefAdvisorResult> {
   const chief = createChiefAdvisorAgent();
   const findings: AgentFinding[] = [];
@@ -64,7 +85,7 @@ export async function runChiefAdvisor(input: {
     const prompt = specialistPrompt(input.prompt, role, findings);
     delegated.add(role);
     input.onAgentStarted?.(role, prompt.slice(0, 160));
-    const output = await specialistAgent.generate<AgentFinding>(prompt, {
+    const stream = await specialistAgent.stream<AgentFinding>(prompt, {
       maxSteps: 1,
       modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
       structuredOutput: {
@@ -72,22 +93,56 @@ export async function runChiefAdvisor(input: {
         instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
       },
     });
-    const finding = AgentFindingSchema.parse({ ...output.object, agent: role });
+    const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
+    const consumeObject = consumeObjectStream<AgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial }));
+    const object = await stream.object;
+    await Promise.allSettled([consumeText, consumeObject]);
+    const finding = AgentFindingSchema.parse({ ...object, agent: role });
     findings.push(finding);
     input.onAgentCompleted?.(finding);
   }
 
-  const output = await chief.generate<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
+  const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 },
     structuredOutput: {
-      schema: AdvisorDecisionSchema,
+      schema: ChiefAdvisorDecisionSchema,
       instructions: "只输出符合 AdvisorDecision schema 的候选建议 JSON，不要 Markdown 或隐藏推理。",
     },
   });
+  const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
+  const consumeDecisionObject = consumeObjectStream<AdvisorDecision>(decisionStream.objectStream, (partial) => input.onStreamEvent?.({ type: "decision.object", partial }));
+  const decisionObject = await decisionStream.object;
+  await Promise.allSettled([consumeDecisionText, consumeDecisionObject]);
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: AdvisorDecisionSchema.parse(output.object), findings, delegatedAgents: [...delegated] };
+  return { decision: AdvisorDecisionSchema.parse(decisionObject), findings, delegatedAgents: [...delegated] };
+}
+
+async function consumeTextStream(stream: ReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) onChunk(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function consumeObjectStream<T extends object>(stream: ReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value && Object.keys(value).length > 0) onPartial(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
