@@ -4,7 +4,7 @@ const serverEnvironmentSchema = z.object({
   DEEPSEEK_API_KEY: z.string().trim().min(1),
 });
 
-export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
+export const DEFAULT_DEEPSEEK_MODEL = "DeepSeek-Pro";
 export const DEFAULT_DEEPSEEK_API_URL =
   "https://ai-model-api.matrix-studio.top/v1/chat/completions";
 

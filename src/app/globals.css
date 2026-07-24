@@ -8,6 +8,8 @@
   --accent: #e06b3c;
   --sage: #bfd0bd;
   --line: rgba(23, 35, 30, 0.16);
+  --font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
 }
 
 * { box-sizing: border-box; }

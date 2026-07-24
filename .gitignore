@@ -11,6 +11,10 @@ ui-ux-pro-max-skill/.git.upstream-backup/
 # Python cache
 __pycache__/
 *.py[cod]
+.venv/
+.venv-pandadata/
+/.pandadata/
+/user.json
 
 # JavaScript / Next.js
 node_modules/
@@ -20,3 +24,6 @@ coverage/
 test-results/
 playwright-report/
 *.tsbuildinfo
+
+# Local demo database
+.data/

@@ -36,8 +36,13 @@ pnpm install
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `DEEPSEEK_API_KEY` | 无 | 必填，仅服务端读取 |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Matrix endpoint 使用的模型名 |
+| `DEEPSEEK_MODEL` | `DeepSeek-Pro` | Matrix endpoint 使用的模型名 |
 | `DEEPSEEK_API_URL` | `https://ai-model-api.matrix-studio.top/v1/chat/completions` | OpenAI-compatible 完整请求地址 |
+| `PANDADATA_USERNAME` | 无 | PandaAI 官网账号，格式为 `86` + 注册手机号 |
+| `PANDADATA_PASSWORD` | 无 | PandaAI 官网密码，仅服务端读取 |
+| `PANDADATA_BASE_URL` | `http://pandadata.pandaaiquant.com` | PandaData SDK 服务根地址，可按官方环境覆盖 |
+| `PANDADATA_SKILL_ROOT` | `.codex/skills/pandadata-api` | 本地 PandaData Skill 路径 |
+| `PANDADATA_PYTHON` | `python3` | 安装了 `panda_data==0.0.12` 的 Python；本地演示使用 `.venv-pandadata/bin/python` |
 
 服务端会把 `DEEPSEEK_API_URL` 的 `/chat/completions` 后缀规范化为 provider base URL；也可以直接提供 base URL。
 
@@ -65,7 +70,34 @@ unset DEEPSEEK_API_KEY
 
 打开 [http://localhost:3000](http://localhost:3000)。IDE、CI/CD 和容器平台用户应在各自的 Secret 管理界面中，将密钥映射为同名进程变量。
 
-仓库中的 `.env.example` 与 `.env.prod.example` 只是字段骨架。请勿创建真实 `.env` 文件，也不要把密钥放入命令参数、日志或测试夹具。
+仓库中的 `.env.example` 与 `.env.prod.example` 只是字段骨架。开发环境可以使用被 Git 忽略的 `.env.local`，不要把真实密码放入示例文件、命令参数、日志或测试夹具。
+
+### PandaData 本地配置
+
+复制环境变量骨架并只在本机填写真实账号密码：
+
+```bash
+cp .env.example .env.local
+```
+
+`.env.local` 中至少填写：
+
+```dotenv
+PANDADATA_USERNAME=86加官网注册手机号
+PANDADATA_PASSWORD=你的PandaAI官网密码
+PANDADATA_BASE_URL=http://pandadata.pandaaiquant.com
+PANDADATA_SKILL_ROOT=.codex/skills/pandadata-api
+PANDADATA_PYTHON=.venv-pandadata/bin/python
+```
+
+建议创建独立 Python 环境并安装仓库锁定的 SDK：
+
+```bash
+python3.13 -m venv .venv-pandadata
+.venv-pandadata/bin/python -m pip install -r .codex/skills/pandadata-api/requirements.txt
+```
+
+Next.js 会读取 `.env.local`，`PandadataAdapter` 再把 `PANDADATA_USERNAME`、`PANDADATA_PASSWORD` 和 `PANDADATA_BASE_URL` 安全映射给 Python SDK。不要在前端使用 `NEXT_PUBLIC_` 前缀。
 
 ## 可选：Doppler
 
@@ -98,7 +130,7 @@ doppler run --project money-whisperer --config dev_personal -- pnpm test:e2e
 | `DEEPSEEK_API_URL` | Matrix OpenAI-compatible endpoint | `Development -> dev_personal` |
 | `DEEPSEEK_API_KEY` | 线上生产环境密钥（如生产部署需要） | `Production -> prd` |
 
-`DEEPSEEK_MODEL` 和 `DEEPSEEK_API_URL` 是非敏感配置，可按环境填写 `deepseek-v4-flash` 与你的 OpenAI-compatible endpoint。
+`DEEPSEEK_MODEL` 和 `DEEPSEEK_API_URL` 是非敏感配置，可按环境填写 `DeepSeek-Pro` 与你的 OpenAI-compatible endpoint。
 
 本地开发和 live E2E 只需要配置 `dev_personal`，无需为了本地测试提前填写 `prd`。
 
