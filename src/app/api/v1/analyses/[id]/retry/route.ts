@@ -103,8 +103,8 @@ async function retryAnalysis(userId: string, sourceId: string, source: Row, over
     db.close();
     if (!batch?.workspace_id) throw new Error("Simulation workspace not found");
     const objective = typeof overrides.objective === "string" ? overrides.objective : batch.objective_text ?? "重新生成分支候选";
-    const result = await generateOptions(userId, batch.workspace_id, objective);
-    return { analysisId: result.analysisId, result: { batchId: result.batchId, optionCount: result.candidates.length } };
+    const result = generateOptions(userId, batch.workspace_id, objective);
+    return { analysisId: result.analysisId, result: { batchId: result.batchId, optionCount: 0, status: result.status } };
   }
   if (type === "research_search") {
     const sourceResult = parseJson<Record<string, unknown>>(String(source.result_json ?? "{}"), {});

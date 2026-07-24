@@ -2,6 +2,7 @@
 
 import { Navigate, useLocation } from "@/features/frontend-migration/router";
 import TopNavigation from "@/components/desktop/TopNavigation";
+import OnboardingGate from "@/components/desktop/OnboardingGate";
 import { useAuth } from "@/hooks/useAuth";
 
 const MainLayout = ({ children }: { children: React.ReactNode }) => {
@@ -16,6 +17,7 @@ const MainLayout = ({ children }: { children: React.ReactNode }) => {
   return (
     <div className={`flex flex-col bg-background text-foreground ${isAdvisor ? "h-screen overflow-hidden" : "min-h-screen"}`}>
       <TopNavigation />
+      <OnboardingGate />
       <main className={mainClassName}>
         {children}
       </main>

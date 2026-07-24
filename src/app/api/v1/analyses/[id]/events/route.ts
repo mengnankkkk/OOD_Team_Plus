@@ -38,7 +38,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           const current = statusDb.prepare("SELECT status FROM agent_runs WHERE id=? AND user_id=?").get(id, userId) as { status?: string } | undefined;
           statusDb.close();
           const status = current?.status?.toLowerCase();
-          if (!current || status === "completed" || status === "failed" || status === "cancelled" || status === "blocked" || status === "waiting_for_user") {
+          if (!current || status === "completed" || status === "failed" || status === "cancelled" || status === "blocked" || status === "waiting_for_user" || status === "interrupted") {
             await delay(250);
             const finalEvents = getSseEvents(id, lastEventId);
             for (const event of finalEvents) {

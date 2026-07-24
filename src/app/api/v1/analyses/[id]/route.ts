@@ -10,5 +10,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!row) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Analysis not found" } }, { status: 404 });
   const result = row.result_json ? JSON.parse(String(row.result_json)) as Record<string, unknown> : null;
   const compliance = row.compliance_json ? JSON.parse(String(row.compliance_json)) : null;
-  return NextResponse.json({ data: { id: row.id, analysisId: row.id, type: String(row.type).toUpperCase(), status: String(row.status).toUpperCase(), stage: row.status === "completed" ? "FINALIZED" : String(row.status).toUpperCase(), progress: row.status === "completed" ? 1 : 0, createdAt: row.created_at, completedAt: row.completed_at, result, compliance, failure: row.failure_code ? { code: row.failure_code, message: row.failure_message, retryable: true } : null, streamUrl: `/api/v1/analyses/${id}/events` }, meta: meta() });
+  const status = String(row.status).toLowerCase();
+  const progress = status === "completed" ? 1 : status === "running" ? 0.5 : status === "failed" || status === "cancelled" || status === "interrupted" ? 1 : 0;
+  const stage = status === "completed" ? "FINALIZED" : status === "running" ? "RUNNING" : status.toUpperCase();
+  return NextResponse.json({ data: { id: row.id, analysisId: row.id, type: String(row.type).toUpperCase(), status: status.toUpperCase(), stage, progress, createdAt: row.created_at, startedAt: row.started_at, completedAt: row.completed_at, result, compliance, failure: row.failure_code ? { code: row.failure_code, message: row.failure_message, retryable: true } : null, streamUrl: `/api/v1/analyses/${id}/events` }, meta: meta() });
 }

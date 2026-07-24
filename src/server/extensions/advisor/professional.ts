@@ -349,7 +349,7 @@ async function researchInstrument(
         suggestedNextAgent: "PORTFOLIO_RISK",
       }),
     };
-  } catch (error) {
+  } catch {
     persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: source.method, childRunId, code: "PANDADATA_UNAVAILABLE" } });
     return {
       state: { dataState: "UNAVAILABLE", execution: null, closes: [], latest: null, asOfDate: null },

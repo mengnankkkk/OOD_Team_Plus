@@ -22,10 +22,14 @@ export interface SimulationMetrics {
 export interface SimulationResult {
   newCashDecimal: string;
   newTotalMarketValue: string;
+  newTotalAssets: string;
+  costBasis: string;
+  unrealizedPnl: string;
   holdings: Array<{
     instrumentId: string;
     quantity: string;
     price: string;
+    cost: string | null;
     marketValue: string;
     weightBps: number;
   }>;
@@ -33,7 +37,8 @@ export interface SimulationResult {
   metrics: SimulationMetrics;
 }
 
-type ParentHolding = { instrumentId: string; quantity: string; marketValue: string; assetType?: string; sector?: string | null };
+type ParentHolding = { instrumentId: string; quantity: string; marketValue: string; cost?: string | null; assetType?: string; sector?: string | null };
+type SimulationState = { quantity: Decimal; costPerUnit: Decimal | null; assetType: string; sector: string | null };
 
 export function executeSimulation(
   parentCashDecimal: string,
@@ -44,11 +49,12 @@ export function executeSimulation(
   if (hashPriceManifest(priceManifest) !== priceManifest.sha256) throw new Error("PRICE_MANIFEST_HASH_MISMATCH");
   const feeRate = nonNegative(priceManifest.feeRate ?? "0.001", "feeRate");
   const parentCash = nonNegative(parentCashDecimal, "parentCash");
-  const states = new Map(parentHoldings.map((holding) => {
+  const states = new Map<string, SimulationState>(parentHoldings.map((holding): [string, SimulationState] => {
     const quantity = nonNegative(holding.quantity, `quantity:${holding.instrumentId}`);
     assertQuantityPrecision(quantity, holding.instrumentId);
     return [holding.instrumentId, {
       quantity,
+      costPerUnit: holding.cost == null ? null : nonNegative(holding.cost, `cost:${holding.instrumentId}`),
       assetType: holding.assetType ?? priceManifest.assets?.[holding.instrumentId]?.assetType ?? "UNKNOWN",
       sector: holding.sector ?? priceManifest.assets?.[holding.instrumentId]?.sector ?? null,
     }];
@@ -70,6 +76,7 @@ export function executeSimulation(
     const fee = notional.mul(feeRate);
     const state = states.get(trade.instrumentId) ?? {
       quantity: new Decimal(0),
+      costPerUnit: null,
       assetType: priceManifest.assets?.[trade.instrumentId]?.assetType ?? "UNKNOWN",
       sector: priceManifest.assets?.[trade.instrumentId]?.sector ?? null,
     };
@@ -77,7 +84,10 @@ export function executeSimulation(
       const requiredCash = notional.plus(fee);
       if (cash.lt(requiredCash)) throw new Error("INSUFFICIENT_SIMULATED_CASH");
       cash = cash.minus(requiredCash);
+      const priorCost = state.costPerUnit;
+      const priorCostBasis = priorCost == null ? new Decimal(0) : state.quantity.mul(priorCost);
       state.quantity = state.quantity.plus(quantity);
+      state.costPerUnit = state.quantity.gt(0) ? priorCostBasis.plus(notional).div(state.quantity) : null;
     } else {
       if (state.quantity.lt(quantity)) throw new Error("INSUFFICIENT_SIMULATED_HOLDING");
       cash = cash.plus(notional.minus(fee));
@@ -96,6 +106,7 @@ export function executeSimulation(
       sector: state.sector,
       quantity: clean(state.quantity),
       price: clean(manifestPrice(priceManifest, instrumentId)),
+      cost: state.costPerUnit == null ? null : clean(state.costPerUnit),
     }));
   const portfolio = calculatePortfolioMetrics(clean(cash), financialHoldings);
   const totalAssets = decimal(portfolio.totalAssets, "totalAssets");
@@ -114,10 +125,17 @@ export function executeSimulation(
   return {
     newCashDecimal: clean(cash),
     newTotalMarketValue: portfolio.totalMarketValue,
+    newTotalAssets: portfolio.totalAssets,
+    costBasis: clean(sum([...states.values()].flatMap((state) => state.costPerUnit == null ? [] : [state.quantity.mul(state.costPerUnit)]))),
+    unrealizedPnl: clean(sum([...states.entries()].flatMap(([instrumentId, state]) => {
+      if (state.costPerUnit == null) return [];
+      return [state.quantity.mul(manifestPrice(priceManifest, instrumentId).minus(state.costPerUnit))];
+    }))),
     holdings: portfolio.holdings.map((holding) => ({
       instrumentId: holding.instrumentId,
       quantity: holding.quantity,
       price: holding.price,
+      cost: holding.cost == null ? null : holding.cost,
       marketValue: holding.marketValue,
       weightBps: holding.weightBps,
     })),

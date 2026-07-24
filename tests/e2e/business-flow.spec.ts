@@ -16,6 +16,33 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "创建账号并登录" }).click();
   await expect(page).toHaveURL(/\/$/u);
 
+  const onboarding = page.getByRole("dialog");
+  await expect(onboarding).toBeVisible();
+  const riskAnswers = [
+    "收入稳定，扣除日常支出后仍有明显结余",
+    "12 个月以上",
+    "没有负债，或还款压力很低",
+    "几乎没有投资经验",
+    "基本不了解，希望从简单的方案开始",
+    "3-5 年内可能使用",
+    "继续持有，等待市场恢复",
+    "10%-20%",
+    "没有，资金可以长期投资",
+  ];
+  for (const answer of riskAnswers) {
+    await onboarding.getByRole("button", { name: answer }).click();
+    await onboarding.getByRole("button", { name: /下一题|进入下一步/u }).click();
+  }
+  await onboarding.getByLabel("月度收入（元）").fill("30000");
+  await onboarding.getByLabel("月度必要支出（元）").fill("12000");
+  await onboarding.getByLabel("负债余额（元）").fill("0");
+  await onboarding.getByLabel("本次计划投资金额（元）").fill("50000");
+  await onboarding.getByRole("button", { name: "进入下一步" }).click();
+  await onboarding.getByLabel("目标金额（元）").fill("300000");
+  await onboarding.getByLabel("目标日期").fill("2030-12-31");
+  await onboarding.getByRole("button", { name: "完成建档并进入工作台" }).click();
+  await expect(onboarding).toBeHidden();
+
   await page.goto("/profile");
   await page.getByLabel("月度收入（元）").fill("30000");
   await page.getByLabel("月度必要支出（元）").fill("12000");

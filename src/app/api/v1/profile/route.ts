@@ -4,14 +4,16 @@ import { z } from "zod";
 import { authError } from "@/server/auth/http";
 import { createId, getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
 
-const ProfileSchema = z.object({ riskLevel: z.enum(["CONSERVATIVE", "BALANCED", "AGGRESSIVE"]).nullable().optional(), investmentAmount: z.string().optional(), targetAmount: z.string().optional(), targetDate: z.string().nullable().optional(), horizon: z.enum(["SHORT", "MEDIUM", "LONG"]).nullable().optional(), priority: z.enum(["STOCK", "SECTOR", "INDEX"]).nullable().optional(), maxDrawdown: z.string().nullable().optional(), preferences: z.record(z.string(), z.unknown()).optional() });
+const ProfileSchema = z.object({ riskLevel: z.enum(["R1", "R2", "R3", "R4", "R5", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"]).nullable().optional(), investmentAmount: z.string().optional(), targetAmount: z.string().optional(), targetDate: z.string().nullable().optional(), horizon: z.enum(["SHORT", "MEDIUM", "LONG"]).nullable().optional(), priority: z.enum(["STOCK", "SECTOR", "INDEX"]).nullable().optional(), maxDrawdown: z.string().nullable().optional(), preferences: z.record(z.string(), z.unknown()).optional() });
 
 export async function GET(req: NextRequest) {
   try {
     const db = getDatabase();
-    const row = db.prepare("SELECT * FROM user_profiles WHERE user_id = ?").get(getRequestContext(req).userId) as Record<string, unknown> | undefined;
+    const userId = getRequestContext(req).userId;
+    const row = db.prepare("SELECT * FROM user_profiles WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
+    const goalCount = Number((db.prepare("SELECT COUNT(*) AS count FROM goals WHERE user_id = ? AND status = 'active'").get(userId) as { count?: number } | undefined)?.count ?? 0);
     db.close();
-    return NextResponse.json({ data: row ? format(row) : { status: "DRAFT", version: 0, riskLevel: null, preferences: {} }, meta: meta() });
+    return NextResponse.json({ data: row ? format(row, goalCount) : { status: "DRAFT", version: 0, riskLevel: null, preferences: {}, hasGoal: false, onboardingCompleted: false }, meta: meta() });
   } catch (error) {
     return authError(error);
   }
@@ -45,13 +47,32 @@ export async function PATCH(req: NextRequest) {
       ON CONFLICT(user_id) DO UPDATE SET risk_level=excluded.risk_level, investment_amount_decimal=excluded.investment_amount_decimal, target_amount_decimal=excluded.target_amount_decimal, target_date=excluded.target_date, horizon=excluded.horizon, priority=excluded.priority, max_drawdown_decimal=excluded.max_drawdown_decimal, preferences_json=excluded.preferences_json, version=user_profiles.version+1, updated_at=excluded.updated_at`)
       .run(createId("profile"), userId, keep(parsed.data.riskLevel, existing?.risk_level), keep(parsed.data.investmentAmount, existing?.investment_amount_decimal), keep(parsed.data.targetAmount, existing?.target_amount_decimal), keep(parsed.data.targetDate, existing?.target_date), keep(parsed.data.horizon, existing?.horizon), keep(parsed.data.priority, existing?.priority), keep(parsed.data.maxDrawdown, existing?.max_drawdown_decimal), JSON.stringify(preferences), now, now);
     const row = db.prepare("SELECT * FROM user_profiles WHERE user_id = ?").get(userId) as Record<string, unknown>;
+    const goalCount = Number((db.prepare("SELECT COUNT(*) AS count FROM goals WHERE user_id = ? AND status = 'active'").get(userId) as { count?: number } | undefined)?.count ?? 0);
     db.close();
     db = null;
-    return NextResponse.json({ data: format(row), meta: meta() });
+    return NextResponse.json({ data: format(row, goalCount), meta: meta() });
   } catch (error) {
     db?.close();
     return authError(error);
   }
 }
 
-function format(row: Record<string, unknown>) { return { id: row.id, status: String(row.status).toUpperCase(), riskLevel: row.risk_level, investmentAmount: row.investment_amount_decimal, targetAmount: row.target_amount_decimal, targetDate: row.target_date, horizon: row.horizon, priority: row.priority, maxDrawdown: row.max_drawdown_decimal, preferences: JSON.parse(String(row.preferences_json ?? "{}")), version: row.version, updatedAt: row.updated_at }; }
+function format(row: Record<string, unknown>, goalCount = 0) {
+  const status = String(row.status).toUpperCase();
+  return {
+    id: row.id,
+    status,
+    riskLevel: row.risk_level,
+    investmentAmount: row.investment_amount_decimal,
+    targetAmount: row.target_amount_decimal,
+    targetDate: row.target_date,
+    horizon: row.horizon,
+    priority: row.priority,
+    maxDrawdown: row.max_drawdown_decimal,
+    preferences: JSON.parse(String(row.preferences_json ?? "{}")),
+    version: row.version,
+    updatedAt: row.updated_at,
+    hasGoal: goalCount > 0,
+    onboardingCompleted: (status === "COMPLETE" || status === "COMPLETED") && goalCount > 0,
+  };
+}

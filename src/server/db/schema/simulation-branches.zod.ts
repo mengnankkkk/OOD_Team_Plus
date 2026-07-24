@@ -79,6 +79,7 @@ const snapshotItemShape = {
   snapshotId: nonEmptyText,
   instrumentId: nonEmptyText,
   quantityDecimal: nonNegativeDecimalText,
+  costDecimal: nonNegativeDecimalText,
   priceDecimal: nonNegativeDecimalText,
   marketValueDecimal: nonNegativeDecimalText,
   weightBps: z.number().int().min(0).max(10_000),
