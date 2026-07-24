@@ -14,19 +14,19 @@ const navItems = [
   { path: "/", label: "首页" },
   { path: "/assets", label: "资产" },
   { path: "/advisor", label: "顾问" },
+  { path: "/query", label: "智能查数" },
   { path: "/watchlist", label: "持仓观测" },
 ];
 
+const historyEntries = [
+  { path: "/history/artifacts", label: "报告产物" },
+  { path: "/history/evidence-lab", label: "证据实验室" },
+  { path: "/history/decision-log", label: "决策日志" },
+];
+
 const workspaceEntries = [
-  { path: "/conversations", label: "会话中心" },
-  { path: "/query", label: "智能查数" },
   { path: "/analysis", label: "组合分析" },
   { path: "/simulations", label: "分支模拟" },
-  { path: "/artifacts", label: "报告产物" },
-  { path: "/research-searches", label: "研究搜索" },
-  { path: "/rss", label: "RSS 阅读" },
-  { path: "/decision-log", label: "决策日志" },
-  { path: "/evidence-lab", label: "Evidence Lab" },
 ];
 
 const adminEntries = [
@@ -45,13 +45,21 @@ export default function TopNavigation() {
   const navigate = useNavigate();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const historyWrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setMenuOpen(false);
+      if (historyWrapRef.current && !historyWrapRef.current.contains(event.target as Node)) setHistoryMenuOpen(false);
     };
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setHistoryMenuOpen(false);
+      }
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -63,6 +71,7 @@ export default function TopNavigation() {
   const unreadCount = alerts.filter((item) => item.status === "unread").length;
   const entries = user?.role === "ADMIN" ? [...workspaceEntries, ...adminEntries] : workspaceEntries;
   const active = entries.some((entry) => location.pathname.startsWith(entry.path));
+  const historyActive = location.pathname.startsWith("/history");
   const label = isAnonymous ? (profile?.displayName || "游客") : (profile?.displayName ?? user?.email ?? "登录中");
 
   return (
@@ -76,6 +85,20 @@ export default function TopNavigation() {
 
           <nav className="ml-auto hidden items-center gap-8 md:flex">
             {navItems.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}><span>{item.label}</span></NavLink>)}
+            <div ref={historyWrapRef} className="relative">
+              <button type="button" onClick={() => setHistoryMenuOpen((value) => !value)} className={cn("nav-link inline-flex items-center gap-1.5", historyActive && "active", historyMenuOpen && "open")}>
+                <span>历史记录</span><ChevronDown className={cn("size-3.5 transition-transform", historyMenuOpen && "rotate-180")} />
+              </button>
+              {historyMenuOpen ? (
+                <div className="absolute left-1/2 top-full z-50 min-w-[12rem] -translate-x-1/2 pt-1">
+                  <div className="overflow-hidden rounded-md bg-popover shadow-xl">
+                    <div className="flex flex-col">
+                      {historyEntries.map((entry) => <button key={entry.path} onClick={() => { setHistoryMenuOpen(false); navigate(entry.path); }} className="px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent hover:text-primary">{entry.label}</button>)}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <div ref={wrapRef} className="relative">
               <button type="button" onClick={() => setMenuOpen((value) => !value)} className={cn("nav-link inline-flex items-center gap-1.5", active && "active", menuOpen && "open")}>
                 <span>更多</span><ChevronDown className={cn("size-3.5 transition-transform", menuOpen && "rotate-180")} />
@@ -123,8 +146,9 @@ export default function TopNavigation() {
         {judgeMode ? <div className="mx-auto max-w-[1440px] border-t border-destructive/30 bg-destructive/5 px-5 py-1.5 text-xs text-destructive md:px-10 xl:px-16">评委视图 · Pandadata 路由、Skill 运行、DAG、风控拦截原因均已展开</div> : null}
       </header>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-border bg-card/95 px-2 backdrop-blur md:hidden">
         {navItems.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>{item.label}</NavLink>)}
+        <NavLink to="/history" className={({ isActive }) => `py-3 text-center text-xs ${isActive ? "text-primary" : "text-muted-foreground"}`}>历史记录</NavLink>
       </nav>
     </>
   );

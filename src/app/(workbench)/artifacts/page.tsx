@@ -28,7 +28,7 @@ export default function ArtifactsPage() {
   };
   if (list.loading) return <LoadingBlock label="正在整理图表与报告" />;
   return <div className="page-stack artifact-page">
-    <PageHeading eyebrow="ARTIFACT LIBRARY / 研究产物" title="报告中心" description="查数结果生成的图表与 Markdown 报告集中保存，支持安全预览、版本化修改和软删除。" />
+    <PageHeading eyebrow="ARTIFACT LIBRARY / 研究产物" title="报告产物" description="查数结果生成的图表与 Markdown 报告集中保存，支持安全预览、版本化修改和软删除。" />
     {error ? <ErrorBlock message={error} /> : null}
     <section className="artifact-layout">
       <aside className="panel artifact-list"><div className="panel-heading"><div><span>LIBRARY</span><h2>全部产物</h2></div><Status>{list.data?.items.length ?? 0}</Status></div>{list.data?.items.length ? list.data.items.map((item) => <button key={item.id} className={selected === item.id ? "active" : ""} onClick={() => { setSelected(item.id); setEditing(false); }}><span className="artifact-icon">{item.type === "MARKDOWN" ? <FileText size={18} /> : <BarChart3 size={18} />}</span><span><b>{item.title}</b><small>{item.type === "MARKDOWN" ? "财务报告" : "数据图表"} · v{item.currentVersion}</small><em>{shortDate(item.updatedAt)}</em></span></button>) : <EmptyBlock title="还没有产物" detail="先到智能查数选择图表或财务报告输出。" />}</aside>

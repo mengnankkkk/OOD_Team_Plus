@@ -85,7 +85,7 @@ const AdvisorPage = () => {
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [outputMode, setOutputMode] = useState<ConversationOutputMode>("SQL_ONLY");
+  const [outputMode] = useState<ConversationOutputMode>("SQL_ONLY");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -402,18 +402,6 @@ const AdvisorPage = () => {
         <header className="flex flex-col items-start justify-between gap-2 border-b border-border px-3 py-3 sm:flex-row sm:items-center sm:px-6">
           <div className="min-w-0">
             <p className="line-clamp-1 text-sm font-medium">{activeSession?.title ?? "新对话"}</p>
-          </div>
-          <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-full bg-muted p-1" aria-label="顾问输出模式">
-            {(["SQL_ONLY", "CHART", "FINANCIAL_REPORT"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setOutputMode(mode)}
-                className={cn("rounded-full px-3 py-1.5 text-xs transition-colors", outputMode === mode ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-              >
-                {mode === "SQL_ONLY" ? "仅分析" : mode === "CHART" ? "图表" : "财务报告"}
-              </button>
-            ))}
           </div>
         </header>
 
