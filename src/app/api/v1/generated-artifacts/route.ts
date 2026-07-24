@@ -1,75 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { GeneratedArtifactRequestSchema } from "@/server/extensions/schemas";
+import { createArtifact, listArtifacts } from "@/server/extensions/artifacts/service";
+import { createId, getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
 export const runtime = "nodejs";
 
-function requestId(): string {
-  return `req_${Date.now()}`;
-}
-
 export async function POST(req: NextRequest) {
-  if (!req.headers.get("Idempotency-Key")) {
-    return NextResponse.json(
-      { error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } },
-      { status: 400 },
-    );
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "INVALID_REQUEST", message: "Invalid JSON" } },
-      { status: 400 },
-    );
-  }
-
+  if (!idempotencyKey(req)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
+  const body = await req.json().catch(() => null);
   const parsed = GeneratedArtifactRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "INVALID_REQUEST",
-          message: "Invalid request",
-          details: parsed.error.format(),
-        },
-      },
-      { status: 400 },
-    );
+  if (!parsed.success) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Invalid request", details: parsed.error.format() } }, { status: 400 });
+  try {
+    const result = createArtifact({ userId: getRequestContext(req).userId, artifactType: parsed.data.artifactType, title: parsed.data.title, sourceMessageId: parsed.data.sourceMessageId, sourceQueryId: parsed.data.sourceQueryId, sessionId: parsed.data.conversationId });
+    return NextResponse.json({ data: { resourceId: result.artifactId, analysis: { analysisId: result.analysisId, type: "ARTIFACT_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() }, { status: 202 });
+  } catch (error) {
+    return NextResponse.json({ error: { code: "QUERY_RESULT_NOT_READY", message: error instanceof Error ? error.message : "Artifact source is not ready", retryable: true } }, { status: 409 });
   }
-
-  const artifactId = `art_${Date.now()}`;
-  const analysisId = `analysis_art_${artifactId}`;
-  return NextResponse.json(
-    {
-      data: {
-        resourceId: artifactId,
-        analysis: {
-          analysisId,
-          type: "ARTIFACT_GENERATION",
-          status: "QUEUED",
-          streamUrl: `/api/v1/analyses/${analysisId}/events`,
-        },
-      },
-      meta: { requestId: requestId(), apiVersion: "v1", generatedAt: new Date().toISOString() },
-    },
-    { status: 202 },
-  );
 }
 
 export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const limit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
-
-  return NextResponse.json({
-    data: { items: [] },
-    meta: {
-      requestId: requestId(),
-      apiVersion: "v1",
-      generatedAt: new Date().toISOString(),
-      pagination: { limit, nextCursor: null, hasMore: false },
-    },
-  });
+  const rawLimit = Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "20", 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+  const items = listArtifacts(getRequestContext(req).userId, limit, { sourceMessageId: req.nextUrl.searchParams.get("messageId") ?? undefined, artifactType: req.nextUrl.searchParams.get("type") ?? undefined, status: req.nextUrl.searchParams.get("status") ?? undefined });
+  return NextResponse.json({ data: { items }, meta: meta({ pagination: { limit, nextCursor: null, hasMore: false } }) });
 }

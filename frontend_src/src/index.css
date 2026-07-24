@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 25% 95%;
+    --foreground: 0 0% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 13%;
+    --primary: 221 52% 39%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 0 0% 13%;
+    --muted: 0 0% 94%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 221 52% 39%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 7 58% 44%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 88%;
+    --input: 0 0% 88%;
+    --ring: 221 52% 39%;
+    --status-up: 7 58% 48%;
+    --status-down: 154 64% 33%;
+    --status-watch: 40 73% 38%;
+    --chart-1: 221 52% 39%;
+    --chart-2: 7 58% 44%;
+    --chart-3: 154 64% 33%;
+    --chart-4: 40 73% 38%;
+    --chart-5: 145 7% 44%;
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 0 0% 13%;
+    --sidebar-primary: 221 52% 39%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 94%;
+    --sidebar-accent-foreground: 0 0% 13%;
+    --sidebar-border: 0 0% 88%;
+    --sidebar-ring: 221 52% 39%;
+    --font-sans: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+    --font-mono: "IBM Plex Mono", monospace;
+    --radius: 0.45rem;
+    --shadow-2xs: 0 1px 2px hsl(150 19% 13% / .04);
+    --shadow-xs: 0 1px 2px hsl(150 19% 13% / .05);
+    --shadow-sm: 0 1px 2px hsl(150 19% 13% / .05), 0 4px 12px hsl(150 19% 13% / .05);
+    --shadow: 0 1px 2px hsl(150 19% 13% / .05), 0 4px 12px hsl(150 19% 13% / .06);
+    --shadow-md: 0 2px 4px hsl(150 19% 13% / .07), 0 10px 24px hsl(150 19% 13% / .07);
+    --shadow-lg: 0 4px 8px hsl(150 19% 13% / .07), 0 16px 32px hsl(150 19% 13% / .08);
+    --shadow-xl: 0 8px 24px hsl(150 19% 13% / .1);
+    --shadow-2xl: 0 20px 48px hsl(150 19% 13% / .12);
+  }
+
+  .dark {
+    --background: 150 18% 9%; --foreground: 120 15% 94%; --card: 150 15% 12%; --card-foreground: 120 15% 94%;
+    --popover: 150 15% 12%; --popover-foreground: 120 15% 94%; --primary: 218 64% 66%; --primary-foreground: 150 18% 9%;
+    --secondary: 150 10% 18%; --secondary-foreground: 120 15% 94%; --muted: 150 10% 18%; --muted-foreground: 140 8% 66%;
+    --accent: 218 64% 66%; --accent-foreground: 150 18% 9%; --destructive: 7 63% 60%; --destructive-foreground: 0 0% 100%;
+    --border: 150 9% 24%; --input: 150 9% 24%; --ring: 218 64% 66%; --status-up: 7 63% 60%; --status-down: 154 52% 54%; --status-watch: 40 70% 56%;
+    --chart-1: 218 64% 66%; --chart-2: 7 63% 60%; --chart-3: 154 52% 54%; --chart-4: 40 70% 56%; --chart-5: 140 8% 66%;
+    --sidebar: 150 15% 12%; --sidebar-foreground: 120 15% 94%; --sidebar-primary: 218 64% 66%; --sidebar-primary-foreground: 150 18% 9%;
+    --sidebar-accent: 150 10% 18%; --sidebar-accent-foreground: 120 15% 94%; --sidebar-border: 150 9% 24%; --sidebar-ring: 218 64% 66%;
+  }
+
+  * { @apply border-border; }
+  body { @apply m-0 bg-background text-foreground antialiased; font-family: var(--font-sans); }
+  #root { width: 100%; }
+  button, a { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2; }
+}
+
+@layer components {
+  .paper-card { @apply rounded-lg border border-border bg-card shadow-sm transition-[transform,box-shadow] duration-300; }
+  .paper-card:hover { @apply -translate-y-0.5 shadow-md; }
+  .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground; }
+  .metric-display { @apply font-mono text-[clamp(2.65rem,5vw,4rem)] font-semibold leading-none tracking-[-0.04em] tabular-nums; }
+  .seal-mark { @apply inline-flex size-9 items-center justify-center rounded-sm border-2 border-destructive font-semibold text-destructive; font-family: var(--font-sans); }
+  .nav-link { @apply relative overflow-hidden py-5 px-2 text-sm text-neutral-400 transition-colors hover:text-white; }
+  .nav-link.active { @apply text-white; }
+  .nav-link.active::after { content: ""; @apply absolute inset-x-2 bottom-0 h-0.5 bg-primary; z-index: 2; }
+  /* Ink-sweep on hover — same Uiverse pattern as .menu-anim-btn, sized to the link.
+     White ellipse enters from the left, sweeps across using mix-blend-mode: difference
+     (briefly inverts the label + chevron), morphs from circle to square in transit. */
+  .nav-link::before {
+    content: "";
+    position: absolute;
+    width: 120%;
+    aspect-ratio: 1 / 1;
+    left: -120%;
+    top: 50%;
+    transform: translateY(-50%);
+    background-color: #ffffff;
+    border-radius: 50%;
+    mix-blend-mode: difference;
+    pointer-events: none;
+    transition: transform 0.4s ease-out, border-radius 0.4s ease-out;
+    z-index: 1;
+  }
+  .nav-link:hover::before { transform: translate(200%, -50%); border-radius: 0; }
+  .nav-link:active { transform: translate(2px, 2px); }
+  .judge-note { @apply rounded-sm border border-destructive/30 bg-destructive/5 px-2.5 py-1 font-mono text-[10px] text-destructive; }
+  .goal-ring { @apply grid size-32 place-items-center rounded-full font-mono text-2xl font-semibold; background: radial-gradient(circle, hsl(var(--card)) 57%, transparent 59%), conic-gradient(hsl(var(--primary)) 0 31%, hsl(var(--muted)) 31% 100%); }
+  .status-led { @apply absolute right-5 top-5 size-2.5 rounded-full bg-destructive; animation: status-pulse 2.1s ease-in-out infinite; }
+  .recommendation-card { border-left: 4px solid hsl(var(--destructive)); }
+  .agent-card { @apply min-h-36 rounded-md border border-border bg-card p-4 opacity-60 transition-[transform,opacity,box-shadow] duration-300; }
+  .agent-card-active { @apply relative z-10 -translate-y-1 border-primary bg-card opacity-100 shadow-lg; }
+  .agent-card-active::before { content: ""; @apply pointer-events-none absolute -inset-6 -z-10; background: radial-gradient(circle, hsl(var(--primary) / .14), transparent 68%); }
+}
+
+@keyframes status-pulse { 0%,100% { box-shadow: 0 0 0 0 hsl(var(--destructive) / .08); } 50% { box-shadow: 0 0 0 8px hsl(var(--destructive) / .18); } }
+@keyframes point-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+.pulse-point { animation: point-pulse 2.1s ease-in-out infinite; }
+
+/* AnimatedMenuButton — Uiverse.io ink-sweep pattern. Dark pill; white circle sweeps
+   across on hover with mix-blend-mode: difference (inverts overlapped label);
+   subtle press nudge on click. */
+.menu-anim-btn {
+  min-width: 130px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 2px;
+  background-color: rgb(15, 15, 15);
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 5px 5px 10px rgba(0, 0, 0, 0.103);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.menu-anim-btn::before {
+  content: "";
+  position: absolute;
+  width: 100%;
+  aspect-ratio: 1;
+  left: -100%;
+  top: 0;
+  background-color: #ffffff;
+  border-radius: 50%;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  transition: transform 0.3s ease, border-radius 0.3s ease;
+}
+.menu-anim-btn:hover:not(:disabled)::before {
+  transform: translate(100%, -25%);
+  border-radius: 0;
+}
+.menu-anim-btn:active:not(:disabled) {
+  transform: translate(3px, 3px);
+}
+.menu-anim-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
+}
+.menu-anim-btn-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+}
+.menu-anim-btn-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.menu-anim-btn-label {
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 767px) {
+  .metric-display { font-size: 2.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

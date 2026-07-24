@@ -6,13 +6,6 @@ import type { QueryExecutionResult } from "./executor";
 
 const CHUNK_SIZE = 500;
 
-interface PersistDb extends SqliteDb {
-  prepare: (sql: string) => {
-    run: (...args: unknown[]) => void;
-  };
-  transaction: (fn: () => void) => () => void;
-}
-
 export interface PersistQueryResultOptions {
   queryId: string;
   result: QueryExecutionResult;
@@ -32,7 +25,7 @@ export function persistQueryResult(
   options: PersistQueryResultOptions,
 ): PersistQueryResultSummary {
   const { queryId, result, getDb, nowIso = new Date().toISOString() } = options;
-  const db = getDb() as PersistDb;
+  const db = getDb();
   const chunks = chunkArray(result.rows, CHUNK_SIZE);
 
   const transaction = db.transaction(() => {

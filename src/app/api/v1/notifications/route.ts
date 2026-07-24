@@ -1,41 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 
-export const runtime = "nodejs";
-
-const SeveritySchema = z.enum(["low", "medium", "high", "critical"]);
-
-function meta() {
-  return {
-    requestId: `req_${Date.now()}`,
-    apiVersion: "v1" as const,
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-function invalidRequest(message: string, details?: Record<string, unknown>) {
-  return NextResponse.json(
-    { error: { code: "INVALID_REQUEST", message, ...(details ? { details } : {}) } },
-    { status: 400 },
-  );
-}
+import { getDatabase, getRequestContext, meta } from "@/server/http/context";
 
 export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const unreadOnly = url.searchParams.get("unreadOnly") === "true";
-  const severityRaw = url.searchParams.get("severity");
-  const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
-  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 20;
-
-  if (severityRaw && !SeveritySchema.safeParse(severityRaw).success) {
-    return invalidRequest("Invalid severity filter");
-  }
-
+  const conditions = ["n.user_id = ?", "n.dismissed_at IS NULL"];
+  const params: unknown[] = [getRequestContext(req).userId];
+  if (req.nextUrl.searchParams.get("unreadOnly") === "true") conditions.push("n.read_at IS NULL");
+  const severity = req.nextUrl.searchParams.get("severity");
+  if (severity) { conditions.push("n.severity = ?"); params.push(severity.toLowerCase()); }
+  const raw = Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "20", 10);
+  const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 100) : 20;
+  params.push(limit);
+  const db = getDatabase();
+  const rows = db.prepare(`SELECT n.*, c.condition_type, c.threshold_decimal
+    FROM notifications n LEFT JOIN observation_conditions c ON c.id = n.condition_id
+    WHERE ${conditions.join(" AND ")} ORDER BY n.created_at DESC LIMIT ?`).all(...params) as Array<Record<string, unknown>>;
+  const unread = (db.prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND dismissed_at IS NULL AND read_at IS NULL").get(getRequestContext(req).userId) as { count: number }).count;
+  db.close();
   return NextResponse.json({
-    data: { items: [], filters: { unreadOnly, severity: severityRaw ?? null } },
-    meta: {
-      ...meta(),
-      pagination: { limit, nextCursor: null, hasMore: false },
-    },
+    data: { items: rows.map((row) => ({ ...row, conditionId: row.condition_id, eventId: row.event_id, groupKey: row.group_key, occurrenceCount: 1, actions: ["VIEW_ANALYSIS", "OPEN_SIMULATION", "IGNORE"], version: 1 })), unreadCount: unread },
+    meta: meta({ pagination: { limit, nextCursor: rows.length === limit ? String(limit) : null, hasMore: rows.length === limit } }),
   });
 }

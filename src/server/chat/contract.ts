@@ -21,9 +21,11 @@ export const memoryIdentitySchema = z.object({
 export const chatRequestSchema = z.object({
   message: chatMessageSchema,
   memory: memoryIdentitySchema,
-}).transform(({ message, memory }) => ({
+  outputMode: z.enum(["SQL_ONLY", "CHART", "FINANCIAL_REPORT"]).optional(),
+}).transform(({ message, memory, outputMode }) => ({
   message: { ...message, id: crypto.randomUUID() },
   memory,
+  outputMode,
 }));
 
 export type MemoryIdentity = z.infer<typeof memoryIdentitySchema>;

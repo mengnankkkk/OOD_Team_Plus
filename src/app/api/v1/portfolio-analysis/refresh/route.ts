@@ -1,71 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { IdempotencyKeySchema } from "@/server/extensions/schemas";
+import { refreshPortfolio } from "@/server/extensions/analysis/service";
+import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
-export const runtime = "nodejs";
-
-const RefreshRequestSchema = z.object({
-  portfolioId: z.string().min(1),
-  forceRefresh: z.boolean().optional().default(false),
-  conversationId: z.string().optional(),
-});
-
-function invalidRequest(message: string, details?: Record<string, unknown>) {
-  return NextResponse.json(
-    {
-      error: {
-        code: "INVALID_REQUEST",
-        message,
-        ...(details ? { details } : {}),
-        retryable: false,
-      },
-    },
-    { status: 400 },
-  );
-}
+const RefreshRequestSchema = z.object({ portfolioId: z.string().min(1), forceRefresh: z.boolean().optional(), conversationId: z.string().optional() });
 
 export async function POST(req: NextRequest) {
-  const idempotencyKey = req.headers.get("Idempotency-Key");
-  if (!idempotencyKey) {
-    return invalidRequest("Idempotency-Key header required");
-  }
-
-  if (!IdempotencyKeySchema.safeParse(idempotencyKey).success) {
-    return invalidRequest("Invalid Idempotency-Key header");
-  }
-
-  let body: unknown;
+  if (!idempotencyKey(req)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key header required" } }, { status: 400 });
+  const parsed = RefreshRequestSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Invalid request body", details: parsed.error.format() } }, { status: 400 });
   try {
-    body = await req.json();
-  } catch {
-    return invalidRequest("Invalid JSON body");
+    const result = refreshPortfolio(getRequestContext(req).userId, parsed.data.portfolioId);
+    return NextResponse.json({ data: { portfolioSnapshotId: result.snapshotId, analysis: { analysisId: result.analysisId, type: "PORTFOLIO_REFRESH", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() }, { status: 202 });
+  } catch (error) {
+    return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: error instanceof Error ? error.message : "Portfolio not found" } }, { status: 404 });
   }
-
-  const parsed = RefreshRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return invalidRequest("Invalid request body", parsed.error.format() as Record<string, unknown>);
-  }
-
-  const analysisId = `analysis_refresh_${Date.now()}`;
-
-  // TODO: persist the portfolio refresh request and enqueue snapshot creation.
-  return NextResponse.json(
-    {
-      data: {
-        analysis: {
-          analysisId,
-          type: "PORTFOLIO_REFRESH",
-          status: "QUEUED",
-          streamUrl: `/api/v1/analyses/${analysisId}/events`,
-        },
-      },
-      meta: {
-        requestId: `req_${Date.now()}`,
-        apiVersion: "v1",
-        generatedAt: new Date().toISOString(),
-      },
-    },
-    { status: 202 },
-  );
 }

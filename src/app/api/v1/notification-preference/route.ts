@@ -1,59 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-
-export const runtime = "nodejs";
-
-const PreferenceSchema = z.object({
-  mode: z.enum(["IMPORTANT_ONLY", "DAILY_DIGEST", "MUTED"]),
-  quietHoursStart: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
-  quietHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
-});
-
-function meta() {
-  return {
-    requestId: `req_${Date.now()}`,
-    apiVersion: "v1" as const,
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-function invalidRequest(message: string, details?: Record<string, unknown>) {
-  return NextResponse.json(
-    { error: { code: "INVALID_REQUEST", message, ...(details ? { details } : {}) } },
-    { status: 400 },
-  );
-}
-
-export async function GET() {
-  return NextResponse.json({
-    data: {
-      mode: "IMPORTANT_ONLY",
-      quietHoursStart: null,
-      quietHoursEnd: null,
-    },
-    meta: meta(),
-  });
-}
-
-export async function PUT(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return invalidRequest("Invalid JSON");
-  }
-
-  const parsed = PreferenceSchema.safeParse(body);
-  if (!parsed.success) {
-    return invalidRequest("Invalid preference", parsed.error.format() as Record<string, unknown>);
-  }
-
-  return NextResponse.json({
-    data: {
-      mode: parsed.data.mode,
-      quietHoursStart: parsed.data.quietHoursStart ?? null,
-      quietHoursEnd: parsed.data.quietHoursEnd ?? null,
-    },
-    meta: meta(),
-  });
-}
+import { createId,getDatabase,getRequestContext,isoNow,meta } from "@/server/http/context";
+const Schema=z.object({mode:z.enum(["IMPORTANT_ONLY","DAILY_DIGEST","MUTED"]),quietHoursStart:z.string().nullable().optional(),quietHoursEnd:z.string().nullable().optional()});
+export async function GET(req?:NextRequest){const db=getDatabase();const row=db.prepare("SELECT * FROM notification_preferences WHERE user_id=?").get(getRequestContext(req).userId) as Record<string,unknown>|undefined;db.close();return NextResponse.json({data:row?format(row):{mode:"IMPORTANT_ONLY",quietHoursStart:null,quietHoursEnd:null,version:0},meta:meta()});}
+export async function PUT(req:NextRequest){const parsed=Schema.safeParse(await req.json().catch(()=>null));if(!parsed.success)return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Invalid preference",details:parsed.error.format()}},{status:400});const now=isoNow();const db=getDatabase();db.prepare("INSERT INTO notification_preferences (id,user_id,mode,quiet_hours_start,quiet_hours_end,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET mode=excluded.mode,quiet_hours_start=excluded.quiet_hours_start,quiet_hours_end=excluded.quiet_hours_end,updated_at=excluded.updated_at,row_version=notification_preferences.row_version+1").run(createId("pref"),getRequestContext(req).userId,parsed.data.mode.toLowerCase(),parsed.data.quietHoursStart??null,parsed.data.quietHoursEnd??null,now,now);const row=db.prepare("SELECT * FROM notification_preferences WHERE user_id=?").get(getRequestContext(req).userId) as Record<string,unknown>;db.close();return NextResponse.json({data:format(row),meta:meta()});}
+function format(row:Record<string,unknown>){return{mode:String(row.mode).toUpperCase(),quietHoursStart:row.quiet_hours_start,quietHoursEnd:row.quiet_hours_end,version:row.row_version};}

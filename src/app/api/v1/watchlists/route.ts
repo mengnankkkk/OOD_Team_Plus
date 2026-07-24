@@ -1,68 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
 
-export const runtime = "nodejs";
-
-const CreateWatchlistSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().max(500).optional(),
-});
-
-function meta() {
-  return {
-    requestId: `req_${Date.now()}`,
-    apiVersion: "v1" as const,
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-function invalidRequest(message: string, details?: Record<string, unknown>) {
-  return NextResponse.json(
-    { error: { code: "INVALID_REQUEST", message, ...(details ? { details } : {}) } },
-    { status: 400 },
-  );
-}
-
-export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return invalidRequest("Invalid JSON");
-  }
-
-  const parsed = CreateWatchlistSchema.safeParse(body);
-  if (!parsed.success) {
-    return invalidRequest("Invalid request", parsed.error.format() as Record<string, unknown>);
-  }
-
-  const watchlistId = `wl_${Date.now()}`;
-
-  return NextResponse.json(
-    {
-      data: {
-        id: watchlistId,
-        name: parsed.data.name,
-        description: parsed.data.description ?? null,
-        status: "active",
-        createdAt: new Date().toISOString(),
-      },
-      meta: meta(),
-    },
-    { status: 201 },
-  );
-}
-
-export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
-  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
-
-  return NextResponse.json({
-    data: { items: [] },
-    meta: {
-      ...meta(),
-      pagination: { limit, nextCursor: null, hasMore: false },
-    },
-  });
-}
+const Schema=z.object({name:z.string().min(1).max(100),description:z.string().max(500).optional()});
+export async function POST(req:NextRequest){if(!idempotencyKey(req))return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Idempotency-Key required"}},{status:400});const parsed=Schema.safeParse(await req.json().catch(()=>null));if(!parsed.success)return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Invalid request",details:parsed.error.format()}},{status:400});const now=isoNow();const id=createId("watchlist");const db=getDatabase();db.prepare("INSERT INTO watchlists (id,user_id,name,description,created_at,updated_at) VALUES (?,?,?,?,?,?)").run(id,getRequestContext(req).userId,parsed.data.name,parsed.data.description??null,now,now);const row=db.prepare("SELECT * FROM watchlists WHERE id=?").get(id);db.close();return NextResponse.json({data:row,meta:meta()},{status:201});}
+export async function GET(req:NextRequest){const db=getDatabase();const rows=db.prepare("SELECT * FROM watchlists WHERE user_id=? AND status!='deleted' ORDER BY created_at DESC LIMIT ?").all(getRequestContext(req).userId,Math.min(Number(req.nextUrl.searchParams.get("limit")??20),100));db.close();return NextResponse.json({data:{items:rows},meta:meta()});}

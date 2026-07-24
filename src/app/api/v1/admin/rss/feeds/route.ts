@@ -1,55 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
-
+import { NextRequest,NextResponse } from "next/server";
+import { z } from "zod";
+import { createId,getDatabase,getRequestContext,isoNow,meta } from "@/server/http/context";
 import { isSSRFBlocked } from "@/server/extensions/search/web-adapter";
-
-export const runtime = "nodejs";
-
-function requestId(): string {
-  return `req_${Date.now()}`;
-}
-
-export async function POST(req: NextRequest) {
-  // TODO: enforce admin access.
-  const body = (await req.json().catch(() => ({}))) as { url?: string };
-
-  if (!body.url) {
-    return NextResponse.json(
-      { error: { code: "INVALID_REQUEST", message: "url required" } },
-      { status: 400 },
-    );
-  }
-
-  if (isSSRFBlocked(body.url)) {
-    return NextResponse.json(
-      { error: { code: "SSRF_BLOCKED", message: "URL blocked" } },
-      { status: 400 },
-    );
-  }
-
-  return NextResponse.json(
-    {
-      data: {
-        id: `feed_${Date.now()}`,
-        url: body.url,
-        status: "active",
-      },
-      meta: {
-        requestId: requestId(),
-        apiVersion: "v1",
-        generatedAt: new Date().toISOString(),
-      },
-    },
-    { status: 201 },
-  );
-}
-
-export async function GET() {
-  return NextResponse.json({
-    data: { items: [], feeds: [] },
-    meta: {
-      requestId: requestId(),
-      apiVersion: "v1",
-      generatedAt: new Date().toISOString(),
-    },
-  });
-}
+const Schema=z.object({url:z.string().url(),title:z.string().min(1).max(200).optional(),description:z.string().max(500).optional()});
+export async function POST(req:NextRequest){const parsed=Schema.safeParse(await req.json().catch(()=>null));if(!parsed.success)return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Invalid feed",details:parsed.error.format()}},{status:400});if(isSSRFBlocked(parsed.data.url))return NextResponse.json({error:{code:"SSRF_BLOCKED",message:"URL blocked"}},{status:422});const now=isoNow();const db=getDatabase();const id=createId("feed");db.prepare("INSERT INTO rss_feeds (id,url,title,description,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run(id,parsed.data.url,parsed.data.title??parsed.data.url,parsed.data.description??null,getRequestContext(req).userId,now,now);const row=db.prepare("SELECT * FROM rss_feeds WHERE id=?").get(id);db.close();return NextResponse.json({data:row,meta:meta()},{status:201});}
+export async function GET(){const db=getDatabase();const rows=db.prepare("SELECT * FROM rss_feeds WHERE status!='deleted' ORDER BY created_at DESC").all();db.close();return NextResponse.json({data:{items:rows},meta:meta()});}

@@ -1,31 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
-
-type RouteContext = { params: Promise<{ id: string }> };
-
-const notFound = () =>
-  NextResponse.json(
-    { error: { code: "RESOURCE_NOT_FOUND", message: "Watchlist item not found" } },
-    { status: 404 },
-  );
-
-export async function PATCH(req: NextRequest, _context: RouteContext) {
-  if (!req.headers.get("If-Match")) {
-    return NextResponse.json(
-      { error: { code: "INVALID_REQUEST", message: "If-Match required" } },
-      { status: 400 },
-    );
-  }
-
-  return notFound();
-}
-
-export async function DELETE(req: NextRequest, _context: RouteContext) {
-  if (!req.headers.get("If-Match")) {
-    return NextResponse.json(
-      { error: { code: "INVALID_REQUEST", message: "If-Match required" } },
-      { status: 400 },
-    );
-  }
-
-  return notFound();
-}
+import { NextRequest,NextResponse } from "next/server";
+import { getDatabase,getRequestContext,meta } from "@/server/http/context";
+export async function PATCH(req:NextRequest,{params}:{params:Promise<{id:string}>}){const{id}=await params;if(!req.headers.get("If-Match"))return NextResponse.json({error:{code:"INVALID_REQUEST",message:"If-Match required"}},{status:400});const body=await req.json().catch(()=>null) as {reason?:string;plannedHorizon?:string}|null;const db=getDatabase();const result=db.prepare("UPDATE watchlist_items SET reason=COALESCE(?,reason),planned_horizon=COALESCE(?,planned_horizon),updated_at=?,row_version=row_version+1 WHERE id=? AND status='active' AND watchlist_id IN (SELECT id FROM watchlists WHERE user_id=?)").run(body?.reason??null,body?.plannedHorizon??null,new Date().toISOString(),id,getRequestContext(req).userId);if(!result.changes){db.close();return NextResponse.json({error:{code:"RESOURCE_NOT_FOUND",message:"Watchlist item not found"}},{status:404});}const row=db.prepare("SELECT * FROM watchlist_items WHERE id=?").get(id);db.close();return NextResponse.json({data:row,meta:meta()});}
+export async function DELETE(req:NextRequest,{params}:{params:Promise<{id:string}>}){const{id}=await params;if(!req.headers.get("If-Match"))return NextResponse.json({error:{code:"INVALID_REQUEST",message:"If-Match required"}},{status:400});const db=getDatabase();db.prepare("UPDATE watchlist_items SET status='deleted',removed_at=?,updated_at=? WHERE id=? AND watchlist_id IN (SELECT id FROM watchlists WHERE user_id=?)").run(new Date().toISOString(),new Date().toISOString(),id,getRequestContext(req).userId);db.close();return new Response(null,{status:204});}

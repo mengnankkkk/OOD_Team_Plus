@@ -1,45 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-
-type RouteContext = { params: Promise<{ id: string }> };
-
-const AddItemSchema = z.object({
-  instrumentId: z.string().min(1),
-  reason: z.string().max(500).optional(),
-  plannedHorizon: z.string().optional(),
-});
-
-export async function POST(req: NextRequest, _context: RouteContext) {
-  const body = await req.json().catch(() => ({}));
-  const parsed = AddItemSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "INVALID_REQUEST",
-          message: "Invalid request",
-          details: parsed.error.format(),
-        },
-      },
-      { status: 400 },
-    );
-  }
-
-  // Persisting must reject an instrument already present in this active watchlist.
-  return NextResponse.json(
-    { error: { code: "RESOURCE_NOT_FOUND", message: "Watchlist not found" } },
-    { status: 404 },
-  );
-}
-
-export async function GET(_req: NextRequest, _context: RouteContext) {
-  return NextResponse.json({
-    data: { items: [] },
-    meta: {
-      requestId: `req_${Date.now()}`,
-      apiVersion: "v1",
-      generatedAt: new Date().toISOString(),
-      pagination: { limit: 20, nextCursor: null, hasMore: false },
-    },
-  });
-}
+import { createId,getDatabase,getRequestContext,idempotencyKey,isoNow,meta } from "@/server/http/context";
+const Schema=z.object({instrumentId:z.string().min(1),reason:z.string().max(500).optional(),plannedHorizon:z.string().optional()});
+export async function POST(req:NextRequest,{params}:{params:Promise<{id:string}>}){const{id}=await params;if(!idempotencyKey(req))return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Idempotency-Key required"}},{status:400});const parsed=Schema.safeParse(await req.json().catch(()=>null));if(!parsed.success)return NextResponse.json({error:{code:"INVALID_REQUEST",message:"Invalid request",details:parsed.error.format()}},{status:400});const db=getDatabase();const now=isoNow();const exists=db.prepare("SELECT id FROM watchlists WHERE id=? AND user_id=? AND status='active'").get(id,getRequestContext(req).userId);if(!exists){db.close();return NextResponse.json({error:{code:"RESOURCE_NOT_FOUND",message:"Watchlist not found"}},{status:404});}const itemId=createId("watchitem");db.prepare("INSERT INTO watchlist_items (id,watchlist_id,instrument_id,reason,planned_horizon,added_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)").run(itemId,id,parsed.data.instrumentId,parsed.data.reason??null,parsed.data.plannedHorizon??null,now,now,now);const row=db.prepare("SELECT * FROM watchlist_items WHERE id=?").get(itemId);db.close();return NextResponse.json({data:row,meta:meta()},{status:201});}
+export async function GET(req:NextRequest,{params}:{params:Promise<{id:string}>}){const{id}=await params;const db=getDatabase();const rows=db.prepare("SELECT w.*,i.symbol,i.name,i.asset_type FROM watchlist_items w LEFT JOIN instruments i ON i.id=w.instrument_id WHERE w.watchlist_id=? AND w.status='active' ORDER BY w.added_at DESC").all(id);db.close();return NextResponse.json({data:{items:rows},meta:meta()});}

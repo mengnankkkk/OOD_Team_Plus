@@ -1,4 +1,8 @@
+import { getDatabase, isoNow } from "@/server/http/context";
+
 export async function recoverInterruptedRuns(): Promise<number> {
-  // TODO: UPDATE agent_runs SET status='interrupted' WHERE status='running'
-  return 0;
+  const db = getDatabase();
+  const result = db.prepare("UPDATE agent_runs SET status = 'interrupted', completed_at = ? WHERE status IN ('running', 'queued')").run(isoNow());
+  db.close();
+  return result.changes;
 }

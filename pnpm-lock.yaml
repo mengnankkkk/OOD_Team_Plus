@@ -11,6 +11,9 @@ importers:
       '@ai-sdk/react':
         specifier: 3.0.236
         version: 3.0.236(react@19.2.8)(zod@4.3.6)
+      '@libsql/client':
+        specifier: 0.17.4
+        version: 0.17.4
       '@mastra/ai-sdk':
         specifier: 1.6.3
         version: 1.6.3(@mastra/core@1.52.0(ai@6.0.234(zod@4.3.6))(express@5.2.1)(zod@4.3.6))(zod@4.3.6)

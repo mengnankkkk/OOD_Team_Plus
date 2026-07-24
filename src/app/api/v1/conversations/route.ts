@@ -1,0 +1,6 @@
+import { NextRequest, NextResponse } from "next/server";
+
+import { createId, getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
+
+export async function POST(req: NextRequest) { const body = await req.json().catch(() => null) as { title?: string } | null; const db = getDatabase(); const id = createId("conversation"); const now = isoNow(); db.prepare("INSERT INTO conversation_sessions (id,user_id,title,status,created_at,updated_at,row_version) VALUES (?,?,?,'active',?,?,1)").run(id, getRequestContext(req).userId, body?.title?.trim() || "New conversation", now, now); const row = db.prepare("SELECT * FROM conversation_sessions WHERE id=?").get(id); db.close(); return NextResponse.json({ data: row, meta: meta() }, { status: 201 }); }
+export async function GET(req: NextRequest) { const db = getDatabase(); const rows = db.prepare("SELECT c.*, (SELECT content FROM messages m WHERE m.session_id=c.id ORDER BY m.created_at DESC LIMIT 1) as last_message_preview FROM conversation_sessions c WHERE c.user_id=? AND c.status='active' ORDER BY c.updated_at DESC LIMIT ?").all(getRequestContext(req).userId, Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 20), 100)); db.close(); return NextResponse.json({ data: { items: rows }, meta: meta() }); }
