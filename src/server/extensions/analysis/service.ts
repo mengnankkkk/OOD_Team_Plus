@@ -46,8 +46,29 @@ export function getPortfolioHoldings(userId: string, snapshotId?: string) {
   const rows = db.prepare(`SELECT h.*, i.symbol, i.name, i.asset_type, i.market, i.sector
     FROM holding_snapshots h LEFT JOIN instruments i ON i.id = h.instrument_id
     WHERE h.portfolio_snapshot_id = ? ORDER BY CAST(h.market_value_decimal AS REAL) DESC`).all(snapshot.id) as HoldingRow[];
+  const history = db.prepare(`SELECT h.instrument_id,
+      MAX(CAST(h.price_decimal AS REAL)) AS peak_price,
+      MIN(CAST(h.price_decimal AS REAL)) AS low_price,
+      COUNT(*) AS observation_count
+    FROM holding_snapshots h JOIN portfolio_snapshots ps ON ps.id=h.portfolio_snapshot_id
+    WHERE ps.user_id=? AND ps.portfolio_id=? AND ps.as_of<=?
+    GROUP BY h.instrument_id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
   db.close();
-  const items = rows.map((row) => ({ holdingId: row.id, instrumentId: row.instrument_id, assetType: String(row.asset_type ?? "stock").toUpperCase(), symbol: row.symbol, name: row.name, quantity: row.quantity_decimal, averageCost: row.cost_decimal, marketPrice: row.price_decimal, marketValue: row.market_value_decimal, weight: Number(row.weight_bps ?? 0) / 10_000, unrealizedPnl: row.unrealized_pnl_decimal, unrealizedPnlRate: Number(row.cost_decimal) ? Number(row.unrealized_pnl_decimal) / (Number(row.cost_decimal) * Number(row.quantity_decimal)) : null, drawdown: null, drawdownWindowDays: null, sector: row.sector }));
+  const historyByInstrument = new Map(history.map((item) => [String(item.instrument_id), item]));
+  const items = rows.map((row) => {
+    const itemHistory = historyByInstrument.get(String(row.instrument_id));
+    const price = Number(row.price_decimal);
+    const peak = Math.max(Number(itemHistory?.peak_price ?? 0), Number(row.cost_decimal), price);
+    return {
+      holdingId: row.id, instrumentId: row.instrument_id, assetType: String(row.asset_type ?? "stock").toUpperCase(),
+      symbol: row.symbol, name: row.name, quantity: row.quantity_decimal, averageCost: row.cost_decimal,
+      marketPrice: row.price_decimal, marketValue: row.market_value_decimal, weight: Number(row.weight_bps ?? 0) / 10_000,
+      unrealizedPnl: row.unrealized_pnl_decimal,
+      unrealizedPnlRate: Number(row.cost_decimal) ? Number(row.unrealized_pnl_decimal) / (Number(row.cost_decimal) * Number(row.quantity_decimal)) : null,
+      drawdown: peak > 0 ? price / peak - 1 : 0,
+      drawdownWindowDays: Number(itemHistory?.observation_count ?? 1), sector: row.sector,
+    };
+  });
   const totalValue = items.reduce((sum, item) => sum + Number(item.marketValue), 0);
   const totalPnl = items.reduce((sum, item) => sum + Number(item.unrealizedPnl), 0);
   return {
@@ -65,12 +86,125 @@ export function getPortfolioMetrics(userId: string, snapshotId?: string) {
   if (!snapshot) return null;
   const view = getPortfolioHoldings(userId, String(snapshot.id));
   const holdings: HoldingSnapshot[] = (view?.items ?? []).map((item) => ({ instrumentId: String(item.instrumentId), quantity: String(item.quantity), price: String(item.marketPrice), marketValue: String(item.marketValue), weightBps: Math.round(item.weight * 10_000) }));
-  const score = calculatePortfolioScore(Number(view?.summary.totalValue ?? 0), holdings);
+  const analytics = derivePortfolioAnalytics(userId, snapshot, view);
+  const score = calculatePortfolioScore(
+    Number(view?.summary.totalValue ?? 0), holdings, analytics.totalReturnPct,
+    analytics.maxDrawdownPct, analytics.annualVolatilityPct, analytics.liquidityScore,
+  );
   const db = getDatabase();
   persistScore(db, String(snapshot.id), score);
   db.close();
-  return { portfolioSnapshotId: snapshot.id, scoreVersion: score.scoreVersion, healthScore: score.healthScore, riskScore: score.riskScore, metrics: { totalValue: Number(view?.summary.totalValue ?? 0), unrealizedPnl: Number(view?.summary.unrealizedPnl ?? 0), concentrationHhi: score.components.concentrationScore }, components: Object.entries(score.components).map(([code, value]) => ({ code: code.toUpperCase(), score: value, quality: "VALID" })), missingMetrics: score.missingMetrics, dataQuality: view?.dataQuality, sourceStatuses: view?.sourceStatuses, asOf: snapshot.as_of };
+  return {
+    portfolioSnapshotId: snapshot.id, portfolioId: snapshot.portfolio_id, scoreVersion: score.scoreVersion,
+    healthScore: score.healthScore, riskScore: score.riskScore,
+    metrics: {
+      totalValue: analytics.totalAssets, marketValue: Number(view?.summary.totalValue ?? 0), cashValue: Number(view?.summary.cashValue ?? 0),
+      unrealizedPnl: Number(view?.summary.unrealizedPnl ?? 0), totalReturn: analytics.totalReturnPct / 100,
+      maxDrawdown: analytics.maxDrawdownPct / 100, annualVolatility: analytics.annualVolatilityPct / 100,
+      concentrationHhi: analytics.concentrationHhi, topHoldingWeight: analytics.topHoldingWeight,
+      cashAllocation: analytics.cashAllocation, liquidityScore: analytics.liquidityScore,
+    },
+    allocation: { bySector: analytics.bySector, byAssetType: analytics.byAssetType },
+    components: Object.entries(score.components).map(([code, value]) => ({ code: code.toUpperCase(), score: value, quality: "VALID" })),
+    missingMetrics: score.missingMetrics, observationCount: analytics.observationCount,
+    dataQuality: view?.dataQuality, sourceStatuses: view?.sourceStatuses, asOf: snapshot.as_of,
+  };
 }
+
+export function getPortfolioTrends(userId: string, snapshotId?: string) {
+  const snapshot = getLatestSnapshot(userId, snapshotId);
+  if (!snapshot) return null;
+  const db = getDatabase();
+  const snapshots = db.prepare(`SELECT id,as_of,cash_decimal,total_market_value_decimal
+    FROM portfolio_snapshots WHERE user_id=? AND portfolio_id=? AND as_of<=?
+    ORDER BY as_of,created_at,id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
+  const concentrationRows = db.prepare(`SELECT ps.id,
+      SUM((h.weight_bps / 10000.0) * (h.weight_bps / 10000.0)) AS hhi
+    FROM portfolio_snapshots ps LEFT JOIN holding_snapshots h ON h.portfolio_snapshot_id=ps.id
+    WHERE ps.user_id=? AND ps.portfolio_id=? AND ps.as_of<=? GROUP BY ps.id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
+  db.close();
+  const hhiBySnapshot = new Map(concentrationRows.map((row) => [String(row.id), Number(row.hhi ?? 0)]));
+  const values = snapshots.map((row) => ({ id: String(row.id), date: String(row.as_of).slice(0, 10), value: Number(row.cash_decimal) + Number(row.total_market_value_decimal) }));
+  const currentView = getPortfolioHoldings(userId, String(snapshot.id));
+  const costBasis = Number(currentView?.summary.cashValue ?? 0) + (currentView?.items ?? []).reduce((sum, item) => sum + Number(item.averageCost) * Number(item.quantity), 0);
+  if (values.length === 1 && costBasis > 0) {
+    const baseline = new Date(String(snapshot.as_of));
+    baseline.setUTCDate(baseline.getUTCDate() - 30);
+    values.unshift({ id: "cost-basis", date: baseline.toISOString().slice(0, 10), value: costBasis });
+  }
+  const base = values[0]?.value || 1;
+  let peak = base;
+  const returns: number[] = [];
+  const totalReturn = values.map((point, index) => {
+    if (index > 0 && values[index - 1].value > 0) returns.push(point.value / values[index - 1].value - 1);
+    return { date: point.date, value: round4(point.value / base - 1) };
+  });
+  const drawdown = values.map((point) => { peak = Math.max(peak, point.value); return { date: point.date, value: round4(peak ? point.value / peak - 1 : 0) }; });
+  const volatility = values.map((point, index) => ({ date: point.date, value: round4(annualizedVolatility(returns.slice(0, Math.max(0, index)))) }));
+  const concentration = values.map((point) => ({ date: point.date, value: round4(hhiBySnapshot.get(point.id) ?? (point.id === "cost-basis" ? 0 : 0)) }));
+  return {
+    portfolioSnapshotId: snapshot.id,
+    trends: [
+      { metric: "total_return", points: totalReturn }, { metric: "drawdown", points: drawdown },
+      { metric: "volatility", points: volatility }, { metric: "concentration", points: concentration },
+    ],
+    source: values.some((value) => value.id === "cost-basis") ? "LOCAL_SNAPSHOT_AND_COST_BASIS" : "LOCAL_SNAPSHOTS",
+    modelVersion: "portfolio-trend-v2", observationCount: snapshots.length, asOf: snapshot.as_of,
+  };
+}
+
+function derivePortfolioAnalytics(userId: string, snapshot: Record<string, unknown>, view: ReturnType<typeof getPortfolioHoldings>) {
+  const items = view?.items ?? [];
+  const marketValue = Number(view?.summary.totalValue ?? 0);
+  const cashValue = Number(view?.summary.cashValue ?? 0);
+  const totalAssets = marketValue + cashValue;
+  const costBasis = cashValue + items.reduce((sum, item) => sum + Number(item.averageCost) * Number(item.quantity), 0);
+  const totalReturnPct = costBasis > 0 ? (totalAssets / costBasis - 1) * 100 : 0;
+  const concentrationHhi = items.reduce((sum, item) => sum + item.weight * item.weight, 0);
+  const topHoldingWeight = items.reduce((max, item) => Math.max(max, item.weight), 0);
+  const bySector = allocation(items, (item) => String(item.sector ?? "未分类"));
+  const byAssetType = allocation(items, (item) => String(item.assetType));
+  const liquidityByType: Record<string, number> = { STOCK: 92, ETF: 95, INDEX: 90, FUND: 75 };
+  const investedLiquidity = items.reduce((sum, item) => sum + item.weight * (liquidityByType[item.assetType] ?? 55), 0);
+  const cashAllocation = totalAssets > 0 ? cashValue / totalAssets : 0;
+  const liquidityScore = investedLiquidity * (1 - cashAllocation) + 100 * cashAllocation;
+  const db = getDatabase();
+  const history = db.prepare(`SELECT cash_decimal,total_market_value_decimal FROM portfolio_snapshots
+    WHERE user_id=? AND portfolio_id=? AND as_of<=? ORDER BY as_of,created_at,id`).all(userId, snapshot.portfolio_id, snapshot.as_of) as Array<Record<string, unknown>>;
+  db.close();
+  const values = history.map((row) => Number(row.cash_decimal) + Number(row.total_market_value_decimal));
+  const periodReturns = values.slice(1).map((value, index) => values[index] > 0 ? value / values[index] - 1 : 0);
+  const annualVolatilityPct = periodReturns.length > 1
+    ? annualizedVolatility(periodReturns) * 100
+    : Math.min(100, weightedReturnDispersion(items) * Math.sqrt(12) * 100);
+  let peak = values[0] ?? totalAssets;
+  let maxDrawdown = 0;
+  for (const value of values) { peak = Math.max(peak, value); if (peak > 0) maxDrawdown = Math.min(maxDrawdown, value / peak - 1); }
+  if (values.length < 2) maxDrawdown = Math.min(0, ...items.map((item) => Number(item.drawdown ?? 0)));
+  return { totalAssets, totalReturnPct, maxDrawdownPct: maxDrawdown * 100, annualVolatilityPct, concentrationHhi, topHoldingWeight, cashAllocation, liquidityScore, bySector, byAssetType, observationCount: history.length };
+}
+
+function allocation(items: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"], key: (item: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"][number]) => string) {
+  const totals = new Map<string, number>();
+  for (const item of items) totals.set(key(item), (totals.get(key(item)) ?? 0) + Number(item.marketValue));
+  const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+  return [...totals.entries()].map(([name, value]) => ({ name, value, weight: total > 0 ? value / total : 0 })).sort((a, b) => b.value - a.value);
+}
+
+function weightedReturnDispersion(items: NonNullable<ReturnType<typeof getPortfolioHoldings>>["items"]): number {
+  if (items.length < 2) return Math.abs(Number(items[0]?.unrealizedPnlRate ?? 0)) * 0.35;
+  const mean = items.reduce((sum, item) => sum + Number(item.unrealizedPnlRate ?? 0) * item.weight, 0);
+  return Math.sqrt(items.reduce((sum, item) => sum + item.weight * (Number(item.unrealizedPnlRate ?? 0) - mean) ** 2, 0));
+}
+
+function annualizedVolatility(returns: number[]): number {
+  if (returns.length < 2) return 0;
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
+  return Math.sqrt(Math.max(0, variance)) * Math.sqrt(252);
+}
+
+function round4(value: number): number { return Math.round(value * 10_000) / 10_000; }
 
 export async function refreshPortfolio(userId: string, portfolioId: string) {
   const db = getDatabase();

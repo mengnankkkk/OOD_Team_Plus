@@ -345,6 +345,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
       label TEXT NOT NULL,
       description_text TEXT NOT NULL,
       trades_json TEXT NOT NULL,
+      analysis_json TEXT NOT NULL DEFAULT '{}',
       executed_branch_id TEXT,
       created_at TEXT NOT NULL
     );
@@ -609,6 +610,7 @@ export function ensureRuntimeSchema(db: SqliteDb): void {
   ensureColumn("generated_artifact_versions", "size_bytes", "INTEGER");
   ensureColumn("generated_artifact_versions", "created_by_type", "TEXT NOT NULL DEFAULT 'system'");
   ensureColumn("generated_artifact_versions", "created_by_id", "TEXT");
+  ensureColumn("simulation_options", "analysis_json", "TEXT NOT NULL DEFAULT '{}'");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_client ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL");
 
   const now = new Date().toISOString();

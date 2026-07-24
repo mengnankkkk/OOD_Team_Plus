@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/context";
 
 import { executeQuery } from "./executor";
+import { generateQueryPlan } from "./plan-generator";
 import { persistQueryResult } from "./result-persister";
 import type { QueryPlan } from "./types";
 import { persistSseEvent } from "../sse/event-persister";
@@ -47,8 +48,13 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
   const queryId = createId("query");
   const analysisId = createId("analysis");
   const now = isoNow();
-  const table = chooseTable(input.requestedDatasets);
-  const { plan, sql, parameters } = buildLocalPlan(input.questionText, table, input.requestedLimit, input.userId);
+  const { plan, sql, parameters, planner } = await generateQueryPlan(
+    input.questionText,
+    input.requestedDatasets,
+    input.accountScope ?? null,
+    input.userId,
+    input.requestedLimit,
+  );
 
   db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at) VALUES (?, ?, ?, ?, ?)").run(analysisId, input.userId, "data_query", "running", now);
   db.prepare(`INSERT INTO data_queries
@@ -59,16 +65,16 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
     .run(queryId, input.userId, input.sessionId ?? null, input.sourceMessageId ?? null, analysisId,
       input.questionText, json(input.accountScope ?? []), json(input.requestedDatasets), input.outputMode,
       input.requestedLimit, json(plan), sql, json(["TEXT", "INTEGER"]),
-      json(["SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"]), now, now, now);
+      json(["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"]), now, now, now);
 
   try {
     const result = await executeQuery(sql, input.requestedLimit, () => db, parameters);
     persistQueryResult({ queryId, result, getDb: () => db });
     db.prepare("UPDATE data_queries SET column_metadata_json = ?, data_as_of = ?, source_summary_json = ?, updated_at = ? WHERE id = ?")
-      .run(json(result.columns), now, json([{ type: "LOCAL_DATABASE", label: "Portfolio database" }]), isoNow(), queryId);
+      .run(json(result.columns), now, json([{ type: "LOCAL_DATABASE", label: "Portfolio database", planner }]), isoNow(), queryId);
     db.prepare("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?").run(isoNow(), analysisId);
-    await persistSseEvent({ analysisId, type: "query.planned", payload: { queryId, datasets: input.requestedDatasets, columns: result.columns } });
-    await persistSseEvent({ analysisId, type: "query.validated", payload: { queryId, safetyChecks: ["SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] } });
+    await persistSseEvent({ analysisId, type: "query.planned", payload: { queryId, datasets: plan.datasets, columns: result.columns, planner } });
+    await persistSseEvent({ analysisId, type: "query.validated", payload: { queryId, safetyChecks: ["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] } });
     await persistSseEvent({ analysisId, type: "query.completed", payload: { queryId, rowCount: result.rowCount, truncated: result.isTruncated } });
     return { queryId, analysisId, status: "COMPLETED", plan, sql, result };
   } catch (error) {
@@ -111,32 +117,6 @@ export function getQueryResult(userId: string, queryId: string, limit: number, o
   if (query.result_expires_at && Date.parse(String(query.result_expires_at)) <= Date.now()) return { expired: true };
   const rows = query.rows.slice(offset, offset + limit).map((values, index) => ({ rowId: `row_${offset + index + 1}`, values }));
   return { columns: query.columns, items: rows, rowCount: query.row_count ?? query.rows.length, truncated: Boolean(query.is_truncated), dataAsOf: query.data_as_of };
-}
-
-function chooseTable(datasets: string[]): string {
-  const normalized = datasets.map((dataset) => DATASET_TABLES[dataset.toUpperCase()]);
-  const selected = normalized.find((table) => ["holding_snapshots", "portfolio_snapshots", "portfolio_score_snapshots", "instruments"].includes(table));
-  if (!selected) throw new Error("Dataset is not allowed");
-  return selected;
-}
-
-function buildLocalPlan(question: string, table: string, limit: number, userId: string): { plan: QueryPlan; sql: string; parameters: unknown[] } {
-  const plan: QueryPlan = { datasets: [table], dimensions: [], metrics: [], filters: [], limit: Math.min(Math.max(limit, 1), 10_000) };
-  if (table === "holding_snapshots") {
-    plan.dimensions = ["instrument_id", "quantity_decimal", "cost_decimal", "price_decimal", "market_value_decimal", "unrealized_pnl_decimal", "weight_bps"];
-    plan.filters = [{ column: "portfolio_snapshot_id", operator: "like", value: "%" }];
-    return { plan, sql: `SELECT instrument_id, quantity_decimal, cost_decimal, price_decimal, market_value_decimal, unrealized_pnl_decimal, weight_bps FROM holding_snapshots WHERE portfolio_snapshot_id IN (SELECT id FROM portfolio_snapshots WHERE user_id = ?) LIMIT ${plan.limit}`, parameters: [userId] };
-  }
-  if (table === "portfolio_score_snapshots") {
-    plan.dimensions = ["portfolio_snapshot_id", "health_score", "risk_score", "score_version", "computed_at"];
-    return { plan, sql: `SELECT portfolio_snapshot_id, health_score, risk_score, score_version, computed_at FROM portfolio_score_snapshots WHERE portfolio_snapshot_id IN (SELECT id FROM portfolio_snapshots WHERE user_id = ?) LIMIT ${plan.limit}`, parameters: [userId] };
-  }
-  if (table === "instruments") {
-    plan.dimensions = ["id", "symbol", "name", "market", "asset_type", "sector"];
-    return { plan, sql: `SELECT id, symbol, name, market, asset_type, sector FROM instruments LIMIT ${plan.limit}`, parameters: [] };
-  }
-  plan.dimensions = ["id", "portfolio_id", "cash_decimal", "total_market_value_decimal", "as_of"];
-  return { plan, sql: `SELECT id, portfolio_id, cash_decimal, total_market_value_decimal, as_of FROM portfolio_snapshots WHERE user_id = ? LIMIT ${plan.limit}`, parameters: [userId] };
 }
 
 export function resultDigest(rows: unknown[]): string {

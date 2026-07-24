@@ -26,11 +26,14 @@ export function calculatePortfolioScore(
   returnPct?: number,
   maxDrawdownPct?: number,
   annualVolatilityPct?: number,
+  liquidityScoreInput?: number,
 ): PortfolioScore {
   const missingMetrics: string[] = [];
   let concentrationScore = 100;
 
-  if (holdingSnapshots.length > 0 && totalMarketValue > 0) {
+  if (holdingSnapshots.length === 1 && totalMarketValue > 0) {
+    concentrationScore = 0;
+  } else if (holdingSnapshots.length > 1 && totalMarketValue > 0) {
     const hhi = holdingSnapshots.reduce((sum, holding) => {
       const weight = holding.weightBps / 10000;
       return sum + weight * weight;
@@ -51,7 +54,9 @@ export function calculatePortfolioScore(
   const volatilityScore = annualVolatilityPct === undefined
     ? (missingMetrics.push("volatility"), 75)
     : Math.max(0, Math.min(100, Math.round(100 - annualVolatilityPct * 2)));
-  const liquidityScore = Math.min(100, holdingSnapshots.length * 10);
+  const liquidityScore = liquidityScoreInput === undefined
+    ? Math.min(100, holdingSnapshots.length * 10)
+    : Math.max(0, Math.min(100, Math.round(liquidityScoreInput)));
 
   const healthScore = Math.round(
     returnScore * 0.25 +

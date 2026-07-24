@@ -5,6 +5,10 @@ export interface SimulationMetrics {
   maxDrawdown: number;
   volatility: number;
   concentrationHHI: number;
+  expectedReturn: number;
+  bullCaseReturn: number;
+  bearCaseReturn: number;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
 }
 
 export interface SimulationResult {
@@ -84,9 +88,13 @@ export function executeSimulation(
     tradingFees: fixed(fees),
     metrics: {
       totalReturn,
-      maxDrawdown: Math.min(0, -turnover * 0.02),
-      volatility: Math.min(1, 0.08 + concentration * 0.25 + turnover * 0.05),
+      maxDrawdown: candidate.analysis?.forecast.maxDrawdown ?? Math.min(0, -turnover * 0.02),
+      volatility: candidate.analysis?.forecast.annualVolatility ?? Math.min(1, 0.08 + concentration * 0.25 + turnover * 0.05),
       concentrationHHI: concentration,
+      expectedReturn: candidate.analysis?.forecast.expectedReturn ?? 0,
+      bullCaseReturn: candidate.analysis?.forecast.bullCaseReturn ?? 0,
+      bearCaseReturn: candidate.analysis?.forecast.bearCaseReturn ?? 0,
+      riskLevel: candidate.analysis?.riskLevel ?? "MEDIUM",
     },
   };
 }

@@ -108,6 +108,7 @@ export const simulationOptions = sqliteTable(
     label: text("label").notNull(),
     descriptionText: text("description_text").notNull(),
     tradesJson: text("trades_json").notNull(),
+    analysisJson: text("analysis_json").notNull().default("{}"),
     executedBranchId: text("executed_branch_id"),
     createdAt: text("created_at").notNull(),
   },
