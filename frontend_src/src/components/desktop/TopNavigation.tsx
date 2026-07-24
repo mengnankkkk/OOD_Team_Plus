@@ -77,9 +77,9 @@ const TopNavigation = () => {
         <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-3 px-5 md:px-10 xl:px-16">
           <NavLink to="/" className="flex items-center gap-3">
             <img
-              src="https://b.ux-cdn.com/uxarts/20260723/6c0b917fe63b40afa9e1651719b9712f.png"
+              src="/money-whisperer-logo.png"
               alt="Money Whisperer logo"
-              className="size-10 shrink-0 object-contain drop-shadow-[0_4px_12px_rgba(239,68,45,0.5)]"
+              className="brand-logo-mark size-10 shrink-0 object-contain"
             />
             <span
               className="brand-wordmark hidden bg-gradient-to-br from-white via-[#fff2bc] to-[#d49b2f] bg-clip-text font-semibold tracking-tight text-transparent drop-shadow-[0_4px_12px_rgba(212,155,47,0.34)] sm:inline-block"

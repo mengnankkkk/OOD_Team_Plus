@@ -124,6 +124,13 @@
   .eyebrow { @apply text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground; font-family: var(--font-mono); }
   .metric-display { @apply font-mono text-[clamp(2.65rem,5vw,4rem)] font-semibold leading-none tracking-normal tabular-nums; }
   .seal-mark { @apply inline-flex size-9 items-center justify-center border-2 border-destructive font-semibold text-destructive; border-radius: 0; font-family: var(--font-sans); }
+  .brand-logo-mark {
+    filter:
+      drop-shadow(0 0 8px rgba(255, 94, 54, 0.78))
+      drop-shadow(0 8px 18px rgba(239, 68, 45, 0.54))
+      drop-shadow(0 14px 28px rgba(0, 0, 0, 0.82));
+    -webkit-box-reflect: below -0.18rem linear-gradient(to bottom, rgba(255, 124, 78, 0.42), rgba(255, 124, 78, 0.18) 32%, transparent 72%);
+  }
   .brand-wordmark {
     position: relative;
     line-height: 1;

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import {
   deleteAdvisorSession,
@@ -10,16 +9,20 @@ import {
 import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, OnboardingMessage } from "@/types/app/onboarding";
 import { toast } from "sonner";
 import {
+  Archive,
   Camera,
   FileText,
   Image,
+  MoreHorizontal,
   MessageSquarePlus,
-  MessageSquareText,
   Mic,
   Paperclip,
+  Pencil,
+  Pin,
   Plus,
   SearchCheck,
   Send,
+  Share2,
   Sparkles,
   Table2,
   Trash2,
@@ -28,6 +31,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 const SUGGESTIONS = [
   "我想三年后在杭州付首付，月入 2 万，帮我建档",
@@ -73,17 +77,115 @@ const ACTION_TOOLS = [
   },
 ];
 
-const relativeTime = (iso: string) => {
-  const diff = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(diff / 60_000);
-  if (min < 1) return "刚刚";
-  if (min < 60) return `${min} 分钟前`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day} 天前`;
-  return new Date(iso).toLocaleDateString("zh-CN");
+const MOCK_SESSION_PREFIX = "mock-advisor-session-";
+
+const MOCK_ADVISOR_SESSIONS: AdvisorSessionSummary[] = [
+  {
+    sessionId: `${MOCK_SESSION_PREFIX}business-exception`,
+    title: "BusinessException 使用建议",
+    messageCount: 4,
+    lastActivityAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+    firstActivityAt: new Date(Date.now() - 36 * 60_000).toISOString(),
+  },
+  {
+    sessionId: `${MOCK_SESSION_PREFIX}agent-product`,
+    title: "创新 agent 产品点子",
+    messageCount: 6,
+    lastActivityAt: new Date(Date.now() - 46 * 60_000).toISOString(),
+    firstActivityAt: new Date(Date.now() - 78 * 60_000).toISOString(),
+  },
+  {
+    sessionId: `${MOCK_SESSION_PREFIX}tree-debug`,
+    title: "二叉树构建错误分析",
+    messageCount: 3,
+    lastActivityAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    firstActivityAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+  },
+  {
+    sessionId: `${MOCK_SESSION_PREFIX}log-level`,
+    title: "日志级别区别解释",
+    messageCount: 5,
+    lastActivityAt: new Date(Date.now() - 5 * 60 * 60_000).toISOString(),
+    firstActivityAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString(),
+  },
+];
+
+const MOCK_MESSAGES: Record<string, OnboardingMessage[]> = {
+  [`${MOCK_SESSION_PREFIX}business-exception`]: [
+    {
+      id: "mock-business-user",
+      role: "user",
+      content: "BusinessException 应该怎么设计才适合业务层使用？",
+      metadata: {},
+      createdAt: new Date(Date.now() - 36 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}business-exception`,
+    },
+    {
+      id: "mock-business-advisor",
+      role: "advisor",
+      content: "建议把 BusinessException 保持为明确、可分类、可观测的业务错误：包含 code、message、可选 detail，并在边界层统一转成接口响应。这样调用方可以按 code 判断，日志也能快速聚合。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 34 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}business-exception`,
+    },
+  ],
+  [`${MOCK_SESSION_PREFIX}agent-product`]: [
+    {
+      id: "mock-agent-user",
+      role: "user",
+      content: "帮我想几个创新 agent 产品点子。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 78 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}agent-product`,
+    },
+    {
+      id: "mock-agent-advisor",
+      role: "advisor",
+      content: "可以从高频工作流入手：财务目标规划 agent、会议纪要到项目计划 agent、数据表清洗 agent。每个点子都要绑定明确输入、输出和验收标准。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 76 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}agent-product`,
+    },
+  ],
+  [`${MOCK_SESSION_PREFIX}tree-debug`]: [
+    {
+      id: "mock-tree-user",
+      role: "user",
+      content: "二叉树构建结果不对，帮我看思路。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}tree-debug`,
+    },
+    {
+      id: "mock-tree-advisor",
+      role: "advisor",
+      content: "优先检查递归边界、左右子树区间是否闭合一致，以及根节点索引是否在每一层正确推进。大多数错误都来自区间 off-by-one。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 2.9 * 60 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}tree-debug`,
+    },
+  ],
+  [`${MOCK_SESSION_PREFIX}log-level`]: [
+    {
+      id: "mock-log-user",
+      role: "user",
+      content: "日志级别怎么区分？",
+      metadata: {},
+      createdAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}log-level`,
+    },
+    {
+      id: "mock-log-advisor",
+      role: "advisor",
+      content: "DEBUG 用于开发定位，INFO 记录关键业务路径，WARN 表示可恢复但需要关注，ERROR 表示请求或任务失败，FATAL 则是进程级不可恢复问题。",
+      metadata: {},
+      createdAt: new Date(Date.now() - 5.9 * 60 * 60_000).toISOString(),
+      sessionId: `${MOCK_SESSION_PREFIX}log-level`,
+    },
+  ],
 };
+
+const isMockSession = (sessionId: string) => sessionId.startsWith(MOCK_SESSION_PREFIX);
 
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
@@ -96,15 +198,33 @@ const AdvisorPage = () => {
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [toolboxOpen, setToolboxOpen] = useState(false);
+  const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
+  const [deletedMockSessionIds, setDeletedMockSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingUploadPrompt, setPendingUploadPrompt] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeSession = useMemo(
-    () => sessions.find((s) => s.sessionId === activeSessionId) ?? null,
-    [sessions, activeSessionId],
+  const mockSessions = useMemo(
+    () => MOCK_ADVISOR_SESSIONS.filter((session) => !deletedMockSessionIds.has(session.sessionId)),
+    [deletedMockSessionIds],
   );
+
+  const visibleSessions = sessions.length ? sessions : mockSessions;
+
+  const activeSession = useMemo(
+    () => visibleSessions.find((s) => s.sessionId === activeSessionId) ?? null,
+    [activeSessionId, visibleSessions],
+  );
+
+  const orderedSessions = useMemo(() => {
+    return [...visibleSessions].sort((a, b) => {
+      const pinnedDelta = Number(pinnedSessionIds.has(b.sessionId)) - Number(pinnedSessionIds.has(a.sessionId));
+      if (pinnedDelta) return pinnedDelta;
+      return new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime();
+    });
+  }, [pinnedSessionIds, visibleSessions]);
 
   const refreshSessions = useCallback(async () => {
     if (!user) return;
@@ -122,6 +242,11 @@ const AdvisorPage = () => {
   }, [user]);
 
   const loadSessionMessages = useCallback(async (sessionId: string) => {
+    if (isMockSession(sessionId)) {
+      setLoadingHistory(false);
+      setMessages(MOCK_MESSAGES[sessionId] ?? []);
+      return;
+    }
     if (!user) return;
     setLoadingHistory(true);
     try {
@@ -142,8 +267,9 @@ const AdvisorPage = () => {
         setActiveSessionId(data[0].sessionId);
         await loadSessionMessages(data[0].sessionId);
       } else {
-        setActiveSessionId(crypto.randomUUID());
-        setMessages([]);
+        const firstMockSession = MOCK_ADVISOR_SESSIONS[0];
+        setActiveSessionId(firstMockSession.sessionId);
+        setMessages(MOCK_MESSAGES[firstMockSession.sessionId] ?? []);
       }
     })();
   }, [user, refreshSessions, loadSessionMessages]);
@@ -154,6 +280,7 @@ const AdvisorPage = () => {
 
   const openSession = async (sessionId: string) => {
     if (sending) return;
+    setSessionMenuId(null);
     setActiveSessionId(sessionId);
     await loadSessionMessages(sessionId);
   };
@@ -162,11 +289,62 @@ const AdvisorPage = () => {
     if (sending) return;
     setMessages([]);
     setDraft("");
+    setSessionMenuId(null);
     setActiveSessionId(crypto.randomUUID());
+  };
+
+  const togglePinSession = (sessionId: string, ev?: React.MouseEvent) => {
+    ev?.stopPropagation();
+    setPinnedSessionIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+    setSessionMenuId(null);
+  };
+
+  const handleSessionMenuAction = (action: string, sessionId: string) => {
+    if (action === "delete") {
+      void handleDeleteSession(sessionId);
+      setSessionMenuId(null);
+      return;
+    }
+    if (action === "pin") {
+      togglePinSession(sessionId);
+      return;
+    }
+    const labels: Record<string, string> = {
+      share: "分享入口已准备好",
+      rename: "重命名入口已准备好",
+      archive: "归档入口已准备好",
+    };
+    toast.info(labels[action] ?? "操作入口已准备好");
+    setSessionMenuId(null);
   };
 
   const handleDeleteSession = async (sessionId: string, ev?: React.MouseEvent) => {
     ev?.stopPropagation();
+    if (isMockSession(sessionId)) {
+      setDeletedMockSessionIds((current) => new Set(current).add(sessionId));
+      setPinnedSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setSessionMenuId(null);
+      toast.success("已从演示列表移除");
+      if (sessionId === activeSessionId) {
+        const nextSession = mockSessions.find((session) => session.sessionId !== sessionId);
+        if (nextSession) {
+          setActiveSessionId(nextSession.sessionId);
+          setMessages(MOCK_MESSAGES[nextSession.sessionId] ?? []);
+        } else {
+          handleNewSession();
+        }
+      }
+      return;
+    }
     if (!user) return;
     if (!confirm("删除这段会话（含所有消息）？")) return;
     try {
@@ -257,55 +435,99 @@ const AdvisorPage = () => {
 
   return (
     <div className="flex h-full min-h-[640px] w-full gap-0 overflow-hidden border-y border-border bg-card">
-      <aside className="flex w-[264px] shrink-0 flex-col border-r border-border bg-background/60">
-        <div className="p-3">
-          <Button
+      <aside className="flex w-[302px] shrink-0 flex-col border-r border-neutral-200 bg-[#f7f7f7] text-neutral-950">
+        <div className="flex items-center justify-between px-3 pb-4 pt-3">
+          <button
             onClick={handleNewSession}
-            className="w-full justify-start gap-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 text-left text-[15px] font-medium transition-colors hover:bg-neutral-200/80"
           >
-            <MessageSquarePlus className="size-4" />
-            新建会话
-          </Button>
+            <MessageSquarePlus className="size-5 shrink-0" />
+            <span className="truncate">新对话</span>
+          </button>
         </div>
-        <div className="flex items-center justify-between px-4 pb-2 pt-1 text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
-          <span>历史会话</span>
-          <span className="normal-case tracking-normal">{sessions.length}</span>
+        <div className="px-4 pb-2 text-[17px] font-semibold text-neutral-950">
+          最近
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3">
           {loadingSessions ? (
-            <p className="px-3 py-2 text-xs text-muted-foreground">加载中…</p>
-          ) : sessions.length === 0 ? (
-            <p className="px-3 py-4 text-xs text-muted-foreground">还没有历史会话。开始第一条消息，就会记入档案。</p>
+            <p className="px-3 py-2 text-sm text-neutral-500">加载中…</p>
+          ) : visibleSessions.length === 0 ? (
+            <p className="px-3 py-4 text-sm leading-6 text-neutral-500">还没有历史会话。开始第一条消息，就会记入档案。</p>
           ) : (
-            <ul className="space-y-1">
-              {sessions.map((s) => {
+            <ul className="space-y-0.5">
+              {orderedSessions.map((s) => {
                 const isActive = s.sessionId === activeSessionId;
+                const isPinned = pinnedSessionIds.has(s.sessionId);
+                const menuOpen = sessionMenuId === s.sessionId;
                 return (
-                  <li key={s.sessionId}>
+                  <li key={s.sessionId} className="group/session relative">
                     <button
                       onClick={() => openSession(s.sessionId)}
                       className={cn(
-                        "group flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-                        isActive
-                          ? "bg-primary/10 text-primary"
-                          : "text-foreground hover:bg-muted/60",
+                        "group flex h-[42px] w-full items-center rounded-2xl py-0 pl-3 pr-[74px] text-left text-[15px] leading-none transition-colors",
+                        isActive || menuOpen ? "bg-neutral-200/90" : "hover:bg-neutral-200/70",
                       )}
                     >
-                      <MessageSquareText className={cn("mt-0.5 size-4 shrink-0", isActive ? "text-primary" : "text-muted-foreground")} />
-                      <span className="min-w-0 flex-1">
-                        <span className="line-clamp-1 font-medium">{s.title}</span>
-                        <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>{s.messageCount} 条</span>
-                          <span>·</span>
-                          <span>{relativeTime(s.lastActivityAt)}</span>
-                        </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {s.title}
                       </span>
-                      <Trash2
-                        onClick={(ev) => handleDeleteSession(s.sessionId, ev)}
-                        className="mt-0.5 size-3.5 shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                        aria-label="删除会话"
-                      />
                     </button>
+                    <div
+                      className={cn(
+                        "absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-neutral-200/90 opacity-0 transition-opacity",
+                        (isActive || menuOpen || isPinned) && "opacity-100",
+                        "group-hover/session:opacity-100",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={(ev) => togglePinSession(s.sessionId, ev)}
+                        className={cn("grid size-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-300/70 hover:text-neutral-950", isPinned && "text-neutral-950")}
+                        aria-label={isPinned ? "取消置顶" : "置顶聊天"}
+                      >
+                        <Pin className="size-4" />
+                      </button>
+                      <DropdownMenu open={menuOpen} onOpenChange={(open) => setSessionMenuId(open ? s.sessionId : null)}>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={(ev) => ev.stopPropagation()}
+                            className="grid size-8 place-items-center rounded-full text-neutral-700 hover:bg-neutral-300/70 hover:text-neutral-950"
+                            aria-label="更多操作"
+                          >
+                            <MoreHorizontal className="size-5" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          side="right"
+                          align="start"
+                          sideOffset={10}
+                          className="w-[184px] rounded-[22px] border-neutral-200 bg-white p-2 text-neutral-950 shadow-[0_18px_44px_rgba(0,0,0,0.16)]"
+                          onClick={(ev) => ev.stopPropagation()}
+                        >
+                          <DropdownMenuItem onSelect={() => handleSessionMenuAction("share", s.sessionId)} className="flex h-11 cursor-pointer items-center gap-3 rounded-2xl px-3 text-[15px] focus:bg-neutral-100">
+                            <Share2 className="size-5" />
+                            <span>分享</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => handleSessionMenuAction("rename", s.sessionId)} className="flex h-11 cursor-pointer items-center gap-3 rounded-2xl px-3 text-[15px] focus:bg-neutral-100">
+                            <Pencil className="size-5" />
+                            <span>重命名</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => handleSessionMenuAction("pin", s.sessionId)} className="flex h-11 cursor-pointer items-center gap-3 rounded-2xl px-3 text-[15px] focus:bg-neutral-100">
+                            <Pin className="size-5" />
+                            <span>{isPinned ? "取消置顶" : "置顶聊天"}</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => handleSessionMenuAction("archive", s.sessionId)} className="flex h-11 cursor-pointer items-center gap-3 rounded-2xl px-3 text-[15px] focus:bg-neutral-100">
+                            <Archive className="size-5" />
+                            <span>归档</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => handleSessionMenuAction("delete", s.sessionId)} className="flex h-11 cursor-pointer items-center gap-3 rounded-2xl px-3 text-[15px] text-red-600 focus:bg-red-50 focus:text-red-600">
+                            <Trash2 className="size-5" />
+                            <span>删除</span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </li>
                 );
               })}
