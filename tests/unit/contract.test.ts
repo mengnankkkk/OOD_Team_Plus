@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { chatRequestSchema } from "@/server/chat/contract";
-import { holdingConfirmSchema } from "@/server/advisor/contracts";
 
 const identity = {
   thread: "559b0c4f-e579-4eff-8a78-7ed951e030a8",
@@ -38,22 +37,5 @@ describe("chatRequestSchema", () => {
     const request = requestWith("hello");
     request.memory.thread = "not-a-uuid";
     expect(chatRequestSchema.safeParse(request).success).toBe(false);
-  });
-});
-
-describe("advisor holding confirmation contract", () => {
-  it("accepts a null instrument id so index drafts reach business validation", () => {
-    expect(holdingConfirmSchema.safeParse({
-      confirmedCandidates: [{
-        candidateId: "candidate_01",
-        instrumentId: null,
-        assetType: null,
-        symbol: null,
-        quantity: "100",
-        averageCost: "4000",
-        market: "CN",
-        currency: "CNY",
-      }],
-    }).success).toBe(true);
   });
 });

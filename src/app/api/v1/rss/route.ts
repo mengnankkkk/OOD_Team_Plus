@@ -1,0 +1,3 @@
+import { NextRequest,NextResponse } from "next/server";
+import { getDatabase,meta } from "@/server/http/context";
+export async function GET(req:NextRequest){const db=getDatabase();const q=req.nextUrl.searchParams.get("q")??req.nextUrl.searchParams.get("keyword");const feeds=db.prepare("SELECT id,url,title,status,last_synced_at FROM rss_feeds WHERE status='active' ORDER BY title").all();const items=q?db.prepare("SELECT * FROM rss_items WHERE title LIKE ? OR summary LIKE ? ORDER BY published_at DESC LIMIT 50").all(`%${q}%`,`%${q}%`):db.prepare("SELECT * FROM rss_items ORDER BY published_at DESC LIMIT 50").all();db.close();return NextResponse.json({data:{feeds,items},meta:meta()});}

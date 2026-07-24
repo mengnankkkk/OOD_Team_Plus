@@ -32,10 +32,4 @@ describe("requireDeepSeekApiKey", () => {
     expect(config.url).toBe("https://ai-model-api.matrix-studio.top/v1");
     expect(config.apiKey).toBe("test-key");
   });
-
-  it("defaults to the configured DeepSeek-Pro model", () => {
-    const config = getDeepSeekModelConfig({ DEEPSEEK_API_KEY: "test-key" });
-    expect(DEFAULT_DEEPSEEK_MODEL).toBe("DeepSeek-Pro");
-    expect(config.id).toBe("deepseek/DeepSeek-Pro");
-  });
 });

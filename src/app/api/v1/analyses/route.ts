@@ -1,20 +1,32 @@
-import { analysisCreateSchema } from "@/server/advisor/contracts";
-import { advisorJsonError, idempotentApiResponse } from "@/server/advisor/http";
-import { DEMO_USER_ID } from "@/server/advisor/seed";
-import { advisorStore } from "@/server/advisor/store";
-import { AdvisorService } from "@/server/advisor/service";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { createAndRunDataQuery } from "@/server/extensions/query/service";
+import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
+import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
-export async function POST(request: Request) {
+const Schema = z.object({
+  type: z.enum(["STOCK_DIAGNOSTIC", "PORTFOLIO_DIAGNOSTIC", "HOLDING_REVIEW", "STOCK_SUITABILITY_SCREEN"]),
+  conversationId: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).default({}),
+});
+
+export async function POST(req: NextRequest) {
+  const key = idempotencyKey(req);
+  if (!key) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
+  const parsed = Schema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Invalid analysis request", details: parsed.error.format() } }, { status: 422 });
+  const { userId } = getRequestContext(req);
+  const idem = await beginIdempotentRequest(userId, "analysis_create", key, parsed.data);
+  if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
+  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const body = analysisCreateSchema.parse(await request.json());
-    return await idempotentApiResponse(request, advisorStore.database, DEMO_USER_ID, "analysis.create", body, () => ({
-      data: new AdvisorService().startAnalysis(body.conversationId, body.type, body.input),
-      status: 202,
-    }));
+    const question = String(parsed.data.input.question ?? (parsed.data.type === "PORTFOLIO_DIAGNOSTIC" ? "分析当前组合健康度和风险度" : "分析当前持仓指标和风险"));
+    const query = await createAndRunDataQuery({ userId, sessionId: parsed.data.conversationId, questionText: question, requestedDatasets: ["PORTFOLIO_HOLDINGS", "PORTFOLIO_METRICS"], outputMode: "SQL_ONLY", requestedLimit: 2000 });
+    const payload = { data: { id: query.analysisId, analysisId: query.analysisId, type: parsed.data.type, status: "COMPLETED", result: { dataQueryId: query.queryId, rowCount: query.result.rowCount }, streamUrl: `/api/v1/analyses/${query.analysisId}/events` }, meta: meta() };
+    await saveIdempotentResponse(userId, "analysis_create", key, idem.requestHash, payload);
+    return NextResponse.json(payload, { status: 202 });
   } catch (error) {
-    return advisorJsonError(error);
+    return NextResponse.json({ error: { code: "ANALYSIS_FAILED", message: error instanceof Error ? error.message : "Analysis failed", retryable: false } }, { status: 422 });
   }
 }

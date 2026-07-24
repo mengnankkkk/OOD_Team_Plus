@@ -1,0 +1,10 @@
+Task 18 - Simulation branch switch and undo API
+
+Implementation:
+- PATCH /api/v1/simulation-workspaces/[id]/active-branch
+- POST /api/v1/simulation-workspaces/[id]/undo
+- Branch switching requires If-Match and a non-empty branchId.
+- Both handlers remain persistence-free stubs and return workspace-not-found responses.
+
+Verification:
+- Focused tests cover missing If-Match, missing branchId, and undo 404 behavior.

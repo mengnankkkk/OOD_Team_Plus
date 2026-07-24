@@ -1,0 +1,64 @@
+CREATE TABLE IF NOT EXISTS generated_artifacts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES conversation_sessions(id) ON DELETE SET NULL,
+  source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  source_query_id TEXT REFERENCES data_queries(id) ON DELETE SET NULL,
+  agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE RESTRICT,
+  artifact_type TEXT NOT NULL CHECK(artifact_type IN ('echarts_option','markdown')),
+  status TEXT NOT NULL DEFAULT 'generating' CHECK(status IN ('generating','ready','failed','deleted')),
+  title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 120),
+  current_version_no INTEGER NOT NULL DEFAULT 0,
+  source_snapshot_json TEXT NOT NULL,
+  source_snapshot_sha256 TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  failure_code TEXT,
+  failure_message TEXT,
+  ready_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT,
+  row_version INTEGER NOT NULL DEFAULT 1,
+  CHECK(source_message_id IS NOT NULL OR source_query_id IS NOT NULL),
+  CHECK(status != 'ready' OR (current_version_no >= 1 AND ready_at IS NOT NULL AND failure_code IS NULL)),
+  CHECK(status != 'failed' OR failure_code IS NOT NULL),
+  CHECK(status != 'deleted' OR deleted_at IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS generated_artifact_versions (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES generated_artifacts(id) ON DELETE CASCADE,
+  version_no INTEGER NOT NULL CHECK(version_no >= 1),
+  content_type TEXT NOT NULL CHECK(content_type IN ('echarts_option','markdown')),
+  content_json TEXT,
+  content_markdown TEXT,
+  content_sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+  created_by_type TEXT NOT NULL DEFAULT 'system',
+  created_by_id TEXT,
+  edited_by TEXT,
+  edit_note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(artifact_id, version_no),
+  CHECK(content_json IS NULL OR content_markdown IS NULL),
+  CHECK(content_json IS NOT NULL OR content_markdown IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS message_artifacts (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  artifact_type TEXT NOT NULL,
+  risk_assessment_id TEXT,
+  goal_id TEXT,
+  portfolio_snapshot_id TEXT,
+  diagnostic_run_id TEXT,
+  recommendation_id TEXT,
+  simulation_id TEXT,
+  generated_artifact_id TEXT REFERENCES generated_artifacts(id) ON DELETE RESTRICT,
+  display_order INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  UNIQUE(message_id, artifact_type, display_order)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_artifacts_message ON message_artifacts(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_artifacts_generated ON message_artifacts(generated_artifact_id);

@@ -1,0 +1,13 @@
+Task 26: Watchlists CRUD API
+
+Implemented:
+- POST /api/v1/watchlists validates watchlist name and optional description.
+- GET /api/v1/watchlists returns a paginated empty collection stub.
+- GET/PATCH/DELETE on /api/v1/watchlists/[id] return 404 for missing resources.
+- PATCH and DELETE require If-Match before they proceed.
+
+Verification:
+- pnpm test src/app/api/v1/watchlists/route.test.ts src/app/api/v1/watchlists/[id]/route.test.ts
+- Result: 2 test files passed, 7 tests passed.
+- pnpm typecheck: PASS (exit 0)
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.

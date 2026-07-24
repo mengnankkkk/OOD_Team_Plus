@@ -1,11 +1,5 @@
-import { apiResponse } from "@/server/advisor/http";
-import { DEMO_USER_ID } from "@/server/advisor/seed";
-import { advisorStore } from "@/server/advisor/store";
+import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { getDatabase, getRequestContext, meta, parseJson } from "@/server/http/context";
 
-export async function GET(request: Request) {
-  const action = new URL(request.url).searchParams.get("action") ?? undefined;
-  return apiResponse({ items: advisorStore.decisions.listDecisions(DEMO_USER_ID, action) });
-}
+export async function GET(req: NextRequest) { const db = getDatabase(); const rows = db.prepare("SELECT * FROM decision_logs WHERE user_id=? ORDER BY created_at DESC LIMIT ?").all(getRequestContext(req).userId, Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 20), 100)) as Array<Record<string, unknown>>; db.close(); return NextResponse.json({ data: { items: rows.map((row) => ({ id: row.id, action: row.action, decision: row.decision, recommendation: parseJson(row.recommendation_json as string, {}), createdAt: row.created_at })) }, meta: meta() }); }

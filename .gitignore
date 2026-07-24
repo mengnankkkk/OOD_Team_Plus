@@ -24,6 +24,8 @@ coverage/
 test-results/
 playwright-report/
 *.tsbuildinfo
-
-# Local demo database
+.idea
+.omo/
 .data/
+data/
+.serena/

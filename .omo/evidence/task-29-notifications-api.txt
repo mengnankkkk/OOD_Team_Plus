@@ -1,0 +1,13 @@
+Task 29: Notifications API
+
+Implemented:
+- GET /api/v1/notifications returns a paginated empty collection stub and supports unreadOnly/severity filters.
+- PATCH /api/v1/notifications/[id] requires If-Match and validates MARK_READ or IGNORE actions.
+- PATCH returns unread=false for MARK_READ handling.
+- GET/PUT on /api/v1/notification-preference return and validate notification preference settings.
+
+Verification:
+- pnpm test src/app/api/v1/notifications/route.test.ts src/app/api/v1/notifications/[id]/route.test.ts src/app/api/v1/notification-preference/route.test.ts
+- Result: 3 test files passed, 8 tests passed.
+- pnpm typecheck: PASS (exit 0)
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.

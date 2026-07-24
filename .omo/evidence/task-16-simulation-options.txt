@@ -1,0 +1,9 @@
+Task 16 - Simulation A/B/C option generation
+
+Implementation:
+- POST /api/v1/simulation-workspaces/[id]/options validates idempotency and objective input.
+- Candidate generator returns deterministic Option A, B, and C stubs.
+- No DeepSeek, PandaData, database, alert, or Evidence Board side effects occur.
+
+Verification:
+- Focused tests cover the options request boundary and three-candidate output.

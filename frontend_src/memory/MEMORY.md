@@ -1,0 +1,9 @@
+- [产品需求](requirements.md) — Money Whisperer 多 Agent 目标理财管家产品范围与已确认的原型呈现决策。
+- [访客直进访问模式](guest_first_access.md) — 全站取消登录墙，匿名会话默认进入，用户隔离靠 auth.uid() 保持。
+- [顾问思维链 UI](advisor_trace_ui.md) — 顾问每条回复下方挂折叠 trace，展示 span 链路 / 工具入参 / 返回 JSON / 最终 loop 回复。
+- [顶栏历史记录下拉](history_menu.md) — 顶栏新增多栏「历史记录」下拉，聚合决策日志与 Evidence Lab 两个入口。
+- [个人目标档案页](goals_archive_page.md) — 账号下拉新增「个人目标档案」，路由 /goals，可无限制增删改自己所有目标。
+- [顾问页会话双栏布局](advisor_sessions.md) — 顾问页改为豆包风格双栏，左边新建/历史会话；onboarding_messages 加 session_id 列。
+- [语义层管理子页面](semantic_layer.md) — 资产板块下新增语义层四层 CRUD（领域/表/字段/外键），顶栏用"语义层"下拉入口。
+- [视觉基调](visual_theme.md) — 中性无衬线（Helvetica Neue / Arial）+ 黑色顶栏 + 米白内容底 + 1px 浅灰分隔线。
+- [菜单键动画](animated_menu_button.md) — Uiverse.io ink-sweep 黑底按钮，封装为 AnimatedMenuButton，首页「运行一轮 Agent 建议」在用。

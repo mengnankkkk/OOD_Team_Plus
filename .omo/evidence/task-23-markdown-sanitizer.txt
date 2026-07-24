@@ -1,0 +1,12 @@
+Task 23: Markdown sanitizer
+
+Implemented:
+- sanitizeMarkdown rejects non-string input and payloads larger than 1 MiB.
+- Raw HTML tags are stripped from output.
+- javascript: links are rejected and non-http(s) link targets are normalized to #.
+
+Verification:
+- pnpm test src/server/extensions/sanitizers/markdown-sanitizer.test.ts
+- Result: 1 test file passed, 4 tests passed.
+- pnpm typecheck: PASS (exit 0)
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.

@@ -7,6 +7,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.test.ts"],
+    include: ["tests/unit/**/*.test.ts", "src/**/*.test.ts"],
+    setupFiles: ["./tests/setup.ts"],
+    pool: "forks",
+    maxWorkers: 1,
+    fileParallelism: false,
   },
 });

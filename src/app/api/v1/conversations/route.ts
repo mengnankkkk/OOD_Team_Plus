@@ -1,19 +1,6 @@
-import { conversationCreateSchema } from "@/server/advisor/contracts";
-import { advisorJsonError, apiResponse } from "@/server/advisor/http";
-import { DEMO_USER_ID } from "@/server/advisor/seed";
-import { advisorStore } from "@/server/advisor/store";
+import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { createId, getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
 
-export async function GET() {
-  return apiResponse({ items: advisorStore.conversations.list(DEMO_USER_ID) });
-}
-
-export async function POST(request: Request) {
-  try {
-    return apiResponse(advisorStore.conversations.create(DEMO_USER_ID, conversationCreateSchema.parse(await request.json())), 201);
-  } catch (error) {
-    return advisorJsonError(error);
-  }
-}
+export async function POST(req: NextRequest) { const body = await req.json().catch(() => null) as { title?: string } | null; const db = getDatabase(); const id = createId("conversation"); const now = isoNow(); db.prepare("INSERT INTO conversation_sessions (id,user_id,title,status,created_at,updated_at,row_version) VALUES (?,?,?,'active',?,?,1)").run(id, getRequestContext(req).userId, body?.title?.trim() || "New conversation", now, now); const row = db.prepare("SELECT * FROM conversation_sessions WHERE id=?").get(id); db.close(); return NextResponse.json({ data: row, meta: meta() }, { status: 201 }); }
+export async function GET(req: NextRequest) { const db = getDatabase(); const rows = db.prepare("SELECT c.*, (SELECT content FROM messages m WHERE m.session_id=c.id ORDER BY m.created_at DESC LIMIT 1) as last_message_preview FROM conversation_sessions c WHERE c.user_id=? AND c.status='active' ORDER BY c.updated_at DESC LIMIT ?").all(getRequestContext(req).userId, Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 20), 100)); db.close(); return NextResponse.json({ data: { items: rows }, meta: meta() }); }
