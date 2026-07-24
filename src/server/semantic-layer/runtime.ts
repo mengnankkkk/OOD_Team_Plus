@@ -1,8 +1,14 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import {
   createSemanticLayerDb,
   initSemanticLayerDb,
   type SemanticLayerDb,
 } from "@/server/semantic-layer/database";
+
+const DEFAULT_DB_PATH = "./data/mw-dev.db";
 
 type SemanticLayerRuntime = {
   db: SemanticLayerDb;
@@ -14,10 +20,23 @@ const globalSemanticLayer = globalThis as typeof globalThis & {
 };
 
 function createRuntime(): SemanticLayerRuntime {
-  const db = createSemanticLayerDb(
-    process.env.SEMANTIC_LAYER_DB_URL ?? "file:semantic-layer.db",
-  );
+  const db = createSemanticLayerDb(getSemanticLayerDbUrl());
   return { db, ready: initSemanticLayerDb(db) };
+}
+
+function getSemanticLayerDbUrl() {
+  if (process.env.SEMANTIC_LAYER_DB_URL) {
+    return process.env.SEMANTIC_LAYER_DB_URL;
+  }
+
+  const dbPath = process.env.DB_PATH ?? DEFAULT_DB_PATH;
+  if (dbPath === ":memory:") {
+    return dbPath;
+  }
+
+  const resolvedPath = path.resolve(process.cwd(), dbPath);
+  mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  return pathToFileURL(resolvedPath).href;
 }
 
 export const semanticLayerRuntime =
