@@ -1,7 +1,35 @@
 import { Agent } from "@mastra/core/agent";
+import type { ReadableStream as NodeReadableStream } from "stream/web";
+import { z } from "zod";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
 import { AgentFindingSchema, AdvisorDecisionSchema, type AgentFinding, type AdvisorDecision } from "@/server/extensions/advisor/professional-contracts";
+
+const ChiefAgentFindingSchema = z.object({
+  agent: AgentFindingSchema.shape.agent,
+  conclusion: AgentFindingSchema.shape.conclusion,
+  supportEvidence: AgentFindingSchema.shape.supportEvidence,
+  counterEvidence: AgentFindingSchema.shape.counterEvidence,
+  missingInformation: AgentFindingSchema.shape.missingInformation,
+  risks: AgentFindingSchema.shape.risks,
+  confidence: AgentFindingSchema.shape.confidence,
+  needsAnotherAgent: z.boolean(),
+  suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent,
+});
+
+const ChiefAdvisorDecisionSchema = z.object({
+  action: AdvisorDecisionSchema.shape.action,
+  requestedDirection: AdvisorDecisionSchema.shape.requestedDirection,
+  summary: AdvisorDecisionSchema.shape.summary,
+  suitability: AdvisorDecisionSchema.shape.suitability,
+  confidence: AdvisorDecisionSchema.shape.confidence,
+  rationales: AdvisorDecisionSchema.shape.rationales,
+  counterEvidence: AdvisorDecisionSchema.shape.counterEvidence,
+  risks: AdvisorDecisionSchema.shape.risks,
+  portfolioImpact: AdvisorDecisionSchema.shape.portfolioImpact,
+  invalidationConditions: AdvisorDecisionSchema.shape.invalidationConditions,
+  compliance: AdvisorDecisionSchema.shape.compliance,
+});
 
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
@@ -9,19 +37,26 @@ export type ChiefAdvisorResult = {
   delegatedAgents: AgentFinding["agent"][];
 };
 
+export type ChiefAdvisorStreamEvent =
+  | { type: "agent.chunk"; agent: AgentFinding["agent"]; text: string }
+  | { type: "agent.object"; agent: AgentFinding["agent"]; partial: Partial<AgentFinding> }
+  | { type: "decision.chunk"; text: string }
+  | { type: "decision.object"; partial: Partial<AdvisorDecision> };
+
 export function createChiefAdvisorAgent() {
   const profile = specialist("professional-profile-context", "Profile Context", "PROFILE_CONTEXT");
   const research = specialist("professional-data-research", "Data & Research", "DATA_RESEARCH");
   const risk = specialist("professional-portfolio-risk", "Portfolio & Risk", "PORTFOLIO_RISK");
   const recommendation = specialist("professional-recommendation", "Recommendation", "RECOMMENDATION");
   const compliance = specialist("professional-compliance", "Compliance Reviewer", "COMPLIANCE_REVIEWER");
+  const explanation = specialist("professional-explanation-report", "Explanation Report", "EXPLANATION_REPORT");
   return new Agent({
     id: "professional-chief-advisor",
     name: "Chief Advisor",
     description: "根据问题风险动态委派画像、研究、组合风险、建议和合规角色。",
     model: getDeepSeekModelConfig(),
     defaultOptions: { maxSteps: 10, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } },
-    agents: { profile, research, risk, recommendation, compliance },
+    agents: { profile, research, risk, recommendation, compliance, explanation },
     instructions: [
       "你是 Money Whisperer 唯一的 Chief Advisor，按问题复杂度动态委派，不使用固定通用工作流。",
       "涉及买入、卖出、加仓、减仓时必须委派 research、risk、recommendation、compliance。",
@@ -39,42 +74,106 @@ export async function runChiefAdvisor(input: {
   requiredAgents: AgentFinding["agent"][];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
+  onStreamEvent?: (event: ChiefAdvisorStreamEvent) => void;
 }): Promise<ChiefAdvisorResult> {
   const chief = createChiefAdvisorAgent();
   const findings: AgentFinding[] = [];
   const delegated = new Set<AgentFinding["agent"]>();
-  const output = await chief.generate<AdvisorDecision>(input.prompt, {
-    maxSteps: 10,
+  const specialists = createSpecialistAgents();
+
+  for (const role of [...new Set(input.requiredAgents)]) {
+    const specialistAgent = specialists[role];
+    const prompt = specialistPrompt(input.prompt, role, findings);
+    delegated.add(role);
+    input.onAgentStarted?.(role, prompt.slice(0, 160));
+    const stream = await specialistAgent.stream<AgentFinding>(prompt, {
+      maxSteps: 1,
+      modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
+      structuredOutput: {
+        schema: ChiefAgentFindingSchema,
+        instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
+      },
+    });
+    const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
+    const consumeObject = consumeObjectStream<AgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial }));
+    const object = await stream.object;
+    await Promise.allSettled([consumeText, consumeObject]);
+    const finding = AgentFindingSchema.parse({ ...object, agent: role });
+    findings.push(finding);
+    input.onAgentCompleted?.(finding);
+  }
+
+  const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
+    maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 },
     structuredOutput: {
-      schema: AdvisorDecisionSchema,
-      instructions: "只输出符合 schema 的候选建议 JSON，不要 Markdown 或隐藏推理。",
-    },
-    delegation: {
-      onDelegationStart: ({ primitiveId, prompt }) => {
-        const role = roleFromPrimitive(primitiveId);
-        if (role) {
-          delegated.add(role);
-          input.onAgentStarted?.(role, prompt.slice(0, 160));
-        }
-        return { proceed: true, modifiedMaxSteps: 3 };
-      },
-      onDelegationComplete: ({ primitiveId, result }) => {
-        const role = roleFromPrimitive(primitiveId);
-        if (!role) return;
-        const finding = parseFinding(result.text, role);
-        if (!finding) return { feedback: `${role} 必须重新输出符合 AgentFinding schema 的 JSON。` };
-        findings.push(finding);
-        input.onAgentCompleted?.(finding);
-        if (finding.needsAnotherAgent && finding.suggestedNextAgent) {
-          return { feedback: `继续委派 ${finding.suggestedNextAgent}，处理：${finding.conclusion}` };
-        }
-      },
+      schema: ChiefAdvisorDecisionSchema,
+      instructions: "只输出符合 AdvisorDecision schema 的候选建议 JSON，不要 Markdown 或隐藏推理。",
     },
   });
+  const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
+  const consumeDecisionObject = consumeObjectStream<AdvisorDecision>(decisionStream.objectStream, (partial) => input.onStreamEvent?.({ type: "decision.object", partial }));
+  const decisionObject = await decisionStream.object;
+  await Promise.allSettled([consumeDecisionText, consumeDecisionObject]);
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: AdvisorDecisionSchema.parse(output.object), findings, delegatedAgents: [...delegated] };
+  return { decision: AdvisorDecisionSchema.parse(decisionObject), findings, delegatedAgents: [...delegated] };
+}
+
+async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) onChunk(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function consumeObjectStream<T extends object>(stream: NodeReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value && Object.keys(value).length > 0) onPartial(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
+  return [
+    "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
+    "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实；不得在证据不足时给出 ACTIVE 交易承诺。",
+    prompt,
+    `专业子 Agent 发现：${JSON.stringify(findings)}`,
+  ].join("\n\n");
+}
+
+function createSpecialistAgents(): Record<AgentFinding["agent"], Agent> {
+  return {
+    PROFILE_CONTEXT: specialist("professional-profile-context", "Profile Context", "PROFILE_CONTEXT"),
+    DATA_RESEARCH: specialist("professional-data-research", "Data & Research", "DATA_RESEARCH"),
+    PORTFOLIO_RISK: specialist("professional-portfolio-risk", "Portfolio & Risk", "PORTFOLIO_RISK"),
+    RECOMMENDATION: specialist("professional-recommendation", "Recommendation", "RECOMMENDATION"),
+    COMPLIANCE_REVIEWER: specialist("professional-compliance", "Compliance Reviewer", "COMPLIANCE_REVIEWER"),
+    EXPLANATION_REPORT: specialist("professional-explanation-report", "Explanation Report", "EXPLANATION_REPORT"),
+  };
+}
+
+function specialistPrompt(prompt: string, role: AgentFinding["agent"], priorFindings: AgentFinding[]): string {
+  return [
+    `当前角色：${role}`,
+    "你是 Money Whisperer 的真实专业子 Agent。你必须基于服务端事实、上游角色发现和用户问题输出可展示的结构化发现。",
+    "不要复述隐藏思维链；不要编造行情、持仓或用户画像；证据不足时写入 missingInformation 和 counterEvidence。",
+    `用户与服务端上下文：\n${prompt}`,
+    priorFindings.length ? `已完成的上游发现：${JSON.stringify(priorFindings)}` : "暂无上游发现。",
+  ].join("\n\n");
 }
 
 function specialist(id: string, name: string, agent: AgentFinding["agent"]) {
@@ -91,25 +190,4 @@ function specialist(id: string, name: string, agent: AgentFinding["agent"]) {
       "证据不足时明确列入 missingInformation，降低 confidence。",
     ].join("\n"),
   });
-}
-
-function parseFinding(text: string, agent: AgentFinding["agent"]): AgentFinding | null {
-  try {
-    const fenced = /```(?:json)?\s*([\s\S]*?)```/iu.exec(text)?.[1] ?? text;
-    const start = fenced.indexOf("{");
-    const end = fenced.lastIndexOf("}");
-    const payload = JSON.parse(start >= 0 && end > start ? fenced.slice(start, end + 1) : fenced) as Record<string, unknown>;
-    return AgentFindingSchema.parse({ ...payload, agent });
-  } catch {
-    return null;
-  }
-}
-
-function roleFromPrimitive(value: string): AgentFinding["agent"] | null {
-  if (/profile/iu.test(value)) return "PROFILE_CONTEXT";
-  if (/data|research/iu.test(value)) return "DATA_RESEARCH";
-  if (/portfolio|risk/iu.test(value)) return "PORTFOLIO_RISK";
-  if (/recommendation/iu.test(value)) return "RECOMMENDATION";
-  if (/compliance/iu.test(value)) return "COMPLIANCE_REVIEWER";
-  return null;
 }

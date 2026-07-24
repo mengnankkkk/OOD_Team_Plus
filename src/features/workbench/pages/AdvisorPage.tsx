@@ -243,8 +243,8 @@ const AdvisorPage = () => {
       {
         id: streamMessageId,
         role: "advisor",
-        content: "顾问 Agent 正在接入…",
-        metadata: { streaming: true, streamStatus: "正在创建对话" },
+        content: "",
+        metadata: { streaming: true, streamStatus: "正在创建对话", thinkingSteps: ["正在创建对话"] },
         createdAt: new Date().toISOString(),
         sessionId: currentSessionId,
       },
@@ -262,8 +262,28 @@ const AdvisorPage = () => {
           onProgress: (status) => {
             setMessages((items) => items.map((item) => item.id === streamMessageId ? {
               ...item,
-              content: status,
+              content: item.content || "顾问正在连接专业 Agent…",
               metadata: { ...item.metadata, streaming: true, streamStatus: status },
+            } : item));
+          },
+          onThinking: (step) => {
+            setMessages((items) => items.map((item) => {
+              if (item.id !== streamMessageId) return item;
+              const metadata = item.metadata as { thinkingSteps?: unknown };
+              const existing = Array.isArray(metadata.thinkingSteps) ? metadata.thinkingSteps.filter((value): value is string => typeof value === "string") : [];
+              const next = existing.at(-1) === step ? existing : [...existing, step].slice(-12);
+              return {
+                ...item,
+                content: item.content || "顾问正在形成公开过程摘要…",
+                metadata: { ...item.metadata, streaming: true, thinkingSteps: next, streamStatus: step },
+              };
+            }));
+          },
+          onDelta: (delta) => {
+            setMessages((items) => items.map((item) => item.id === streamMessageId ? {
+              ...item,
+              content: `${item.content === "顾问正在连接专业 Agent…" || item.content === "顾问正在形成公开过程摘要…" ? "" : item.content}${delta}`,
+              metadata: { ...item.metadata, streaming: true, streamStatus: "正在流式输出最终答复" },
             } : item));
           },
         },
@@ -457,7 +477,7 @@ const AdvisorPage = () => {
           ) : (
             <ul className="mx-auto flex max-w-2xl flex-col gap-5">
               {messages.map((msg) => {
-                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string };
+                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: string[] };
                 return (
                   <li key={msg.id} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role !== "user" && (
@@ -481,9 +501,20 @@ const AdvisorPage = () => {
                           </div>
                         ) : null}
                         {msg.role === "advisor" && meta.streaming ? (
-                          <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
-                            <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
-                            <span>{meta.streamStatus ?? "顾问 Agent 正在处理"}</span>
+                          <div className="mt-3 rounded-md border border-blue-200 bg-blue-50/70 px-3 py-2 text-[11px] text-blue-900">
+                            <div className="flex items-center gap-2 font-medium">
+                              <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                              <span>{meta.streamStatus ?? "顾问 Agent 正在处理"}</span>
+                            </div>
+                            {Array.isArray(meta.thinkingSteps) && meta.thinkingSteps.length > 0 ? (
+                              <ol className="mt-2 space-y-1 text-blue-800/90">
+                                {meta.thinkingSteps.map((step, index) => (
+                                  <li key={`${index}-${step}`} className="line-clamp-2">
+                                    {index + 1}. {step}
+                                  </li>
+                                ))}
+                              </ol>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>

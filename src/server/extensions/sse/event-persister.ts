@@ -16,6 +16,8 @@ export const SSE_EVENT_TYPES = [
   "tool.completed",
   "tool.failed",
   "evidence.added",
+  "advisor.thinking",
+  "assistant.delta",
   "compliance.completed",
   "recommendation.created",
 ] as const;

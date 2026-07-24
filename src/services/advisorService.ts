@@ -15,6 +15,8 @@ type StreamStarted = {
 type AdvisorStreamObserver = {
   onSessionId?: (sessionId: string) => void;
   onProgress?: (message: string) => void;
+  onThinking?: (message: string) => void;
+  onDelta?: (delta: string) => void;
 };
 
 const ADVISOR_STREAM_EVENTS = [
@@ -26,6 +28,8 @@ const ADVISOR_STREAM_EVENTS = [
   "tool.completed",
   "tool.failed",
   "evidence.added",
+  "advisor.thinking",
+  "assistant.delta",
   "compliance.completed",
   "recommendation.created",
 ] as const;
@@ -151,6 +155,15 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
     for (const type of ADVISOR_STREAM_EVENTS) {
       source.addEventListener(type, (event) => {
         const payload = parseStreamPayload(event);
+        if (type === "assistant.delta") {
+          const delta = typeof payload.delta === "string" ? payload.delta : "";
+          if (delta) observer.onDelta?.(delta);
+          return;
+        }
+        if (type === "advisor.thinking") {
+          observer.onThinking?.(streamThinkingLabel(payload));
+          return;
+        }
         observer.onProgress?.(streamLabel(type, payload));
         if (type === "agent.completed" && !payload.agent) finish();
         if (type === "agent.failed" && payload.code === "ADVISOR_RUN_FAILED") finish();
@@ -188,6 +201,13 @@ function streamLabel(type: string, payload: Record<string, unknown>): string {
   return "顾问 Agent 正在处理";
 }
 
+function streamThinkingLabel(payload: Record<string, unknown>): string {
+  const title = typeof payload.title === "string" ? payload.title : "顾问正在整理过程";
+  const content = typeof payload.content === "string" ? payload.content : "";
+  if (!content) return title;
+  return `${title}：${content}`;
+}
+
 async function waitForAssistantMessage(sessionId: string, analysisId: string): Promise<OnboardingMessage | null> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
@@ -216,7 +236,7 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
       id: item.id,
       name: item.agent,
       label: item.agent,
-      kind: "reasoning",
+      kind: item.modelProvider && item.modelProvider !== "deterministic" ? "llm" : "reasoning",
       tool: null,
       input: item.purpose ?? null,
       output: item.summary ?? item.failure?.message ?? null,
