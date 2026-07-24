@@ -17,9 +17,6 @@ type ConversationDetail = Conversation & { messages: Array<{ id: string; role: s
 type Clarification = { id: string; prompt: string; blocking: boolean; status: string; fields: string[]; answers: Record<string, string> | null; createdAt: string; answeredAt: string | null; expiresAt: string | null };
 type Analysis = { analysisId: string; type: string; status: string; createdAt: string; completedAt: string | null; stage?: string; progress?: number; streamUrl?: string; result?: Record<string, unknown> | null; failure?: { code: string; message: string; retryable: boolean } | null };
 type AnalysisPack = { analysisId: string; analysis: Analysis; dataFreshness: { marketDataAsOf: string | null; financialReportPeriod: string | null; status: string }; evidence: Array<{ id: string; category: string; stance: string; title: string; summary: string | null; quality: string }>; agentTrace: Array<{ id: string; agent: string; status: string; summary: string | null; purpose: string | null }>; toolCalls: Array<{ id: string; toolName: string; status: string; outputSummary: string | null }>; skillRuns: Array<{ id: string; method: string; status: string; quality: string }>; pandadataProbes: Array<{ id: string; method: string; phase: string; status: string; freshness: string | null }>; conflicts: Array<{ id: string; type: string; summary: string; status: string }>; recommendations: Array<{ id: string; action: string; status: string; summary: string | null; confidence: number | null }>; disclaimer: string };
-type QuerySummary = { id: string; question: string; status: string; rowCount: number; outputMode: string; createdAt: string };
-type QueryDetail = { id: string; question: string; status: string; analysisId: string; plan: { datasets: string[]; dimensions: string[]; metrics: string[] }; sql: { statement: string; safetyChecks: string[] }; result: { rowCount: number; truncated: boolean; expiresAt?: string | null }; sources: Array<{ planner?: string }>; failure?: { code: string; message: string; retryable: boolean } | null };
-type QueryResult = { columns: Array<{ name: string; type: string }>; items: Array<{ rowId: string; values: Record<string, unknown> }>; rowCount: number; truncated: boolean };
 type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; createdAt: string; updatedAt: string };
 type ArtifactPreview = { id: string; type: Artifact["type"]; version: number; markdown?: string; option?: Record<string, unknown> };
 type ResearchSummary = { id: string; query_text: string; status: string; created_at: string; completed_at: string | null };
@@ -287,106 +284,6 @@ export function AnalysisDetailPage({ mode = "detail" as "detail" | "events" | "e
       ) : null}
     </div>
   );
-}
-
-export function DataQueriesPage() {
-  const list = useApiResource<{ items: QuerySummary[] }>("/api/v1/data-queries?limit=20");
-  const [question, setQuestion] = useState("查看当前组合的健康度和风险敞口");
-  const [selected, setSelected] = useState<string | null>(null);
-  const detail = useApiResource<QueryDetail>(selected ? `/api/v1/data-queries/${selected}` : null);
-  const result = useApiResource<QueryResult>(selected ? `/api/v1/data-queries/${selected}/result?limit=200` : null);
-  const [mode, setMode] = useState<"SQL_ONLY" | "CHART" | "FINANCIAL_REPORT">("CHART");
-  const selectedResult = result.data;
-  const selectedDetail = detail.data;
-
-  async function runQuery() {
-    try {
-      const created = await apiMutation<{ resourceId: string }>("/api/v1/data-queries", "POST", { questionText: question, requestedDatasets: ["PORTFOLIO_HOLDINGS", "PORTFOLIO_METRICS"], outputMode: mode, requestedLimit: 200 });
-      setSelected(created.resourceId);
-      await Promise.all([list.reload(), detail.reload(), result.reload()]);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "查询失败");
-    }
-  }
-
-  return (
-    <div className="page-stack">
-      <PageHeading eyebrow="QUERY" title="智能查数" description="QueryPlan、结果和查询历史都在这里。" actions={<Button variant="outline" onClick={() => void list.reload()}><RefreshCw className="size-4" />刷新</Button>} />
-      <div className="grid gap-6 xl:grid-cols-[1fr_1.2fr]">
-        <Shell title="新查询" eyebrow="RUN">
-          <div className="space-y-3">
-            <Textarea rows={5} value={question} onChange={(e) => setQuestion(e.target.value)} />
-            <Select value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="SQL_ONLY">SQL_ONLY</SelectItem><SelectItem value="CHART">CHART</SelectItem><SelectItem value="FINANCIAL_REPORT">FINANCIAL_REPORT</SelectItem></SelectContent>
-            </Select>
-            <Button onClick={() => void runQuery()}><Play className="size-4" />提交查询</Button>
-          </div>
-        </Shell>
-        <Shell title="查询历史" eyebrow="HISTORY">
-          {list.loading ? <LoadingBlock label="正在读取查询…" /> : list.error ? <ErrorBlock message={list.error} retry={list.reload} /> : list.data?.items.length ? (
-            <div className="space-y-2">
-              {list.data.items.map((item) => (
-                <button key={item.id} onClick={() => setSelected(item.id)} className="w-full rounded-lg border border-border px-4 py-3 text-left hover:border-primary">
-                  <div className="flex items-center justify-between gap-3">
-                    <strong className="truncate">{item.question}</strong>
-                    <Status tone={item.status === "SUCCEEDED" ? "good" : item.status === "FAILED" ? "danger" : "neutral"}>{item.status}</Status>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground"><span>{item.rowCount} 行</span><span>{shortDate(item.createdAt)}</span></div>
-                </button>
-              ))}
-            </div>
-          ) : <Empty title="没有查询记录" detail="提交第一条查询后，历史会出现在这里。" />}
-        </Shell>
-      </div>
-      <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_1.2fr]">
-        <Shell title="QueryPlan" eyebrow="DETAIL">
-          {detail.loading ? <LoadingBlock label="正在读取详情…" /> : detail.error ? <ErrorBlock message={detail.error} retry={detail.reload} /> : selectedDetail ? (
-            <div className="space-y-3 text-sm">
-              <p><span className="text-muted-foreground">分析 ID：</span><span className="font-mono">{selectedDetail.analysisId}</span></p>
-              <p><span className="text-muted-foreground">数据集：</span>{selectedDetail.plan.datasets.join(" / ")}</p>
-              <p><span className="text-muted-foreground">安全检查：</span>{selectedDetail.sql.safetyChecks.join(" / ")}</p>
-              <pre className="overflow-auto rounded-lg border border-border bg-muted p-3 text-xs">{selectedDetail.sql.statement}</pre>
-            </div>
-          ) : <Empty title="请选择查询" detail="查询详情会显示脱敏 SQL 与计划。" />}
-        </Shell>
-        <Shell title="结果表" eyebrow="RESULT">
-          {result.loading ? <LoadingBlock label="正在读取结果…" /> : result.error ? <ErrorBlock message={result.error} retry={result.reload} /> : selectedResult ? (
-            <div className="overflow-auto rounded-lg border border-border">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-muted/50"><tr>{selectedResult.columns.map((column) => <th key={column.name} className="px-3 py-2">{column.name}<div className="text-[10px] text-muted-foreground">{column.type}</div></th>)}</tr></thead>
-                <tbody>{selectedResult.items.map((row) => <tr key={row.rowId} className="border-t border-border">{selectedResult.columns.map((column) => <td key={column.name} className="px-3 py-2">{String(row.values[column.name] ?? "—")}</td>)}</tr>)}</tbody>
-              </table>
-            </div>
-          ) : <Empty title="等待结果" detail="查询完成后结果会在这里渲染。" />}
-        </Shell>
-      </div>
-    </div>
-  );
-}
-
-export function DataQueryDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const detail = useApiResource<QueryDetail>(id ? `/api/v1/data-queries/${id}` : null);
-  const result = useApiResource<QueryResult>(id ? `/api/v1/data-queries/${id}/result?limit=200` : null);
-  const selectedResult = result.data;
-  if (detail.loading || result.loading) return <LoadingBlock label="正在读取查询…" />;
-  if (detail.error) return <ErrorBlock message={detail.error} retry={detail.reload} />;
-  if (!detail.data) return <Empty title="查询不存在" detail="请返回列表重试。" />;
-  return (
-    <div className="page-stack">
-      <PageHeading eyebrow="QUERY DETAIL" title={detail.data.question} description="脱敏 SQL、来源和结果分块在这里。" actions={<Button variant="outline" onClick={() => window.history.back()}><ArrowLeft className="size-4" />返回</Button>} />
-      <Shell title="QueryPlan" eyebrow="PLAN"><pre className="overflow-auto rounded-lg border border-border bg-muted p-3 text-xs">{detail.data.sql.statement}</pre></Shell>
-      <Shell title="结果" eyebrow="RESULT">{selectedResult ? <div className="overflow-auto rounded-lg border border-border"><table className="w-full text-left text-sm"><thead className="bg-muted/50"><tr>{selectedResult.columns.map((column) => <th key={column.name} className="px-3 py-2">{column.name}</th>)}</tr></thead><tbody>{selectedResult.items.map((row) => <tr key={row.rowId} className="border-t border-border">{selectedResult.columns.map((column) => <td key={column.name} className="px-3 py-2">{String(row.values[column.name] ?? "—")}</td>)}</tr>)}</tbody></table></div> : <Empty title="无结果" detail="查询未准备好或已过期。" />}</Shell>
-    </div>
-  );
-}
-
-export function DataQueryResultPage() {
-  const { id } = useParams<{ id: string }>();
-  const result = useApiResource<QueryResult>(id ? `/api/v1/data-queries/${id}/result?limit=500` : null);
-  const selectedResult = result.data;
-  return <div className="page-stack">{result.loading ? <LoadingBlock label="正在读取结果…" /> : result.error ? <ErrorBlock message={result.error} retry={result.reload} /> : selectedResult ? <Shell title="结果表" eyebrow="RESULT"><div className="overflow-auto rounded-lg border border-border"><table className="w-full text-left text-sm"><thead className="bg-muted/50"><tr>{selectedResult.columns.map((column) => <th key={column.name} className="px-3 py-2">{column.name}</th>)}</tr></thead><tbody>{selectedResult.items.map((row) => <tr key={row.rowId} className="border-t border-border">{selectedResult.columns.map((column) => <td key={column.name} className="px-3 py-2">{String(row.values[column.name] ?? "—")}</td>)}</tr>)}</tbody></table></div></Shell> : <Empty title="结果不存在" detail="请先创建查询。" />}</div>;
 }
 
 export function GeneratedArtifactDetailPage() {

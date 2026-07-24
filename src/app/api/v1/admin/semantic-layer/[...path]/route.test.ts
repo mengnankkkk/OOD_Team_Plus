@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticatedRequest } from "@tests/helpers/auth";
 import { closeSemanticLayerRuntime } from "@/server/semantic-layer/runtime";
 
-import { GET, POST } from "./route";
+import { DELETE, GET, PATCH, POST } from "./route";
 
 let dbPath = "";
 
@@ -52,5 +52,51 @@ describe("/api/v1/admin/semantic-layer", () => {
       { params: Promise.resolve({ path: ["unknown"] }) },
     );
     expect(response.status).toBe(404);
+  });
+
+  it("manages semantic datasources through the admin namespace", async () => {
+    const created = await POST(
+      authenticatedRequest("http://localhost/api/v1/admin/semantic-layer/datasources", {
+        method: "POST",
+        body: JSON.stringify({
+          datasourceKey: "warehouse-main",
+          name: "数仓主库",
+          description: "同步导入使用的数据源",
+          connectionType: "sqlite",
+          schemaName: "main",
+          isVisible: true,
+        }),
+        headers: { "Content-Type": "application/json" },
+      }),
+      { params: Promise.resolve({ path: ["datasources"] }) },
+    );
+    expect(created.status).toBe(201);
+    const payload = await created.json();
+    expect(payload).toEqual(expect.objectContaining({ datasourceKey: "warehouse-main", name: "数仓主库", isVisible: true }));
+
+    const listed = await GET(
+      authenticatedRequest("http://localhost/api/v1/admin/semantic-layer/datasources?pageNo=1&pageSize=20"),
+      { params: Promise.resolve({ path: ["datasources"] }) },
+    );
+    expect(listed.status).toBe(200);
+    expect((await listed.json()).items).toEqual(expect.arrayContaining([expect.objectContaining({ datasourceKey: "warehouse-main" })]));
+
+    const updated = await PATCH(
+      authenticatedRequest(`http://localhost/api/v1/admin/semantic-layer/datasources/${payload.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: "数仓主库（已校验）", isVisible: false }),
+        headers: { "Content-Type": "application/json" },
+      }),
+      { params: Promise.resolve({ path: ["datasources", payload.id] }) },
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toEqual(expect.objectContaining({ name: "数仓主库（已校验）", isVisible: false }));
+
+    const deleted = await DELETE(
+      authenticatedRequest(`http://localhost/api/v1/admin/semantic-layer/datasources/${payload.id}`, { method: "DELETE" }),
+      { params: Promise.resolve({ path: ["datasources", payload.id] }) },
+    );
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ deleted: 1 });
   });
 });

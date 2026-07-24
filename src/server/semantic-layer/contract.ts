@@ -22,6 +22,25 @@ export const batchDeleteSchema = z.object({
   ids: z.array(entityIdSchema).min(1).max(100),
 });
 
+export const createDatasourceSchema = z.object({
+  datasourceKey: z.string().trim().min(1).max(128),
+  name: z.string().trim().min(1).max(120),
+  description: optionalText(2_000),
+  connectionType: z.enum(["sqlite", "libsql", "jdbc", "api", "manual"]).default("sqlite"),
+  schemaName: optionalText(128),
+  isVisible: z.boolean().default(true),
+});
+
+export const updateDatasourceSchema = createDatasourceSchema
+  .pick({
+    name: true,
+    description: true,
+    connectionType: true,
+    schemaName: true,
+    isVisible: true,
+  })
+  .partial();
+
 export const createDomainSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: optionalText(2_000),

@@ -1,18 +1,19 @@
 import { useEffect, useSyncExternalStore } from "react";
 
-import type { SemanticColumn, SemanticDomain, SemanticForeignKey, SemanticTable } from "@/types/app/semantic";
+import type { SemanticColumn, SemanticDatasource, SemanticDomain, SemanticForeignKey, SemanticTable } from "@/types/app/semantic";
 import {
-  createColumn, createDomain, createForeignKey, createTable,
-  deleteColumns, deleteDomains, deleteForeignKeys, deleteTables,
-  listColumns, listDomains, listForeignKeys, listTables,
-  updateColumn, updateDomain, updateForeignKey, updateTable,
+  createColumn, createDatasource, createDomain, createForeignKey, createTable,
+  deleteColumns, deleteDatasources, deleteDomains, deleteForeignKeys, deleteTables,
+  listColumns, listDatasources, listDomains, listForeignKeys, listTables,
+  updateColumn, updateDatasource, updateDomain, updateForeignKey, updateTable,
 } from "@/services/semanticService";
 
-type Topic = "domains" | "tables" | "columns" | "fks" | "status";
+type Topic = "datasources" | "domains" | "tables" | "columns" | "fks" | "status";
 type LoadStatus = { loading: boolean; loaded: boolean; error: string };
 
 const state = {
   domains: [] as SemanticDomain[],
+  datasources: [] as SemanticDatasource[],
   tables: [] as SemanticTable[],
   columns: [] as SemanticColumn[],
   fks: [] as SemanticForeignKey[],
@@ -20,7 +21,7 @@ const state = {
 };
 
 const listeners: Record<Topic, Set<() => void>> = {
-  domains: new Set(), tables: new Set(), columns: new Set(), fks: new Set(), status: new Set(),
+  datasources: new Set(), domains: new Set(), tables: new Set(), columns: new Set(), fks: new Set(), status: new Set(),
 };
 const notify = (topic: Topic) => listeners[topic].forEach((listener) => listener());
 const notifyAll = () => (Object.keys(listeners) as Topic[]).forEach(notify);
@@ -35,8 +36,9 @@ export function reloadSemanticLayer() {
   if (loadPromise) return loadPromise;
   state.status = { ...state.status, loading: true, error: "" };
   notify("status");
-  loadPromise = Promise.all([listDomains(), listTables(), listColumns(), listForeignKeys()])
-    .then(([domains, tables, columns, fks]) => {
+  loadPromise = Promise.all([listDatasources(), listDomains(), listTables(), listColumns(), listForeignKeys()])
+    .then(([datasources, domains, tables, columns, fks]) => {
+      state.datasources = datasources;
       state.domains = domains;
       state.tables = tables;
       state.columns = columns;
@@ -58,10 +60,12 @@ function useSnapshot<T>(topic: Topic, getSnapshot: () => T) {
 }
 
 export const useSemanticStatus = () => useSnapshot("status", () => state.status);
+export const useDatasources = () => useSnapshot("datasources", () => state.datasources);
 export const useDomains = () => useSnapshot("domains", () => state.domains);
 export const useTables = () => useSnapshot("tables", () => state.tables);
 export const useColumns = () => useSnapshot("columns", () => state.columns);
 export const useForeignKeys = () => useSnapshot("fks", () => state.fks);
+export const getDatasources = () => state.datasources;
 export const getDomains = () => state.domains;
 export const getTables = () => state.tables;
 export const getColumns = () => state.columns;
@@ -88,6 +92,21 @@ export const setDomains = (next: SemanticDomain[]) => {
     const removed = previous.filter((item) => !after.has(item.id)).map((item) => item.id);
     if (removed.length) await deleteDomains(removed);
     for (const item of next) { const old = before.get(item.id); if (!old) await createDomain(item); else if (changed(old, item)) await updateDomain(item.id, item); }
+  });
+};
+
+export const setDatasources = (next: SemanticDatasource[]) => {
+  const previous = state.datasources; state.datasources = next; notify("datasources");
+  void persist(async () => {
+    const before = new Map(previous.map((item) => [item.id, item]));
+    const after = new Map(next.map((item) => [item.id, item]));
+    const removed = previous.filter((item) => !after.has(item.id)).map((item) => item.id);
+    if (removed.length) await deleteDatasources(removed);
+    for (const item of next) {
+      const old = before.get(item.id);
+      if (!old) await createDatasource(item);
+      else if (changed(old, item)) await updateDatasource(item.id, item);
+    }
   });
 };
 

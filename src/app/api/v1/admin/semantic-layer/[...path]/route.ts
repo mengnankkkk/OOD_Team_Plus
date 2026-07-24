@@ -4,12 +4,14 @@ import { ZodError } from "zod";
 import { authError, requireAdmin } from "@/server/auth/http";
 import {
   batchDeleteSchema,
+  createDatasourceSchema,
   createColumnSchema,
   createDomainSchema,
   createForeignKeySchema,
   createTableSchema,
   parsePageQuery,
   syncMetadataSchema,
+  updateDatasourceSchema,
   updateColumnSchema,
   updateDomainSchema,
   updateForeignKeySchema,
@@ -22,7 +24,7 @@ import { getSemanticLayerDb } from "@/server/semantic-layer/runtime";
 import { syncSemanticMetadata } from "@/server/semantic-layer/sync-service";
 import { createTable, deleteTables, getTable, pageTables, updateTable } from "@/server/semantic-layer/table-service";
 import { getRequestContext } from "@/server/http/context";
-import { discoverSemanticDatasources } from "@/server/semantic-layer/datasource-service";
+import { createDatasource, deleteDatasources, getDatasource, pageDatasources, updateDatasource } from "@/server/semantic-layer/datasource-service";
 
 export const runtime = "nodejs";
 
@@ -32,8 +34,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
   try {
     requireAdmin(getRequestContext(request).user);
     const path = (await context.params).path;
-    if (path.length === 1 && path[0] === "datasources") return NextResponse.json(discoverSemanticDatasources());
     const db = await getSemanticLayerDb();
+    if (path.length === 1 && path[0] === "datasources") return NextResponse.json(await pageDatasources(db, parsePageQuery(request.url)));
+    if (path.length === 2 && path[0] === "datasources") return entity(await getDatasource(db, path[1]));
     if (path.length === 1 && path[0] === "domains") return NextResponse.json(await pageDomains(db, parsePageQuery(request.url)));
     if (path.length === 2 && path[0] === "domains") return entity(await getDomain(db, path[1]));
     if (path.length === 1 && path[0] === "tables") return NextResponse.json(await pageTables(db, parsePageQuery(request.url), request.nextUrl.searchParams.get("domainId") ?? undefined));
@@ -60,6 +63,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const path = (await context.params).path;
     const body = await request.json();
     const db = await getSemanticLayerDb();
+    if (path.length === 1 && path[0] === "datasources") return NextResponse.json(await createDatasource(db, createDatasourceSchema.parse(body)), { status: 201 });
+    if (path.length === 2 && path[0] === "datasources" && path[1] === "batch-delete") return NextResponse.json(await deleteDatasources(db, batchDeleteSchema.parse(body).ids));
     if (path.length === 1 && path[0] === "domains") return NextResponse.json(await createDomain(db, createDomainSchema.parse(body)), { status: 201 });
     if (path.length === 2 && path[0] === "domains" && path[1] === "batch-delete") return NextResponse.json(await deleteDomains(db, batchDeleteSchema.parse(body).ids));
     if (path.length === 1 && path[0] === "tables") return NextResponse.json(await createTable(db, createTableSchema.parse(body)), { status: 201 });
@@ -82,6 +87,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await request.json();
     const db = await getSemanticLayerDb();
     if (path.length !== 2) return notFound();
+    if (path[0] === "datasources") return entity(await updateDatasource(db, path[1], updateDatasourceSchema.parse(body)));
     if (path[0] === "domains") return entity(await updateDomain(db, path[1], updateDomainSchema.parse(body)));
     if (path[0] === "tables") return entity(await updateTable(db, path[1], updateTableSchema.parse(body)));
     if (path[0] === "columns") return entity(await updateColumn(db, path[1], updateColumnSchema.parse(body)));
@@ -98,6 +104,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     const path = (await context.params).path;
     if (path.length !== 2) return notFound();
     const db = await getSemanticLayerDb();
+    if (path[0] === "datasources") return NextResponse.json(await deleteDatasources(db, [path[1]]));
     if (path[0] === "domains") return NextResponse.json(await deleteDomains(db, [path[1]]));
     if (path[0] === "tables") return NextResponse.json(await deleteTables(db, [path[1]]));
     if (path[0] === "columns") return NextResponse.json(await deleteColumns(db, [path[1]]));

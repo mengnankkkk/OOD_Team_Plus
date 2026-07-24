@@ -15,6 +15,12 @@ export const domainSortMapper: SortMapper = {
   name: "name",
 };
 
+export const datasourceSortMapper: SortMapper = {
+  updatedAt: "updated_at",
+  createdAt: "created_at",
+  name: "name",
+};
+
 export const tableSortMapper: SortMapper = {
   updatedAt: "t.updated_at",
   createdAt: "t.created_at",

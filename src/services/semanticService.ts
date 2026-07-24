@@ -2,6 +2,8 @@ import type {
   PagedResult,
   SemanticColumn,
   SemanticColumnInput,
+  SemanticDatasource,
+  SemanticDatasourceInput,
   SemanticDomain,
   SemanticDomainInput,
   SemanticForeignKey,
@@ -10,7 +12,6 @@ import type {
   SemanticTableInput,
   SyncPayload,
   SyncResult,
-  SyncTableInput,
 } from "@/types/app/semantic";
 import { createClientId } from "@/lib/client-id";
 
@@ -53,12 +54,49 @@ async function listAll<T>(path: string): Promise<T[]> {
 const body = (value: unknown) => JSON.stringify(value);
 
 export const listDomains = () => listAll<SemanticDomain>(`${SEMANTIC_API}/domains`);
+export const listDatasources = () => listAll<SemanticDatasource>(`${SEMANTIC_API}/datasources`);
 export const listTables = () => listAll<SemanticTable>(`${SEMANTIC_API}/tables`);
 export const listColumns = () => listAll<SemanticColumn>(`${SEMANTIC_API}/columns`);
 export const listForeignKeys = () => listAll<SemanticForeignKey>(`${SEMANTIC_API}/logical-foreign-keys`);
 
-export type SemanticDatasource = { key: string; label: string; description: string; schemaName: string; tables: SyncTableInput[] };
-export const listSemanticDatasources = () => api<{ items: SemanticDatasource[] }>(`${SEMANTIC_API}/datasources`);
+export const listSemanticDatasources = () => api<PagedResult<SemanticDatasource>>(`${SEMANTIC_API}/datasources?pageNo=1&pageSize=100`);
+
+export function createDatasource(input: SemanticDatasourceInput) {
+  return api<SemanticDatasource>(`${SEMANTIC_API}/datasources`, {
+    method: "POST",
+    body: body({
+      datasourceKey: input.datasourceKey,
+      name: input.name,
+      description: input.description || undefined,
+      connectionType: input.connectionType,
+      schemaName: input.schemaName || undefined,
+      isVisible: input.isVisible,
+    }),
+  });
+}
+
+export function updateDatasource(id: string, input: Partial<SemanticDatasourceInput>) {
+  return api<SemanticDatasource>(`${SEMANTIC_API}/datasources/${id}`, {
+    method: "PATCH",
+    body: body({
+      name: input.name,
+      description: input.description || undefined,
+      connectionType: input.connectionType,
+      schemaName: input.schemaName || undefined,
+      isVisible: input.isVisible,
+    }),
+  });
+}
+
+export function deleteDatasources(ids: string[]) {
+  if (ids.length === 1) {
+    return api<{ deleted: number }>(`${SEMANTIC_API}/datasources/${ids[0]}`, { method: "DELETE" });
+  }
+  return api<{ deleted: number }>(`${SEMANTIC_API}/datasources/batch-delete`, {
+    method: "POST",
+    body: body({ ids }),
+  });
+}
 
 export function createDomain(input: SemanticDomainInput) {
   return api<SemanticDomain>(`${SEMANTIC_API}/domains`, {

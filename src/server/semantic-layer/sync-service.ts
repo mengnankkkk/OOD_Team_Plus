@@ -3,6 +3,7 @@ import {
   type SemanticLayerDb,
   type SemanticLayerExecutor,
 } from "@/server/semantic-layer/database";
+import { markDatasourceSynced } from "@/server/semantic-layer/datasource-service";
 import { syncForeignKeys } from "@/server/semantic-layer/sync-foreign-key";
 import {
   markMissingColumns,
@@ -78,6 +79,7 @@ async function syncMetadataSnapshot(
     columnMap,
     tableIds,
     now,
-  );
+    );
+  await markDatasourceSynced(db, input.datasourceKey, now);
   return stats;
 }

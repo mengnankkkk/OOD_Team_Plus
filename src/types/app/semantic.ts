@@ -7,6 +7,23 @@ export interface SemanticDomain {
   updatedAt: string;
 }
 
+export interface SemanticDatasource {
+  id: string;
+  datasourceKey: string;
+  key: string;
+  name: string;
+  label: string;
+  description: string | null;
+  connectionType: string;
+  schemaName: string | null;
+  isVisible: boolean;
+  syncStatus: string;
+  lastSyncedAt: string | null;
+  tables: SyncTableInput[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SemanticTable {
   id: string;
   domainId: string;
@@ -65,6 +82,15 @@ export interface SemanticForeignKey {
 export interface SemanticDomainInput {
   name: string;
   description?: string | null;
+  isVisible?: boolean;
+}
+
+export interface SemanticDatasourceInput {
+  datasourceKey: string;
+  name: string;
+  description?: string | null;
+  connectionType?: string;
+  schemaName?: string | null;
   isVisible?: boolean;
 }
 
@@ -132,6 +158,11 @@ export interface BaseListQuery {
 export type DomainSortField = "updatedAt" | "createdAt" | "name";
 export interface DomainListQuery extends BaseListQuery {
   sortBy?: DomainSortField;
+}
+
+export type DatasourceSortField = "updatedAt" | "createdAt" | "name";
+export interface DatasourceListQuery extends BaseListQuery {
+  sortBy?: DatasourceSortField;
 }
 
 export type TableSortField =
