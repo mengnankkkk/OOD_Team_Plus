@@ -2,12 +2,11 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChevronDown, LogIn, LogOut, User } from "lucide-react";
+import { Bell, ChevronDown, User } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "@/features/frontend-migration/router";
 import { useAuth } from "@/hooks/useAuth";
 import { useDemoMode } from "@/hooks/useDemoMode";
 import { useAlerts } from "@/hooks/useAlerts";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -19,14 +18,11 @@ const navItems = [
 ];
 
 const historyEntries = [
-  { path: "/history/artifacts", label: "报告产物" },
   { path: "/history/evidence-lab", label: "证据实验室" },
   { path: "/history/decision-log", label: "决策日志" },
 ];
 
 const workspaceEntries = [
-  { path: "/analysis", label: "组合分析" },
-  { path: "/notification-preference", label: "通知偏好" },
   { path: "/risk-questionnaire", label: "风险问卷" },
   { path: "/system-health", label: "系统健康" },
 ];
@@ -38,7 +34,7 @@ const adminEntries = [
 ];
 
 export default function TopNavigation() {
-  const { profile, user, isAnonymous, signOut } = useAuth();
+  const { profile, user, isAnonymous } = useAuth();
   const { judgeMode } = useDemoMode();
   const { data: alerts = [] } = useAlerts();
   const navigate = useNavigate();
@@ -120,26 +116,15 @@ export default function TopNavigation() {
               {unreadCount > 0 ? <span className="absolute -right-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
             </button>
 
-            <DropdownMenu>
-              <DropdownMenuTrigger className="press-shell press-shell-account">
-                <span className="press-outer">
-                  <span className="press-inner press-inner-account">
-                    <span className={`grid size-8 place-items-center rounded-full ${isAnonymous ? "bg-neutral-800/70 text-neutral-300" : "bg-primary/20 text-primary"}`}><User className="size-4" /></span>
-                    <span className="hidden max-w-[8rem] truncate lg:inline">{label}</span>
-                    {isAnonymous ? <span className="hidden rounded-md bg-neutral-800/80 px-2 py-1 text-[10px] tracking-wide text-neutral-300 lg:inline">游客</span> : null}
-                  </span>
+            <button type="button" onClick={() => navigate("/settings")} className="press-shell press-shell-account" aria-label="打开设置">
+              <span className="press-outer">
+                <span className="press-inner press-inner-account">
+                  <span className={`grid size-8 place-items-center rounded-full ${isAnonymous ? "bg-neutral-800/70 text-neutral-300" : "bg-primary/20 text-primary"}`}><User className="size-4" /></span>
+                  <span className="max-w-[9rem] truncate text-sm">{label}</span>
+                  {isAnonymous ? <span className="rounded-md bg-neutral-800/80 px-2 py-1 text-[10px] tracking-wide text-neutral-300">游客</span> : null}
                 </span>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel className="text-xs text-muted-foreground">{isAnonymous ? "游客模式 · 数据仅保存在当前设备账号" : `用户名：${user?.email ?? "—"}`}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => navigate("/profile")}>个人财务档案</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => navigate("/goals")}>个人目标档案</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => navigate("/auth/password")}>修改密码</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {isAnonymous ? <DropdownMenuItem onClick={() => navigate("/login")}><LogIn className="size-4" />绑定邮箱账号</DropdownMenuItem> : <DropdownMenuItem onClick={() => void signOut()} className="text-destructive focus:text-destructive"><LogOut className="size-4" />退出登录</DropdownMenuItem>}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              </span>
+            </button>
           </div>
         </div>
         {judgeMode ? <div className="mx-auto max-w-[1440px] border-t border-destructive/30 bg-destructive/5 px-5 py-1.5 text-xs text-destructive md:px-10 xl:px-16">评委视图 · Pandadata 路由、Skill 运行、DAG、风控拦截原因均已展开</div> : null}

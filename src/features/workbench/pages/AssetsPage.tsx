@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -6,22 +6,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { BarChart3, FileText, PlusCircle, Trash2, Upload } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { PlusCircle, Trash2, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useHoldings, useHoldingsInvalidator } from "@/hooks/useHoldings";
 import { useUserGoals } from "@/hooks/useUserGoals";
 import { bulkCreateHoldings, createHolding, deleteHolding, parseHoldingsCsv } from "@/services/holdingsService";
 import { ASSET_CLASS_LABEL, type AssetClass, type HoldingInput } from "@/types/app/asset";
 import { computeHealthMetrics } from "@/lib/financialHealth";
-import HealthMetrics from "@/components/desktop/HealthMetrics";
-import AllocationPanel from "@/components/desktop/AllocationPanel";
+import AssetOverviewPanel from "@/components/desktop/AssetOverviewPanel";
 import DrawdownChart from "@/components/desktop/DrawdownChart";
-import { apiGet } from "@/features/frontend-migration/api";
+import { ArtifactLibrary } from "@/features/workbench/components/ArtifactLibrary";
 
 const CLASS_OPTIONS: AssetClass[] = ["cash", "money_market", "bond_fund", "equity_fund", "index_fund", "stock", "other"];
-type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; createdAt: string; updatedAt: string };
-type Preview = { id: string; type: Artifact["type"]; version: number; markdown?: string; option?: { title?: { text?: string }; xAxis?: { data?: string[] }; series?: Array<{ name?: string; data?: number[] }> } };
 
 const AssetsPage = () => {
   const { user, profile } = useAuth();
@@ -45,24 +41,6 @@ const AssetsPage = () => {
   const [currentPrice, setCurrentPrice] = useState("");
   const [costBasis, setCostBasis] = useState("");
   const [goalId, setGoalId] = useState<string>("__none__");
-  const [selectedArtifactId, setSelectedArtifactId] = useState("");
-
-  const artifacts = useQuery({
-    queryKey: ["asset-artifacts", user?.id],
-    queryFn: () => apiGet<{ items: Artifact[] }>("/api/v1/generated-artifacts?limit=20"),
-    enabled: !!user,
-  });
-  const artifactItems = artifacts.data?.items ?? [];
-  const selectedArtifact = artifactItems.find((item) => item.id === selectedArtifactId) ?? artifactItems[0] ?? null;
-  const preview = useQuery({
-    queryKey: ["asset-artifact-preview", selectedArtifact?.id],
-    queryFn: () => apiGet<Preview>(`/api/v1/generated-artifacts/${selectedArtifact!.id}/preview`),
-    enabled: !!selectedArtifact?.id,
-  });
-
-  useEffect(() => {
-    if (!selectedArtifactId && artifactItems[0]) setSelectedArtifactId(artifactItems[0].id);
-  }, [artifactItems, selectedArtifactId]);
 
   const resetForm = () => {
     setName(""); setSymbol(""); setAssetClass("equity_fund"); setIndustry("");
@@ -207,18 +185,12 @@ const AssetsPage = () => {
           </Dialog>
         </div>
       </div>
-      <div className="grid gap-6 lg:grid-cols-2"><HealthMetrics metrics={metrics} profile={profile} loading={isLoading} /><AllocationPanel metrics={metrics} loading={isLoading} /></div>
+      <AssetOverviewPanel metrics={metrics} profile={profile} loading={isLoading} />
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
         <DrawdownChart metrics={metrics} loading={isLoading} />
         <FinancialHealthReport metrics={metrics} loading={isLoading} />
       </div>
-      <AssetArtifactsPanel
-        items={artifactItems}
-        selectedId={selectedArtifact?.id ?? ""}
-        preview={preview.data ?? null}
-        loading={artifacts.isLoading || preview.isLoading}
-        onSelect={setSelectedArtifactId}
-      />
+      <ArtifactLibrary embedded />
       <section className="paper-card mt-6 overflow-hidden">
         <div className="flex items-center justify-between border-b border-border p-6">
           <div><p className="eyebrow">持仓明细</p><h2 className="mt-1 text-lg font-semibold">{holdings.length} 笔持仓 · 总市值 ¥{Math.round(metrics?.totalAssets ?? 0).toLocaleString("zh-CN")}</h2></div>
@@ -289,65 +261,4 @@ function FinancialHealthReport({ metrics, loading }: { metrics: ReturnType<typeo
       </p>
     </section>
   );
-}
-
-function AssetArtifactsPanel({ items, selectedId, preview, loading, onSelect }: { items: Artifact[]; selectedId: string; preview: Preview | null; loading: boolean; onSelect: (id: string) => void }) {
-  return (
-    <section className="paper-card mt-6 overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-6">
-        <div><p className="eyebrow">图表与财务报告</p><h2 className="mt-1 text-lg font-semibold">资产相关产物</h2></div>
-        <span className="judge-note">{items.length} 个产物</span>
-      </div>
-      {loading && !items.length ? (
-        <div className="grid place-items-center p-10 text-center text-sm text-muted-foreground">正在加载图表与财务报告...</div>
-      ) : !items.length ? (
-        <div className="grid place-items-center p-10 text-center text-sm text-muted-foreground">顾问生成的图表和财务报告会自动出现在这里。</div>
-      ) : (
-        <div className="grid gap-px bg-border lg:grid-cols-[300px_minmax(0,1fr)]">
-          <div className="grid max-h-[520px] gap-2 overflow-auto bg-card p-4">
-            {items.map((item) => {
-              const Icon = item.type === "MARKDOWN" ? FileText : BarChart3;
-              return (
-                <button key={item.id} type="button" onClick={() => onSelect(item.id)} className={`flex items-start gap-3 rounded-md border px-3 py-3 text-left text-sm transition-colors ${selectedId === item.id ? "border-primary bg-primary/5" : "border-border hover:border-primary/60"}`}>
-                  <Icon className="mt-0.5 size-4 shrink-0 text-primary" />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">{item.title}</span>
-                    <span className="mt-1 block text-xs text-muted-foreground">{item.type === "MARKDOWN" ? "财务报告" : "数据图表"} · v{item.currentVersion} · {shortAssetDate(item.updatedAt)}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="min-h-[360px] min-w-0 bg-card p-6">
-            {loading ? <div className="grid h-full place-items-center text-sm text-muted-foreground">正在加载产物预览...</div> : preview?.type === "MARKDOWN" ? <MarkdownPreview markdown={preview.markdown ?? ""} /> : preview?.option ? <ChartPreview option={preview.option} /> : <div className="grid h-full place-items-center text-sm text-muted-foreground">选择一个图表或报告查看内容。</div>}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function MarkdownPreview({ markdown }: { markdown: string }) {
-  return <div className="markdown-preview">{markdown.split("\n").slice(0, 80).map((line, index) => line.startsWith("# ") ? <h1 key={index}>{line.slice(2)}</h1> : line.startsWith("## ") ? <h2 key={index}>{line.slice(3)}</h2> : line ? <p key={index}>{line}</p> : <br key={index} />)}</div>;
-}
-
-function ChartPreview({ option }: { option: NonNullable<Preview["option"]> }) {
-  const labels = option.xAxis?.data ?? [];
-  const series = option.series ?? [];
-  const values = series.flatMap((item) => item.data ?? []);
-  const max = Math.max(...values.map((value) => Math.abs(Number(value))), 1);
-  return (
-    <div className="chart-preview">
-      <h3>{option.title?.text ?? "资产图表"}</h3>
-      <div className="chart-legend">{series.map((item, index) => <span key={`${item.name ?? "series"}-${index}`}><i data-color={index % 3} />{item.name ?? `系列 ${index + 1}`}</span>)}</div>
-      <div className="chart-bars">
-        {labels.map((label, row) => <div key={`${label}-${row}`}><span>{label || `#${row + 1}`}</span><div>{series.map((item, index) => <i key={`${item.name ?? "series"}-${index}`} data-color={index % 3} style={{ width: `${Math.abs(Number(item.data?.[row] ?? 0)) / max * 100}%` }} title={`${item.name ?? "系列"}: ${item.data?.[row] ?? 0}`} />)}</div></div>)}
-      </div>
-    </div>
-  );
-}
-
-function shortAssetDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "--" : new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
