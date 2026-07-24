@@ -22,6 +22,7 @@ RUN --mount=type=cache,id=money-whisperer-next,target=/app/.next/cache \
   pnpm build
 
 FROM ${NODE_BASE_IMAGE} AS runner
+ARG DEBIAN_BOOTSTRAP_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
 ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
 ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
@@ -35,17 +36,24 @@ ENV PANDADATA_PYTHON=/opt/pandadata-venv/bin/python
 RUN for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
       if [ -f "$source_file" ]; then \
         sed -i \
-          -e "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" \
-          -e "s|https://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" \
-          -e "s|http://security.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" \
-          -e "s|https://security.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g" \
-          -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g" \
-          -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g" \
+          -e "s|http://deb.debian.org/debian-security|${DEBIAN_BOOTSTRAP_MIRROR}/debian-security|g" \
+          -e "s|https://deb.debian.org/debian-security|${DEBIAN_BOOTSTRAP_MIRROR}/debian-security|g" \
+          -e "s|http://security.debian.org/debian-security|${DEBIAN_BOOTSTRAP_MIRROR}/debian-security|g" \
+          -e "s|https://security.debian.org/debian-security|${DEBIAN_BOOTSTRAP_MIRROR}/debian-security|g" \
+          -e "s|http://deb.debian.org/debian|${DEBIAN_BOOTSTRAP_MIRROR}/debian|g" \
+          -e "s|https://deb.debian.org/debian|${DEBIAN_BOOTSTRAP_MIRROR}/debian|g" \
           "$source_file"; \
       fi; \
     done \
   && apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+      if [ -f "$source_file" ]; then \
+        sed -i "s|${DEBIAN_BOOTSTRAP_MIRROR}|${DEBIAN_MIRROR}|g" "$source_file"; \
+      fi; \
+    done \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv \
   && python3 -m venv /opt/pandadata-venv \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 nodejs \
