@@ -25,6 +25,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
       - name: Install deployment tools
         shell: bash
         run: |
@@ -66,7 +69,24 @@ jobs:
             echo "DEPLOY_PATH=$DEPLOY_PATH"
           } >> "$GITHUB_ENV"
 
-      - name: Upload Doppler CLI
+      - name: Package source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_ARCHIVE="$RUNNER_TEMP/money-whisperer-source.tgz"
+          tar \
+            --exclude='./.git' \
+            --exclude='./node_modules' \
+            --exclude='./.next' \
+            --exclude='./.next-e2e' \
+            --exclude='./.next-visual' \
+            --exclude='./coverage' \
+            --exclude='./playwright-report' \
+            --exclude='./test-results' \
+            -czf "$SOURCE_ARCHIVE" .
+          echo "SOURCE_ARCHIVE=$SOURCE_ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload deployment assets
         shell: bash
         run: |
           set -euo pipefail
@@ -74,7 +94,8 @@ jobs:
           sshpass -e scp -P "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
             "$(command -v doppler)" \
-            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/doppler"
+            "$SOURCE_ARCHIVE" \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
 
       - name: Prepare server
         shell: bash
@@ -171,8 +192,6 @@ jobs:
 
           : "${DOPPLER_TOKEN:?}"
           : "${DEPLOY_PATH:?}"
-          : "${DEPLOY_BRANCH:?}"
-          : "${GITHUB_REPOSITORY:?}"
           : "${GITHUB_SHA:?}"
           : "${DOPPLER_PROJECT:?}"
           : "${DOPPLER_CONFIG:?}"
@@ -185,32 +204,24 @@ jobs:
             SUDO="sudo"
           fi
 
-          echo "::group::Update repository"
-          if [ -e "$DEPLOY_PATH" ] && [ ! -d "$DEPLOY_PATH/.git" ]; then
-            echo "$DEPLOY_PATH exists but is not a Git checkout. Move it aside or choose another DEPLOY_PATH." >&2
-            exit 1
-          fi
-
-          if [ ! -d "$DEPLOY_PATH/.git" ]; then
-            $SUDO mkdir -p "$(dirname "$DEPLOY_PATH")"
-            $SUDO git clone --branch "$DEPLOY_BRANCH" "https://github.com/$GITHUB_REPOSITORY.git" "$DEPLOY_PATH"
-          fi
-
-          cd "$DEPLOY_PATH"
-          $SUDO git fetch origin "$DEPLOY_BRANCH"
-          $SUDO git checkout "$DEPLOY_BRANCH"
-          $SUDO git reset --hard "$GITHUB_SHA"
+          echo "::group::Unpack release"
+          RELEASE_DIR="$DEPLOY_PATH/releases/$GITHUB_SHA"
+          $SUDO rm -rf "$RELEASE_DIR"
+          $SUDO mkdir -p "$RELEASE_DIR"
+          $SUDO tar -xzf /tmp/money-whisperer-source.tgz -C "$RELEASE_DIR"
+          $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_PATH/current"
+          cd "$DEPLOY_PATH/current"
           echo "::endgroup::"
 
           echo "::group::Docker compose build and up"
           doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
-            -- docker compose up -d --build --remove-orphans
+            -- docker compose -p money-whisperer up -d --build --remove-orphans
           echo "::endgroup::"
 
           echo "::group::Deployment status"
           $SUDO docker image prune -f
-          $SUDO docker compose ps
+          $SUDO docker compose -p money-whisperer ps
           echo "::endgroup::"
           REMOTE
