@@ -1,0 +1,9 @@
+Task 17 - Deterministic simulation engine
+
+Implementation:
+- Pure executeSimulation stub preserves parent cash and holdings.
+- Derives total market value and holding weights from supplied values only.
+- Performs no database writes and cannot update real holdings.
+
+Verification:
+- Focused test executes identical inputs twice and asserts identical results.

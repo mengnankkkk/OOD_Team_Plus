@@ -1,0 +1,21 @@
+Task 19: Static Asset Refresh API
+Date: 2026-07-24
+
+Implemented:
+- POST /api/v1/portfolio-analysis/refresh
+- Requires a valid Idempotency-Key header.
+- Validates portfolioId, forceRefresh, and conversationId with Zod.
+- Returns 202 with a queued PORTFOLIO_REFRESH analysis reference.
+- Performs no database, snapshot, or alert operations.
+
+Verification:
+- pnpm typecheck: PASS (exit 0)
+- pnpm lint: PASS (exit 0)
+- pnpm test: PASS (exit 0)
+- Vitest: 19 files passed, 118 tests passed
+- Route unit tests: 3 passed
+
+LSP diagnostics:
+- Attempted twice for route.ts and route.test.ts.
+- The configured TypeScript LSP could not start on Windows (exit code -4058; active clients: 0).
+- pnpm typecheck (tsc --noEmit) passed with no TypeScript errors.

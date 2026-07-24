@@ -1,0 +1,11 @@
+Task 25: Generated-artifact version control API
+
+Implemented:
+- GET and preview GET return the artifact-not-found stub.
+- PATCH requires If-Match before the versioned edit path.
+- DELETE requires If-Match before the soft-delete path.
+
+Verification:
+- pnpm test "src/app/api/v1/generated-artifacts/[id]/route.test.ts"
+- Result: 1 test file passed, 5 tests passed.
+- LSP diagnostics attempted; local TypeScript LSP exited with code -4058.
