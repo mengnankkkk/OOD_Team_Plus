@@ -1,4 +1,5 @@
 import { Agent } from "@mastra/core/agent";
+import type { ReadableStream as NodeReadableStream } from "stream/web";
 import { z } from "zod";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
@@ -119,7 +120,7 @@ export async function runChiefAdvisor(input: {
   return { decision: AdvisorDecisionSchema.parse(decisionObject), findings, delegatedAgents: [...delegated] };
 }
 
-async function consumeTextStream(stream: ReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
+async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
   const reader = stream.getReader();
   try {
     while (true) {
@@ -132,7 +133,7 @@ async function consumeTextStream(stream: ReadableStream<string>, onChunk: (text:
   }
 }
 
-async function consumeObjectStream<T extends object>(stream: ReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
+async function consumeObjectStream<T extends object>(stream: NodeReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
   const reader = stream.getReader();
   try {
     while (true) {
