@@ -37,6 +37,22 @@ export function domainFrom(row: Row) {
   };
 }
 
+export function datasourceFrom(row: Row) {
+  return {
+    id: text(row, "id") ?? "",
+    datasourceKey: text(row, "datasource_key") ?? "",
+    name: text(row, "name") ?? "",
+    description: text(row, "description"),
+    connectionType: text(row, "connection_type") ?? "sqlite",
+    schemaName: text(row, "schema_name"),
+    isVisible: bool(row, "is_visible"),
+    syncStatus: text(row, "sync_status") ?? "active",
+    lastSyncedAt: text(row, "last_synced_at"),
+    createdAt: text(row, "created_at") ?? "",
+    updatedAt: text(row, "updated_at") ?? "",
+  };
+}
+
 export function tableFrom(row: Row) {
   return {
     id: text(row, "id") ?? "",

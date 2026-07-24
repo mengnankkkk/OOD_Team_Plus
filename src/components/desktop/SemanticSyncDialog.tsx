@@ -9,8 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { reloadSemanticLayer, useDomains } from "@/lib/semanticStore";
-import { listSemanticDatasources, syncSemanticLayer, type SemanticDatasource } from "@/services/semanticService";
-import type { SyncCounter } from "@/types/app/semantic";
+import { listSemanticDatasources, syncSemanticLayer } from "@/services/semanticService";
+import type { SemanticDatasource, SyncCounter } from "@/types/app/semantic";
 
 interface Props {
   open: boolean;

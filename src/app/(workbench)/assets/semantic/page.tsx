@@ -1,5 +1,5 @@
 "use client";
 
-import SemanticDomainsPage from "@/features/workbench/pages/SemanticDomainsPage";
+import SemanticDatasourcesPage from "@/features/workbench/pages/SemanticDatasourcesPage";
 import { SemanticPageState } from "@/components/desktop/SemanticPageState";
-export default function SemanticRoute() { return <SemanticPageState><SemanticDomainsPage /></SemanticPageState>; }
+export default function SemanticRoute() { return <SemanticPageState><SemanticDatasourcesPage /></SemanticPageState>; }

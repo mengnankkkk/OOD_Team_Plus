@@ -41,6 +41,7 @@ import {
 import { nextId, nowIso } from "@/lib/semanticIds";
 
 const SUB_NAV = [
+  { path: "/assets/semantic/datasources", label: "数据源管理" },
   { path: "/assets/semantic/domains", label: "领域管理" },
   { path: "/assets/semantic/tables", label: "表管理" },
   { path: "/assets/semantic/foreign-keys", label: "外键管理" },
