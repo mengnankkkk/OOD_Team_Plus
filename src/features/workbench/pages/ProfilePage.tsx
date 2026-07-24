@@ -42,7 +42,7 @@ const ProfilePage = () => {
     setMonthlyExpense(profile.monthlyExpense !== null ? String(profile.monthlyExpense) : "");
     setLiabilities(profile.liabilities !== null ? String(profile.liabilities) : "");
     setEmergencyMonths(String(profile.emergencyTargetMonths ?? 6));
-    setRiskLevel(profile.riskLevel);
+    setRiskLevel(profile.riskLevel ?? "R3");
     setNotes(profile.behaviorNotes ?? "");
   }, [profile]);
 

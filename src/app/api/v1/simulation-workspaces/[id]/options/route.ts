@@ -16,13 +16,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
   if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const result = await generateOptions(userId, id, parsed.data.objective);
-    const payload = { data: { batchId: result.batchId, status: "COMPLETED", items: result.candidates, priceManifest: result.priceManifest, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
+    const result = generateOptions(userId, id, parsed.data.objective);
+    const payload = { data: { batchId: result.batchId, status: "QUEUED", items: [], priceManifest: null, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "QUEUED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
     await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
     return NextResponse.json(payload, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Workspace not found";
-    return NextResponse.json({ error: { code: message === "WORKSPACE_ARCHIVED" ? message : "RESOURCE_NOT_FOUND", message } }, { status: message === "WORKSPACE_ARCHIVED" ? 409 : 404 });
+    const status = message === "WORKSPACE_ARCHIVED" || message === "OPTIONS_ALREADY_RUNNING" ? 409 : 404;
+    return NextResponse.json({ error: { code: status === 409 ? message : "RESOURCE_NOT_FOUND", message } }, { status });
   }
 }
 
@@ -30,5 +31,5 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const result = listOptions(getRequestContext(req).userId, id, req.nextUrl.searchParams.get("batchId") ?? undefined);
   if (!result) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Workspace not found" } }, { status: 404 });
-  return NextResponse.json({ data: { batchId: result.batch?.id ?? null, status: result.batch ? String(result.batch.status).toUpperCase() : "EMPTY", items: result.items }, meta: meta() });
+  return NextResponse.json({ data: { batchId: result.batch?.id ?? null, status: result.batch ? String(result.batch.status).toUpperCase() : "EMPTY", items: result.items, provider: result.provider, analysis: result.analysisId ? { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: result.batch ? String(result.batch.status).toUpperCase() : "EMPTY", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } : null, priceManifest: result.batch?.price_manifest_json ? JSON.parse(String(result.batch.price_manifest_json)) : null }, meta: meta() });
 }

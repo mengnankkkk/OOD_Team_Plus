@@ -4,6 +4,8 @@ import Decimal from "decimal.js";
 
 import { calculatePortfolioMetrics, runPortfolioStressTests, STRESS_PARAMETER_VERSION } from "@/server/extensions/analysis/financial-engine";
 import { getDatabase, parseJson } from "@/server/http/context";
+import type { BranchScenarioOption, BranchScenarioPlan } from "./scenario-contracts";
+import { runBranchScenarioAgent } from "./scenario-agent";
 
 export interface SimulationCandidate {
   sequenceNo: number;
@@ -29,6 +31,11 @@ export interface SimulationCandidate {
   };
 }
 
+export type CandidateGenerationHooks = {
+  onAgentStarted?: (role: string, label: string) => void;
+  onAgentCompleted?: (role: string, summary: string) => void;
+};
+
 export interface PriceManifest {
   prices: Record<string, string>;
   assets?: Record<string, { assetType: string; sector: string | null }>;
@@ -53,7 +60,8 @@ export async function generateCandidates(
   portfolioSnapshotId: string,
   activeBranchId?: string,
   userId?: string,
-): Promise<{ candidates: SimulationCandidate[]; priceManifest: PriceManifest }> {
+  hooks: CandidateGenerationHooks = {},
+): Promise<{ candidates: SimulationCandidate[]; priceManifest: PriceManifest; provider: BranchScenarioPlan["provider"]; delegatedAgents: string[] }> {
   const db = getDatabase();
   const rows = (activeBranchId
     ? db.prepare(`SELECT h.instrument_id,h.quantity_decimal,h.price_decimal,h.market_value_decimal,i.symbol,i.name,i.asset_type,i.sector
@@ -110,8 +118,107 @@ export async function generateCandidates(
     { label: "B · 风险预算再平衡", description: `按最大回撤预算把最大持仓目标权重约束到 ${percent(balancedCap)}`, strategy: "BALANCED" as const, trades: balancedTrades, intent: target ? "降低最大持仓并用有真实冻结价格的分散标的承接" : "降低最大持仓并保留为现金" },
     { label: "C · 压力约束降险", description: `按集中持仓与流动性联合压力把最大持仓目标权重约束到 ${percent(defensiveCap)}`, strategy: "DEFENSIVE" as const, trades: defensiveTrades, intent: target ? "在更严格压力预算下再平衡" : "在更严格压力预算下增加现金缓冲" },
   ];
-  const candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
-  return { candidates, priceManifest };
+  let provider: BranchScenarioPlan["provider"] = "DETERMINISTIC_FALLBACK";
+  let delegatedAgents = ["DETERMINISTIC_FALLBACK"];
+  let candidates: SimulationCandidate[];
+  const scenario = await runBranchScenarioAgent({
+    objective,
+    profile: profile ? { ...profile } : null,
+    snapshot: { ...parentSnapshot, portfolioSnapshotId },
+    holdings: sortedRows.map((row) => ({ ...row })),
+    instruments,
+    research: [],
+    riskConstraints: { maxDrawdown: riskBudget.value.toString(), assumption: riskBudget.assumption },
+  }, hooks);
+  provider = scenario.provider;
+  delegatedAgents = scenario.delegatedAgents;
+
+  if (provider === "CHIEF_ADVISOR") {
+    try {
+      const allowedInstrumentIds = new Set(Object.keys(priceManifest.prices));
+      candidates = scenario.plan.options.map((option, sequenceNo) => normalizeScenarioOption(option, {
+        objective,
+        parentCash: cash,
+        holdings: sortedRows.map((row) => ({
+          instrumentId: row.instrument_id,
+          quantity: row.quantity_decimal,
+          marketValue: row.market_value_decimal,
+        })),
+        allowedInstrumentIds,
+        priceManifest,
+        sequenceNo,
+        riskAssumption: riskBudget.assumption,
+      }));
+    } catch (error) {
+      hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", `模型候选未通过交易校验，已降级：${safeMessage(error)}`);
+      provider = "DETERMINISTIC_FALLBACK";
+      delegatedAgents = ["DETERMINISTIC_FALLBACK"];
+      candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
+    }
+  } else {
+    candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
+  }
+  return { candidates, priceManifest, provider, delegatedAgents };
+}
+
+export function normalizeScenarioOption(
+  option: BranchScenarioOption,
+  context: {
+    objective: string;
+    parentCash: string;
+    holdings: Array<{ instrumentId: string; quantity: string; marketValue: string }>;
+    allowedInstrumentIds: Set<string>;
+    priceManifest: PriceManifest;
+    sequenceNo?: number;
+    riskAssumption?: string;
+  },
+): SimulationCandidate {
+  const quantities = new Map(context.holdings.map((holding) => [holding.instrumentId, decimal(holding.quantity)]));
+  let cash = nonNegative(context.parentCash);
+  const trades = option.trades.map((trade) => {
+    if (!context.allowedInstrumentIds.has(trade.instrumentId) || !context.priceManifest.prices[trade.instrumentId]) {
+      throw new Error(`SCENARIO_UNKNOWN_INSTRUMENT:${trade.instrumentId}`);
+    }
+    const quantity = positiveDecimal(trade.quantity, `scenarioQuantity:${trade.instrumentId}`);
+    const price = decimal(context.priceManifest.prices[trade.instrumentId]);
+    const notional = quantity.mul(price);
+    const fee = notional.mul(decimal(context.priceManifest.feeRate ?? "0.001"));
+    const current = quantities.get(trade.instrumentId) ?? new Decimal(0);
+    if (trade.action === "SELL") {
+      if (current.lt(quantity)) throw new Error(`SCENARIO_INSUFFICIENT_HOLDING:${trade.instrumentId}`);
+      quantities.set(trade.instrumentId, current.minus(quantity));
+      cash = cash.plus(notional.minus(fee));
+    } else {
+      if (cash.lt(notional.plus(fee))) throw new Error(`SCENARIO_INSUFFICIENT_CASH:${trade.instrumentId}`);
+      quantities.set(trade.instrumentId, current.plus(quantity));
+      cash = cash.minus(notional.plus(fee));
+    }
+    return { instrumentId: trade.instrumentId, action: trade.action, quantity: clean(quantity), price: clean(price) };
+  });
+  const rows: HoldingRow[] = context.holdings.map((holding) => ({
+    instrument_id: holding.instrumentId,
+    quantity_decimal: holding.quantity,
+    price_decimal: context.priceManifest.prices[holding.instrumentId],
+    market_value_decimal: holding.marketValue,
+    asset_type: context.priceManifest.assets?.[holding.instrumentId]?.assetType,
+    sector: context.priceManifest.assets?.[holding.instrumentId]?.sector,
+  }));
+  return buildCandidate(
+    context.sequenceNo ?? 0,
+    {
+      label: option.label,
+      description: option.description,
+      strategy: option.strategy,
+      trades,
+      intent: option.description,
+      evidence: option,
+    },
+    context.objective,
+    context.parentCash,
+    rows,
+    context.priceManifest,
+    context.riskAssumption ?? "风险预算由分支模拟上下文提供",
+  );
 }
 
 export function hashPriceManifest(manifest: Omit<PriceManifest, "sha256"> | PriceManifest): string {
@@ -126,7 +233,14 @@ export function hashPriceManifest(manifest: Omit<PriceManifest, "sha256"> | Pric
 
 function buildCandidate(
   sequenceNo: number,
-  input: { label: string; description: string; strategy: SimulationCandidate["analysis"]["strategy"]; trades: SimulationCandidate["trades"]; intent: string },
+  input: {
+    label: string;
+    description: string;
+    strategy: SimulationCandidate["analysis"]["strategy"];
+    trades: SimulationCandidate["trades"];
+    intent: string;
+    evidence?: Pick<BranchScenarioOption, "rationale" | "counterEvidence" | "risks" | "assumptions" | "invalidationConditions">;
+  },
   objective: string,
   parentCash: string,
   rows: HoldingRow[],
@@ -159,14 +273,20 @@ function buildCandidate(
         maxDrawdown: worst.toNumber(),
         concentrationHHI: decimal(portfolio.concentrationHhi).toNumber(),
       },
-      rationale: [
+      rationale: input.evidence?.rationale ?? [
         input.trades.length ? `交易数量由风险预算方程和冻结价格计算，模拟后 HHI 为 ${decimal(portfolio.concentrationHhi).toDecimalPlaces(4).toString()}` : "不产生交易费用，完整保留父分支资产",
         `所有候选围绕目标“${objective}”使用同一价格清单与压力参数比较`,
         `熊市压力结果为 ${percent(decimal(bear.changeRatio))}，不是收益预测`,
       ],
-      counterEvidence: [input.trades.length ? "再平衡后原持仓若继续上涨，组合可能少获得部分收益" : "保持不动会延续当前集中度与压力损失"],
-      risks: ["冻结价格不代表未来成交价", "压力场景不包含发生概率", "缺少历史序列时不展示年化波动"],
-      assumptions: [riskAssumption, `交易费率 ${percent(decimal(manifest.feeRate!))}`, `压力参数 ${STRESS_PARAMETER_VERSION}`, "不使用杠杆、卖空或虚构价格"],
+      counterEvidence: input.evidence?.counterEvidence ?? [input.trades.length ? "再平衡后原持仓若继续上涨，组合可能少获得部分收益" : "保持不动会延续当前集中度与压力损失"],
+      risks: input.evidence?.risks ?? ["冻结价格不代表未来成交价", "压力场景不包含发生概率", "缺少历史序列时不展示年化波动"],
+      assumptions: [
+        ...(input.evidence?.assumptions ?? []),
+        riskAssumption,
+        `交易费率 ${percent(decimal(manifest.feeRate!))}`,
+        `压力参数 ${STRESS_PARAMETER_VERSION}`,
+        "不使用杠杆、卖空或虚构价格",
+      ].slice(0, 8),
       stressTests,
     },
   };
@@ -262,6 +382,12 @@ function decimalOrNull(value: unknown): Decimal | null {
   try { return decimal(value); } catch { return null; }
 }
 
+function positiveDecimal(value: unknown, field: string): Decimal {
+  const result = decimal(value);
+  if (!result.gt(0)) throw new Error(`INVALID_POSITIVE_DECIMAL:${field}`);
+  return result;
+}
+
 function nonNegative(value: unknown): Decimal {
   const result = decimal(value);
   if (result.isNegative()) throw new Error("NEGATIVE_SIMULATION_ASSET");
@@ -271,3 +397,4 @@ function nonNegative(value: unknown): Decimal {
 function sum(values: Decimal[]): Decimal { return values.reduce((total, value) => total.plus(value), new Decimal(0)); }
 function clean(value: Decimal): string { return value.toDecimalPlaces(12).toFixed().replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1"); }
 function percent(value: Decimal): string { return `${value.mul(100).toDecimalPlaces(2).toString()}%`; }
+function safeMessage(error: unknown): string { return error instanceof Error ? error.message.slice(0, 180) : "SCENARIO_VALIDATION_FAILED"; }

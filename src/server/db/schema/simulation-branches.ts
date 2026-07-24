@@ -143,6 +143,7 @@ export const simulationAssetSnapshotItems = sqliteTable(
     snapshotId: text("snapshot_id").notNull(),
     instrumentId: text("instrument_id").notNull(),
     quantityDecimal: text("quantity_decimal").notNull(),
+    costDecimal: text("cost_decimal").notNull().default("0"),
     priceDecimal: text("price_decimal").notNull(),
     marketValueDecimal: text("market_value_decimal").notNull(),
     weightBps: integer("weight_bps").notNull(),

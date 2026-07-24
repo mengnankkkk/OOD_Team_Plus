@@ -9,7 +9,8 @@ export interface UserProfile {
   monthlyExpense: number | null;
   liabilities: number | null;
   emergencyTargetMonths: number;
-  riskLevel: RiskLevel;
+  riskLevel: RiskLevel | null;
+  hasGoal?: boolean;
   riskSubjective: string | null;
   riskCapacity: string | null;
   behaviorNotes: string | null;
