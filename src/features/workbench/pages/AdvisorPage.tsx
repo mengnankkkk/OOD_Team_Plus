@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import NextImage from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import {
   deleteAdvisorSession,
@@ -14,7 +15,7 @@ import {
   Check,
   ChevronDown,
   FileText,
-  Image,
+  Image as ImageIcon,
   MoreHorizontal,
   MessageSquarePlus,
   Mic,
@@ -66,7 +67,7 @@ const ACTION_TOOLS = [
   },
   {
     label: "图像生成",
-    icon: Image,
+    icon: ImageIcon,
     prompt: "请帮我生成一张图像，画面要求是：",
   },
   {
@@ -82,6 +83,13 @@ const ACTION_TOOLS = [
 ];
 
 type AdvisorMode = "normal" | "debate";
+type DebateRole = "user" | "bull" | "bear";
+type DebateMessage = {
+  id: string;
+  turnId: number;
+  role: DebateRole;
+  content: string;
+};
 
 const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
   { value: "normal", label: "普通模式" },
@@ -98,6 +106,10 @@ const AdvisorPage = () => {
   const [sending, setSending] = useState(false);
   const [outputMode] = useState<ConversationOutputMode>("SQL_ONLY");
   const [advisorMode, setAdvisorMode] = useState<AdvisorMode>("normal");
+  const [modeSwitchLoading, setModeSwitchLoading] = useState(false);
+  const [debateDraft, setDebateDraft] = useState("");
+  const [debateMessages, setDebateMessages] = useState<DebateMessage[]>([]);
+  const [debateResponding, setDebateResponding] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -112,6 +124,8 @@ const AdvisorPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
   const appliedPromptRef = useRef<string | null>(null);
+  const modeSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debateReplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const visibleSessions = useMemo(() => {
     const keyword = sessionSearch.trim().toLowerCase();
@@ -131,6 +145,16 @@ const AdvisorPage = () => {
       return new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime();
     });
   }, [pinnedSessionIds, visibleSessions]);
+
+  const currentDebateTurnId = debateMessages.at(-1)?.turnId ?? null;
+  const debateHistoryMessages = useMemo(() => {
+    const keyword = sessionSearch.trim().toLowerCase();
+    return debateMessages.filter((message) => {
+      if (message.turnId === currentDebateTurnId) return false;
+      if (!keyword) return true;
+      return `${getDebateRoleLabel(message.role)} ${message.content}`.toLowerCase().includes(keyword);
+    });
+  }, [currentDebateTurnId, debateMessages, sessionSearch]);
 
   const refreshSessions = useCallback(async () => {
     if (!user) return;
@@ -213,6 +237,11 @@ const AdvisorPage = () => {
       });
     }
   }, [messages, sending]);
+
+  useEffect(() => () => {
+    if (modeSwitchTimerRef.current) clearTimeout(modeSwitchTimerRef.current);
+    if (debateReplyTimerRef.current) clearTimeout(debateReplyTimerRef.current);
+  }, []);
 
   const openSession = async (sessionId: string) => {
     if (sending) return;
@@ -399,10 +428,57 @@ const AdvisorPage = () => {
 
   const currentAdvisorMode = ADVISOR_MODES.find((mode) => mode.value === advisorMode) ?? ADVISOR_MODES[0];
 
+  const selectAdvisorMode = (mode: AdvisorMode) => {
+    setToolboxOpen(false);
+    if (mode === "debate" && advisorMode !== "debate") {
+      if (modeSwitchTimerRef.current) clearTimeout(modeSwitchTimerRef.current);
+      setModeSwitchLoading(true);
+      modeSwitchTimerRef.current = setTimeout(() => {
+        setAdvisorMode("debate");
+        setModeSwitchLoading(false);
+        modeSwitchTimerRef.current = null;
+      }, 2000);
+      return;
+    }
+    setAdvisorMode(mode);
+  };
+
+  const sendDebateMessage = () => {
+    const text = debateDraft.trim();
+    if (!text || debateResponding) return;
+    const turnId = Date.now();
+    setDebateDraft("");
+    setDebateResponding(true);
+    setDebateMessages((items) => [
+      ...items,
+      { id: `debate-user-${turnId}`, turnId, role: "user", content: text },
+    ]);
+    if (debateReplyTimerRef.current) clearTimeout(debateReplyTimerRef.current);
+    debateReplyTimerRef.current = setTimeout(() => {
+      setDebateMessages((items) => [
+        ...items,
+        { id: `debate-bull-${turnId}`, turnId, role: "bull", content: buildDebateReply("bull", text) },
+        { id: `debate-bear-${turnId}`, turnId, role: "bear", content: buildDebateReply("bear", text) },
+      ]);
+      setDebateResponding(false);
+      debateReplyTimerRef.current = null;
+    }, 650);
+  };
+
   const emptyChatState = messages.length === 0 && !loadingHistory;
 
   return (
-    <div className="flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
+    <div className="relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
+      {modeSwitchLoading ? (
+        <div className="advisor-debate-loading absolute inset-0 z-50 grid place-items-center bg-white/95 backdrop-blur-sm">
+          <div className="flex flex-col items-center">
+            <BoxesLoader />
+            <div className="mt-24 text-center">
+              <p className="text-lg font-semibold text-neutral-950">正在准备圆桌会议</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <aside className="hidden w-[302px] shrink-0 flex-col border-r border-neutral-200 bg-[#f7f7f7] text-neutral-950 md:flex">
         <div className="flex items-center justify-between px-3 pb-4 pt-3">
           <button
@@ -419,7 +495,7 @@ const AdvisorPage = () => {
             <input
               value={sessionSearch}
               onChange={(event) => setSessionSearch(event.target.value)}
-              placeholder="搜索会话"
+              placeholder={advisorMode === "debate" ? "搜索历史消息" : "搜索会话"}
               className="min-w-0 flex-1 bg-transparent text-[15px] text-neutral-950 outline-none placeholder:text-neutral-500"
             />
             {sessionSearch ? (
@@ -438,7 +514,23 @@ const AdvisorPage = () => {
           最近
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3">
-          {loadingSessions ? (
+          {advisorMode === "debate" ? (
+            debateHistoryMessages.length ? (
+              <ul className="space-y-2">
+                {debateHistoryMessages.map((message, index) => (
+                  <li key={message.id} className="debate-history-item">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="debate-history-role">{getDebateRoleLabel(message.role)}</span>
+                      <span className="debate-history-order">#{index + 1}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-3 text-sm leading-6 text-neutral-700">{message.content}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="px-3 py-4 text-sm leading-6 text-neutral-500">还没有历史消息。上一轮及更早的圆桌消息会按发送顺序记录在这里。</p>
+            )
+          ) : loadingSessions ? (
             <p className="px-3 py-2 text-sm text-neutral-500">加载中…</p>
           ) : sessions.length === 0 ? (
             <p className="px-3 py-4 text-sm leading-6 text-neutral-500">还没有历史会话。开始第一条消息，就会记入档案。</p>
@@ -534,7 +626,17 @@ const AdvisorPage = () => {
           </div>
         </header>
 
-        <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
+        {advisorMode === "debate" ? (
+          <DebateRoundtable
+            draft={debateDraft}
+            messages={debateMessages}
+            responding={debateResponding}
+            onDraftChange={setDebateDraft}
+            onSubmit={sendDebateMessage}
+          />
+        ) : (
+          <>
+            <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
           {loadingHistory ? (
             <div className="grid min-h-[360px] place-items-center text-sm text-muted-foreground md:h-full md:min-h-0">加载对话…</div>
           ) : emptyChatState ? (
@@ -616,7 +718,7 @@ const AdvisorPage = () => {
           )}
         </div>
 
-        <div className="px-3 sm:px-6">
+            <div className="px-3 sm:px-6">
           <div ref={composerRef} className="mx-auto mb-16 max-w-[1100px] md:mb-6">
             <div
               className="relative rounded-[28px] border bg-white p-3 shadow-[0_18px_48px_rgba(37,99,235,0.12)] transition-all hover:border-transparent hover:shadow-[0_18px_54px_rgba(37,99,235,0.22)]"
@@ -739,8 +841,8 @@ const AdvisorPage = () => {
                       {ADVISOR_MODES.map((mode) => (
                         <DropdownMenuItem
                           key={mode.value}
-                          onSelect={() => setAdvisorMode(mode.value)}
-                          className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm focus:bg-neutral-100"
+                          onSelect={() => selectAdvisorMode(mode.value)}
+                          className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm text-neutral-950 focus:bg-neutral-100 focus:text-neutral-950"
                         >
                           <span>{mode.label}</span>
                           {advisorMode === mode.value ? <Check className="size-4 text-blue-600" /> : null}
@@ -791,10 +893,126 @@ const AdvisorPage = () => {
               </div>
             </div>
           </div>
-        </div>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );
 };
+
+function buildDebateReply(role: Exclude<DebateRole, "user">, text: string): string {
+  const topic = text.length > 28 ? `${text.slice(0, 28)}...` : text;
+  if (role === "bull") return `看多观点：围绕“${topic}”，先找增长、现金流和可执行路径，若目标明确可以分步推进。`;
+  return `看空观点：围绕“${topic}”，先检查流动性、回撤和信息缺口，避免在证据不足时过早行动。`;
+}
+
+function getDebateRoleLabel(role: DebateRole): string {
+  if (role === "user") return "用户形象";
+  if (role === "bull") return "看多agent";
+  return "看空agent";
+}
+
+function DebateRoundtable({
+  draft,
+  messages,
+  responding,
+  onDraftChange,
+  onSubmit,
+}: {
+  draft: string;
+  messages: DebateMessage[];
+  responding: boolean;
+  onDraftChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const currentTurnId = messages.at(-1)?.turnId ?? null;
+  const currentTurnMessages = currentTurnId === null ? [] : messages.filter((message) => message.turnId === currentTurnId);
+  const userMessage = currentTurnMessages.find((message) => message.role === "user") ?? null;
+  const bullMessage = currentTurnMessages.find((message) => message.role === "bull") ?? null;
+  const bearMessage = currentTurnMessages.find((message) => message.role === "bear") ?? null;
+
+  return (
+    <div className="debate-room flex min-h-0 flex-1 flex-col bg-white">
+      <div className="debate-stage relative min-h-[520px] flex-1 overflow-hidden">
+        <NextImage
+          className="roundtable-scene"
+          src="/debate-roundtable.jpg"
+          alt="圆桌会议"
+          width={1329}
+          height={1183}
+          priority
+        />
+        {userMessage ? <DebateBubble role="user" message={userMessage.content} /> : null}
+        {bullMessage ? <DebateBubble role="bull" message={bullMessage.content} /> : null}
+        {bearMessage ? <DebateBubble role="bear" message={bearMessage.content} /> : null}
+        {responding ? (
+          <>
+            <DebateBubble role="bull" message="看多agent 正在组织观点..." muted />
+            <DebateBubble role="bear" message="看空agent 正在准备反方逻辑..." muted />
+          </>
+        ) : null}
+      </div>
+      <div className="debate-composer border-t border-neutral-200 bg-white px-4 py-4">
+        <div className="mx-auto flex w-full max-w-none items-center gap-3 rounded-full border border-neutral-300 bg-white px-4 py-2 shadow-sm">
+          <input
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onSubmit();
+              }
+            }}
+            placeholder="输入要讨论的问题..."
+            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-neutral-950 outline-none placeholder:text-neutral-400"
+          />
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={!draft.trim() || responding}
+            className="grid size-10 shrink-0 place-items-center rounded-full bg-neutral-950 text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-35"
+            aria-label="发送圆桌消息"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DebateBubble({
+  role,
+  message,
+  muted = false,
+}: {
+  role: DebateRole;
+  message: string;
+  muted?: boolean;
+}) {
+  const label = getDebateRoleLabel(role);
+  return (
+    <div className={cn("debate-bubble", `debate-bubble-${role}`, muted && "debate-bubble-muted")}>
+      <strong>{label}</strong>
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function BoxesLoader() {
+  return (
+    <div className="boxes" aria-hidden="true">
+      {Array.from({ length: 4 }).map((_, boxIndex) => (
+        <div className="box" key={boxIndex}>
+          <div />
+          <div />
+          <div />
+          <div />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default AdvisorPage;
