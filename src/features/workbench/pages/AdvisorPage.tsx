@@ -11,6 +11,8 @@ import { toast } from "sonner";
 import {
   Archive,
   Camera,
+  Check,
+  ChevronDown,
   FileText,
   Image,
   MoreHorizontal,
@@ -78,6 +80,13 @@ const ACTION_TOOLS = [
   },
 ];
 
+type AdvisorMode = "normal" | "debate";
+
+const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
+  { value: "normal", label: "普通模式" },
+  { value: "debate", label: "辩论模式" },
+];
+
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
@@ -86,6 +95,7 @@ const AdvisorPage = () => {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [outputMode] = useState<ConversationOutputMode>("SQL_ONLY");
+  const [advisorMode, setAdvisorMode] = useState<AdvisorMode>("normal");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -374,6 +384,8 @@ const AdvisorPage = () => {
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
   };
+
+  const currentAdvisorMode = ADVISOR_MODES.find((mode) => mode.value === advisorMode) ?? ADVISOR_MODES[0];
 
   const emptyChatState = messages.length === 0 && !loadingHistory;
 
@@ -689,6 +701,41 @@ const AdvisorPage = () => {
                   }}
                 />
                 <div className="advisor-actions-strip flex min-w-0 flex-1 items-center gap-1.5">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          setToolboxOpen(false);
+                        }}
+                        className="flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-neutral-900 transition-colors hover:bg-neutral-100"
+                        aria-label="模式选择"
+                      >
+                        <Sparkles className="size-4" />
+                        <span>{currentAdvisorMode.label}</span>
+                        <ChevronDown className="size-3.5 text-neutral-500" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      side="top"
+                      sideOffset={10}
+                      className="w-[168px] rounded-2xl border-neutral-200 bg-white p-1.5 text-neutral-950 shadow-[0_18px_48px_rgba(15,23,42,0.16)]"
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
+                      {ADVISOR_MODES.map((mode) => (
+                        <DropdownMenuItem
+                          key={mode.value}
+                          onSelect={() => setAdvisorMode(mode.value)}
+                          className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm focus:bg-neutral-100"
+                        >
+                          <span>{mode.label}</span>
+                          {advisorMode === mode.value ? <Check className="size-4 text-blue-600" /> : null}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   {ACTION_TOOLS.map((tool) => {
                     const Icon = tool.icon;
                     return (
