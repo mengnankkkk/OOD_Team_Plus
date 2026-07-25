@@ -50,6 +50,22 @@ describe("callPandaData", () => {
     expect(execFile).toHaveBeenNthCalledWith(2, "python-test", expect.arrayContaining(["--no-setup"]), expect.any(Object));
   });
 
+  it("normalizes the scalar latest-trading-day response", async () => {
+    execFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true, dry_run: true }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: { type: "str", data: "20260724" } }) });
+
+    const result = await callPandaData("get_last_trade_date", {
+      exchange: "US",
+    }, { pythonPath: "python-test" });
+
+    expect(result).toMatchObject({
+      data: [{ date: "20260724" }],
+      fresh: true,
+      asOfDate: "2026-07-24",
+    });
+  });
+
   it("does not treat successful dry-run as live data", async () => {
     execFile
       .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true, dry_run: true }) })

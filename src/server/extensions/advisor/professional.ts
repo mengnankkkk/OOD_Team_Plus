@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 
 import { runChiefAdvisor, type ChiefAdvisorStreamEvent } from "@/mastra/agents/chief-advisor";
+import { callPandaData } from "@/server/extensions/pandadata/adapter";
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
@@ -22,7 +23,7 @@ export type { AgentFinding, AdvisorDecision, ProfessionalAgentRole } from "./pro
 
 type AdvisorIntent = "BUY" | "SELL" | "DIAGNOSIS" | "GENERAL";
 type PublicationStatus = "ACTIVE" | "DEGRADED" | "BLOCKED";
-type DataState = "LIVE_FRESH" | "STALE" | "UNAVAILABLE" | "NOT_REQUIRED";
+type DataState = "LIVE_FRESH" | "LATEST_TRADING_DAY" | "STALE" | "UNAVAILABLE" | "NOT_REQUIRED";
 
 type Profile = {
   risk_level?: string | null;
@@ -30,6 +31,15 @@ type Profile = {
   horizon?: string | null;
   max_drawdown_decimal?: string | null;
   preferences_json?: string | null;
+};
+
+type Goal = {
+  name: string;
+  target_amount_decimal: string;
+  target_date: string | null;
+  horizon: string;
+  priority: string;
+  asset_preference: string | null;
 };
 
 type Holding = {
@@ -91,6 +101,8 @@ export async function runProfessionalAdvisor(input: {
   db.prepare(`UPDATE agent_runs SET session_id=?,root_run_id=?,agent_type='chief_advisor',objective=?,started_at=COALESCE(started_at,?)
     WHERE id=? AND user_id=?`).run(input.sessionId, input.analysisId, input.content.slice(0, 500), now, input.analysisId, input.userId);
   const profile = db.prepare("SELECT risk_level,investment_amount_decimal,horizon,max_drawdown_decimal,preferences_json FROM user_profiles WHERE user_id=?").get(input.userId) as Profile | undefined;
+  const goals = db.prepare(`SELECT name,target_amount_decimal,target_date,horizon,priority,asset_preference
+    FROM goals WHERE user_id=? AND status='active' ORDER BY created_at DESC`).all(input.userId) as Goal[];
   const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1").get(input.userId) as Record<string, unknown> | undefined;
   const holdings = snapshot ? db.prepare(`SELECT hs.instrument_id,i.symbol,i.name,i.asset_type,i.market,i.sector,
       hs.quantity_decimal,hs.cost_decimal,hs.price_decimal,hs.market_value_decimal,hs.unrealized_pnl_decimal,hs.weight_bps
@@ -158,7 +170,7 @@ export async function runProfessionalAdvisor(input: {
     }
 
     const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding, holdings.length > 0, dailyPortfolio);
-    const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings);
+    const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings, dailyPortfolio);
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
       registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding, { emitEvents: false }));
     }
@@ -189,7 +201,7 @@ export async function runProfessionalAdvisor(input: {
     } else {
       try {
         const model = await runChiefAdvisor({
-          prompt: chiefPrompt(input.content, decisionProfile, holdings, target, research, findings, requiredRoles, semanticContext, dailyPortfolio),
+          prompt: chiefPrompt(input.content, decisionProfile, goals, holdings, snapshot, target, research, findings, requiredRoles, semanticContext, dailyPortfolio),
           requiredAgents: requiredRoles,
           fallbackFindings: findings,
           onAgentStarted: (agent, label) => {
@@ -241,7 +253,8 @@ export async function runProfessionalAdvisor(input: {
       findings,
       modelFallback,
       unresolvedConflict,
-      marketDataRequired: requiredRoles.includes("DATA_RESEARCH") && (intent === "BUY" || intent === "SELL"),
+      marketDataRequired: requiredRoles.includes("DATA_RESEARCH") && (dailyPortfolio || intent === "BUY" || intent === "SELL"),
+      latestTradingDayAllowed: dailyPortfolio,
     });
     candidate = {
       ...candidate,
@@ -477,13 +490,13 @@ async function researchInstrument(
     };
   });
   let usedDailyFallback = false;
+  let latestTradingDate: string | null = null;
   persistSseEvent({ analysisId: rootRunId, type: "tool.started", payload: { toolName: sources.map((source) => source.method), childRunId, symbolCount: sources.length } });
   try {
     let executions = await executePandaSources({ sources, agentRunId: childRunId, localRows: [], db });
     // PandaData's real-time endpoint legitimately returns no rows outside a
-    // trading session. Use the latest official daily data as an explicit
-    // stale fallback so the advisor can explain the data state instead of
-    // treating an empty response as a successful quote.
+    // trading session. Validate the daily fallback against PandaData's
+    // official exchange calendar before allowing the daily workflow to use it.
     const staleSources = sources.filter((source, index) => source.method === "get_stock_rt_daily" && executions[index]?.result.data.length === 0)
       .map((source) => ({
         ...source,
@@ -495,10 +508,14 @@ async function researchInstrument(
           end_date: end,
           fields: source.parameters.fields,
         },
-      }));
+    }));
     if (staleSources.length) {
       usedDailyFallback = true;
-      const fallbackExecutions = await executePandaSources({ sources: staleSources, agentRunId: childRunId, localRows: [], db });
+      const [fallbackExecutions, calendar] = await Promise.all([
+        executePandaSources({ sources: staleSources, agentRunId: childRunId, localRows: [], db }),
+        callPandaData("get_last_trade_date", { exchange: "SH" }).catch(() => null),
+      ]);
+      latestTradingDate = calendar?.asOfDate ?? null;
       executions = executions.map((execution, index) => {
         const fallback = staleSources.findIndex((source) => source.parameters.symbol === sources[index]?.parameters.symbol);
         return execution.result.data.length === 0 && fallback >= 0 ? fallbackExecutions[fallback] : execution;
@@ -515,7 +532,7 @@ async function researchInstrument(
       maxDrawdown: maximumDrawdown(item.points.map((point) => point.close))?.toDecimalPlaces(6).toString() ?? null,
     }));
     const correlations = pairwiseCorrelations(series);
-    const dataState = classifyResearchDataState(executions, usedDailyFallback);
+    const dataState = classifyResearchDataState(executions, usedDailyFallback, latestTradingDate);
     const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
     const quotes = executions.map((execution) => ({
       symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
@@ -534,10 +551,18 @@ async function researchInstrument(
           `数据日期：${asOfDates.at(-1) ?? "未知"}`,
           `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
         ],
-        counterEvidence: [dataState === "LIVE_FRESH" ? "历史价格不能保证未来走势" : usedDailyFallback ? "实时接口当前无行情行，已使用同一数据源最近交易日数据" : "行情数据需要刷新后再确认"],
+        counterEvidence: [
+          dataState === "LIVE_FRESH"
+            ? "历史价格不能保证未来走势"
+            : dataState === "LATEST_TRADING_DAY"
+              ? "当前为非交易时段，已使用同一数据源最近官方交易日数据；实际执行时仍需复核开盘价格"
+              : usedDailyFallback
+                ? "日线日期与官方最近交易日不一致，需要刷新后再确认"
+                : "行情数据需要刷新后再确认",
+        ],
         missingInformation: latest ? [] : ["close"],
         risks: ["短期价格和成交量可能快速变化", "财务或估值字段缺失时不会推导替代值"],
-        confidence: dataState === "LIVE_FRESH" && latest ? 0.82 : 0.4,
+        confidence: latest && (dataState === "LIVE_FRESH" || dataState === "LATEST_TRADING_DAY") ? 0.82 : 0.4,
         needsAnotherAgent: true,
         suggestedNextAgent: "PORTFOLIO_RISK",
       }),
@@ -585,19 +610,24 @@ function portfolioRiskFinding(holdings: Holding[], snapshot: Record<string, unkn
 }
 
 export function classifyResearchDataState(
-  executions: Array<Pick<PandaSourceExecution, "result">>,
+  executions: Array<Pick<PandaSourceExecution, "result" | "source">>,
   usedDailyFallback: boolean,
+  latestTradingDate: string | null = null,
 ): DataState {
   const hasRows = executions.some((execution) => execution.result.data.length > 0);
-  const fullyFreshLive = hasRows
-    && !usedDailyFallback
-    && executions.every((execution) =>
-      execution.result.liveCallSucceeded
-      && execution.result.data.length > 0
-      && execution.result.fresh
-    );
-
-  return fullyFreshLive ? "LIVE_FRESH" : hasRows ? "STALE" : "UNAVAILABLE";
+  if (!hasRows) return "UNAVAILABLE";
+  const fullyFresh = executions.every((execution) =>
+    execution.result.liveCallSucceeded
+    && execution.result.data.length > 0
+    && execution.result.fresh
+  );
+  if (!fullyFresh) return "STALE";
+  if (!usedDailyFallback) return "LIVE_FRESH";
+  const fallbackExecutions = executions.filter((execution) => execution.source.method === "get_stock_daily");
+  const latestFallback = Boolean(latestTradingDate)
+    && fallbackExecutions.length > 0
+    && fallbackExecutions.every((execution) => execution.result.asOfDate === latestTradingDate);
+  return latestFallback ? "LATEST_TRADING_DAY" : "STALE";
 }
 
 export function deterministicAdvisorSummary(input: {
@@ -650,9 +680,15 @@ function deterministicDecisionFor(input: {
       concentrationRisk,
     }),
     suitability: "MEDIUM",
-    confidence: input.research.dataState === "LIVE_FRESH" ? 0.72 : 0.4,
+    confidence: input.research.dataState === "LIVE_FRESH" || input.research.dataState === "LATEST_TRADING_DAY" ? 0.72 : 0.4,
     rationales: [input.riskFinding.conclusion, input.research.latest ? `最新市场价格 ${input.research.latest.toString()}` : "市场数据不可用时仅保留方向"],
-    counterEvidence: [input.research.dataState === "LIVE_FRESH" ? "历史行情不能保证未来走势" : "缺少新鲜真实行情，不能形成可执行建议"],
+    counterEvidence: [
+      input.research.dataState === "LIVE_FRESH"
+        ? "历史行情不能保证未来走势"
+        : input.research.dataState === "LATEST_TRADING_DAY"
+          ? "建议基于最近官方收盘数据，实际执行时需复核开盘价格"
+          : "缺少新鲜真实行情，不能形成可执行建议",
+    ],
     risks: ["市场波动可能使参考区间快速失效", "画像或资金用途变化会改变适配性"],
     portfolioImpact: input.targetHolding ? `当前标的权重为 ${new Decimal(input.targetHolding.weight_bps).div(100).toString()}%，执行后必须重算组合与压力测试` : "新增标的会改变现金、集中度和压力损失，执行前必须模拟",
     invalidationConditions: ["画像或持仓发生变化", "数据过期或数据源不可用", "投资逻辑或合规结论发生变化"],
@@ -673,9 +709,16 @@ function recommendationFinding(decision: AdvisorDecision, findings: AgentFinding
   });
 }
 
-function complianceFindingFor(criticalMissing: string[], dataState: DataState, findings: AgentFinding[]): AgentFinding {
+function complianceFindingFor(
+  criticalMissing: string[],
+  dataState: DataState,
+  findings: AgentFinding[],
+  latestTradingDayAllowed = false,
+): AgentFinding {
   const blocked = criticalMissing.length > 0;
-  const degraded = dataState === "STALE" || dataState === "UNAVAILABLE";
+  const degraded = dataState === "STALE"
+    || dataState === "UNAVAILABLE"
+    || (dataState === "LATEST_TRADING_DAY" && !latestTradingDayAllowed);
   return AgentFindingSchema.parse({
     agent: "COMPLIANCE_REVIEWER",
     conclusion: blocked ? "存在必须先确认的关键输入" : degraded ? "市场数据条件不满足，暂不能形成交易动作" : "画像、市场证据、组合影响和动作边界检查完成",
@@ -716,12 +759,15 @@ export function enforcePublicationStatus(input: {
   modelFallback: boolean;
   unresolvedConflict: boolean;
   marketDataRequired: boolean;
+  latestTradingDayAllowed?: boolean;
 }): PublicationStatus {
   if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
-  if (input.marketDataRequired && input.dataState !== "LIVE_FRESH") return "BLOCKED";
+  const currentMarketData = input.dataState === "LIVE_FRESH"
+    || (input.latestTradingDayAllowed && input.dataState === "LATEST_TRADING_DAY");
+  if (input.marketDataRequired && !currentMarketData) return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
-  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
+  const dataRequirementSatisfied = currentMarketData || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
   if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
   return "DEGRADED";
 }
@@ -1022,10 +1068,12 @@ function actionMatchesDirection(action: AdvisorDecision["action"], direction: Ad
   return ["WATCH", "HOLD", "STOP_ADDING"].includes(action);
 }
 
-function chiefPrompt(
+export function chiefPrompt(
   question: string,
   profile: Profile | undefined,
+  goals: Goal[],
   holdings: Holding[],
+  snapshot: Record<string, unknown> | undefined,
   target: Instrument | null,
   research: ResearchState,
   findings: AgentFinding[],
@@ -1033,6 +1081,8 @@ function chiefPrompt(
   semanticContext: AdvisorSemanticToolsContext,
   dailyPortfolio = false,
 ): string {
+  const cash = decimal(snapshot?.cash_decimal);
+  const totalMarketValue = decimal(snapshot?.total_market_value_decimal);
   const marketFacts = research.executions.map(({ source, result }) => ({
     method: source.method,
     requestedSymbol: source.parameters.symbol,
@@ -1048,9 +1098,29 @@ function chiefPrompt(
     `服务端当前时间：${isoNow()}；数据状态由服务端计算，禁止自行改写或臆测数据已过期`,
     `必须委派：${requiredRoles.join(", ")}`,
     `用户画像：${json(profile ?? {})}`,
-    `持仓摘要：${json(holdings.map((holding) => ({ symbol: holding.symbol, weightBps: holding.weight_bps, marketValue: holding.market_value_decimal })))}`,
+    `用户目标：${json(goals)}`,
+    `现金与组合快照：${json({
+      snapshotId: snapshot?.id ?? null,
+      asOf: snapshot?.as_of ?? null,
+      cash: cash?.toString() ?? null,
+      totalMarketValue: totalMarketValue?.toString() ?? null,
+      totalAssets: cash && totalMarketValue ? cash.plus(totalMarketValue).toString() : null,
+      dataQuality: snapshot?.data_quality ?? null,
+    })}`,
+    `持仓摘要：${json(holdings.map((holding) => ({
+      symbol: holding.symbol,
+      name: holding.name,
+      market: holding.market,
+      quantity: holding.quantity_decimal,
+      cost: holding.cost_decimal,
+      price: holding.price_decimal,
+      marketValue: holding.market_value_decimal,
+      unrealizedPnl: holding.unrealized_pnl_decimal,
+      weightBps: holding.weight_bps,
+    })))}`,
     `目标标的：${json(target)}`,
     `数据状态：${research.dataState}，数据日期：${research.asOfDate ?? "未知"}`,
+    "状态说明：LATEST_TRADING_DAY 表示行情日期已由 PandaData 官方交易日历确认，是当前非交易时段可获得的最近正式收盘数据，不得称为 STALE；执行时需复核下一交易时段价格。",
     `实时/行情数据摘要：${json(research.quotes)}`,
     `服务端历史风险指标：${json({ riskMetrics: research.riskMetrics, correlations: research.correlations })}`,
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,

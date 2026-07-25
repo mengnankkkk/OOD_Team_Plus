@@ -91,7 +91,7 @@ export async function callPandaData(
   const liveCallStartedAt = Date.now();
   try {
     const { stdout } = await execFileAsync(pythonPath, [...args, "--no-setup"], { env: runtimeEnv, timeout: timeoutMs });
-    const rows = parseRows(stdout);
+    const rows = parseRows(stdout, method);
     // An empty response is not evidence for the requested date. This matters
     // for real-time endpoints on weekends and exchange holidays.
     const asOfDate = newestDate(rows) ?? (rows.length ? dateFromParams(validated) : null);
@@ -122,9 +122,12 @@ export async function callPandaData(
   }
 }
 
-function parseRows(stdout: string): Array<Record<string, unknown>> {
+function parseRows(stdout: string, method: PandaDataMethod): Array<Record<string, unknown>> {
   const payload = JSON.parse(stdout) as { result?: { data?: unknown } };
   const data = payload.result?.data;
+  if (method === "get_last_trade_date" && (typeof data === "string" || typeof data === "number")) {
+    return [{ date: String(data) }];
+  }
   if (!Array.isArray(data)) throw new Error("PandaData returned a non-tabular payload");
   return data.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && !Array.isArray(row));
 }
@@ -146,6 +149,7 @@ function normalizeDate(value: unknown): string | null {
 
 function isFresh(asOfDate: string | null, method: PandaDataMethod): boolean {
   if (!asOfDate) return false;
+  if (method === "get_last_trade_date") return true;
   const days = /detail|fina_reports/.test(method) ? 540 : method === "get_stock_rt_daily" ? 3 : 30;
   const age = Date.now() - Date.parse(`${asOfDate}T00:00:00Z`);
   return age >= 0 && age <= days * 86_400_000;
