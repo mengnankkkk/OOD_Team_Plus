@@ -8,6 +8,7 @@ import {
 import { callPandaData } from "@/server/extensions/pandadata/adapter";
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
+import { runResearchSearch, type ResearchSearchResult } from "@/server/extensions/search/service";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 
@@ -82,6 +83,12 @@ type ResearchState = {
   quotes: Array<{ symbol: string; name: string; latest: string | null; asOfDate: string | null; method: string }>;
   riskMetrics: Array<{ symbol: string; observations: number; annualizedVolatility: string | null; maxDrawdown: string | null }>;
   correlations: Array<{ left: string; right: string; observations: number; value: string | null }>;
+  fundamentalSearch?: {
+    query: string;
+    searchId: string;
+    results: ResearchSearchResult[];
+    sourceStatuses: Array<{ adapter: string; status: string; resultCount: number; error?: { code: string; message: string; retryable: boolean } | null }>;
+  };
   study?: ResearchStudy;
 };
 
@@ -218,6 +225,10 @@ export async function runProfessionalAdvisor(input: {
     }
 
     const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot, research), { emitEvents: false }));
+    if (dailyPortfolio && (target || holdings.length)) {
+      const fundamentalSearch = await searchFundamentalAndNews(input, target, holdings);
+      research.fundamentalSearch = fundamentalSearch;
+    }
 
     const deterministicDecision = deterministicDecisionFor({
       intent,
@@ -1421,6 +1432,7 @@ export function chiefPrompt(
     "状态说明：LATEST_TRADING_DAY 表示行情日期已由 PandaData 官方交易日历确认，是当前非交易时段可获得的最近正式收盘数据，不得称为 STALE；执行时需复核下一交易时段价格。",
     `实时/行情数据摘要：${json(research.quotes)}`,
     `服务端历史风险指标：${json({ riskMetrics: research.riskMetrics, correlations: research.correlations })}`,
+    `基本面与消息面检索结果：${json(research.fundamentalSearch ?? { status: "NOT_RUN" })}`,
     `因子/策略研究结果（仅服务端确定性计算）：${json(research.study ?? null)}`,
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
@@ -1448,7 +1460,7 @@ function formatAnswer(
     ...(profileFinding?.supportEvidence ?? []).map((evidence) => translateProfileValue(evidence)),
   ].filter(Boolean);
   const marketEvidence = formatMarketEvidence(researchState);
-  const fundamentalEvidence = "本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。";
+  const fundamentalEvidence = formatFundamentalEvidence(researchState.fundamentalSearch);
   return [
     `建议状态：${status}；建议动作：${decision.action}`,
     `核心结论：${decision.summary}`,
@@ -1480,6 +1492,58 @@ function formatMarketEvidence(research: ResearchState): string[] {
     ? "本次观察使用了收盘价、历史波动和最大回撤，不包含完整的均线、估值或成交量形态判断。"
     : "";
   return [...quoteEvidence, ...riskEvidence, scope].filter(Boolean);
+}
+
+function formatFundamentalEvidence(search: ResearchState["fundamentalSearch"]): string {
+  if (!search) return "本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。";
+  if (!search.results.length) {
+    const failed = search.sourceStatuses.filter((source) => source.status === "FAILED").map((source) => source.adapter);
+    return failed.length
+      ? `已执行基本面和消息面检索，但 ${failed.join("、")} 来源暂不可用，当前未返回可用结果；本报告未据此判断。`
+      : "已执行基本面和消息面检索，但当前未返回可用结果；本报告未据此判断。";
+  }
+  const highlights = search.results.slice(0, 4).map((result) => {
+    const snippet = result.snippet.replace(/\s+/gu, " ").trim().slice(0, 180);
+    return `${result.title}${snippet ? `：${snippet}` : ""}（来源：${translateSearchAdapter(result.adapter)}）`;
+  });
+  return `已执行基本面和消息面检索，返回 ${search.results.length} 条公开信息。以下为可核对线索，不等同于已审计的财务结论：${highlights.join("；")}`;
+}
+
+function translateSearchAdapter(adapter: string): string {
+  return { WEB: "公开网页", MCP: "研究搜索服务", RSS: "资讯订阅", KNOWLEDGE_BASE: "内部知识库" }[adapter] ?? adapter;
+}
+
+async function searchFundamentalAndNews(
+  input: { userId: string; analysisId: string },
+  target: Instrument | null,
+  holdings: Holding[],
+): Promise<NonNullable<ResearchState["fundamentalSearch"]>> {
+  const instruments = target ? [target] : holdings;
+  const names = instruments.slice(0, 8).map((instrument) => `${instrument.name}（${instrument.symbol}）`);
+  const query = `${names.join("、")} 基本面 财务 业绩 公告 新闻 行业`;
+  const result = await runResearchSearch({
+    userId: input.userId,
+    query,
+    adapters: ["WEB", "MCP", "RSS"],
+    maximumResults: 5,
+    timeoutMs: 1_500,
+  });
+  persistSseEvent({
+    analysisId: input.analysisId,
+    type: "advisor.thinking",
+    payload: {
+      phase: "fundamental_news_research",
+      title: "正在检索基本面与消息面",
+      content: result.results.length ? `已返回 ${result.results.length} 条公开信息线索` : "检索完成，但当前没有可用公开信息",
+      searchId: result.searchId,
+    },
+  });
+  return {
+    query,
+    searchId: result.searchId,
+    results: result.results,
+    sourceStatuses: result.sourceStatuses,
+  };
 }
 
 function formatMarketPrice(value: string | null): string {

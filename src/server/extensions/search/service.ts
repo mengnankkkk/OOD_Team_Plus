@@ -4,18 +4,19 @@ import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 import { searchKnowledgeBase } from "./knowledge-base-adapter";
 import { searchMCP } from "./mcp-adapter";
 import { searchRSS } from "./rss-adapter";
-import { searchWeb, type SearchResult } from "./web-adapter";
+import { searchWeb, type SearchFilters, type SearchResult } from "./web-adapter";
 
 export type ResearchAdapter = "WEB" | "MCP" | "KNOWLEDGE_BASE" | "RSS";
+export type ResearchSearchResult = SearchResult & { adapter: ResearchAdapter };
 
-const searchAdapters: Record<ResearchAdapter, (query: string, filters: { limit: number }) => Promise<SearchResult[]>> = {
+const searchAdapters: Record<ResearchAdapter, (query: string, filters: SearchFilters) => Promise<SearchResult[]>> = {
   WEB: searchWeb,
   MCP: searchMCP,
   KNOWLEDGE_BASE: searchKnowledgeBase,
   RSS: searchRSS,
 };
 
-export async function runResearchSearch(input: { userId: string; query: string; adapters: ResearchAdapter[]; maximumResults: number }) {
+export async function runResearchSearch(input: { userId: string; query: string; adapters: ResearchAdapter[]; maximumResults: number; timeoutMs?: number }) {
   const searchId = createId("search");
   const analysisId = createId("analysis");
   const now = isoNow();
@@ -25,7 +26,7 @@ export async function runResearchSearch(input: { userId: string; query: string; 
   db.close();
   const collected = await Promise.all(input.adapters.map(async (adapter) => {
     try {
-      return { adapter, status: "succeeded", results: await searchAdapters[adapter](input.query, { limit: input.maximumResults }), error: null };
+      return { adapter, status: "succeeded", results: await searchAdapters[adapter](input.query, { limit: input.maximumResults, timeoutMs: input.timeoutMs }), error: null };
     } catch (error) {
       return { adapter, status: "failed", results: [] as SearchResult[], error: { code: `${adapter}_UNAVAILABLE`, message: error instanceof Error ? error.message : "Search source failed", retryable: true } };
     }
@@ -47,5 +48,17 @@ export async function runResearchSearch(input: { userId: string; query: string; 
   write.prepare("UPDATE agent_runs SET status=?,completed_at=?,result_json=? WHERE id=?").run(succeeded ? "completed" : "failed", completedAt, json({ searchId, resultCount }), analysisId);
   write.close();
   persistSseEvent({ analysisId, type: succeeded ? "agent.completed" : "agent.failed", payload: { type: "RESEARCH_SEARCH", searchId, resultCount } });
-  return { searchId, analysisId, resultCount, status: succeeded ? "COMPLETED" as const : "FAILED" as const, sourceStatuses: collected.map((group) => ({ adapter: group.adapter, status: group.status.toUpperCase(), error: group.error })) };
+  return {
+    searchId,
+    analysisId,
+    resultCount,
+    status: succeeded ? "COMPLETED" as const : "FAILED" as const,
+    results: collected.flatMap((group) => group.results.map((result) => ({ ...result, adapter: group.adapter }))),
+    sourceStatuses: collected.map((group) => ({
+      adapter: group.adapter,
+      status: group.status.toUpperCase(),
+      resultCount: group.results.length,
+      error: group.error,
+    })),
+  };
 }
