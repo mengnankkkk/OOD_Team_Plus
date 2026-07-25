@@ -1,4 +1,4 @@
-import type { SearchFilters, SearchResult } from "./web-adapter";
+import { searchAbortSignal, type SearchFilters, type SearchResult } from "./web-adapter";
 
 export async function searchMCP(query: string, filters: SearchFilters = {}): Promise<SearchResult[]> {
   const firecrawlApiKey = process.env.FIRECRAWL_API_KEY?.trim();
@@ -18,7 +18,7 @@ export async function searchMCP(query: string, filters: SearchFilters = {}): Pro
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ query, limit: filters.limit ?? 5 }),
-    signal: AbortSignal.timeout(filters.timeoutMs ?? 8_000),
+    signal: searchAbortSignal(filters),
   });
   const payload = await readJsonResponse(response, "MCP");
   return normalizeSearchResults(payload, filters.limit ?? 5);
@@ -38,7 +38,7 @@ async function searchFirecrawl(
     method: "POST",
     headers,
     body: JSON.stringify({ query, limit, sources: [{ type: "web" }] }),
-    signal: AbortSignal.timeout(filters.timeoutMs ?? 8_000),
+    signal: searchAbortSignal(filters),
   });
   const payload = await readJsonResponse(response, "Firecrawl");
   return normalizeSearchResults(payload, limit).map((result) => ({ ...result, source: "MCP" }));

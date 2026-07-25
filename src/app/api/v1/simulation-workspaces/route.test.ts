@@ -217,6 +217,36 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(eventTypes).toEqual(expect.arrayContaining(["run.started", "agent.started", "branch.options.created", "run.completed"]));
   });
 
+  it("recovers a stale running option batch when the status is queried", async () => {
+    const workspace = await createTestWorkspace("stale-options-workspace");
+    const staleAnalysisId = "stale-simulation-analysis";
+    const staleBatchId = "stale-simulation-batch";
+    const staleCreatedAt = new Date(Date.now() - 21 * 60 * 1000).toISOString();
+    const db = getDatabase();
+    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,started_at) VALUES (?,?,?,'running',?,?)")
+      .run(staleAnalysisId, "test-auth-user", "branch_option_generation", staleCreatedAt, staleCreatedAt);
+    db.prepare("INSERT INTO simulation_option_batches (id,workspace_id,branch_id,agent_run_id,status,created_at) VALUES (?,?,?,?,?,?)")
+      .run(staleBatchId, workspace.id, workspace.rootBranchId, staleAnalysisId, "running", staleCreatedAt);
+    db.close();
+
+    const response = await listOptions(
+      authenticatedRequest(`${url}/${workspace.id}/options`),
+      { params: Promise.resolve({ id: workspace.id }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.status).toBe("FAILED");
+    expect(body.data.analysis.analysisId).toBe(staleAnalysisId);
+
+    const checkDb = getDatabase();
+    const batch = checkDb.prepare("SELECT status FROM simulation_option_batches WHERE id=?").get(staleBatchId) as { status: string };
+    const run = checkDb.prepare("SELECT status,failure_code FROM agent_runs WHERE id=?").get(staleAnalysisId) as { status: string; failure_code: string };
+    checkDb.close();
+    expect(batch.status).toBe("failed");
+    expect(run).toEqual({ status: "failed", failure_code: "SIMULATION_TIMEOUT" });
+  });
+
   it("candidate generator returns distinct strategies", async () => {
     const result = await generateCandidates("Reduce concentration", TEST_PORTFOLIO_SNAPSHOT_ID);
     expect(result.candidates).toHaveLength(3);

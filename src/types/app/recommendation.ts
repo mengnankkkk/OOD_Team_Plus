@@ -1,4 +1,4 @@
-export type RecommendationAction = "increase" | "decrease" | "hold" | "observe" | "emergency_reserve";
+export type RecommendationAction = "increase" | "decrease" | "stop_adding" | "hold" | "observe" | "emergency_reserve";
 export type RecommendationStatus = "active" | "degraded" | "blocked" | "simulated" | "revoked" | "expired" | "rejected";
 
 export interface EvidenceRow {

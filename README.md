@@ -85,11 +85,21 @@ Money Whisperer 可以把 Advisor 回答或 AI 生成报告转入 `/injective`�
 | `DEFAULT_PASSWORD` | PandaData 必需 | PandaData 登录密码 |
 | `JAVA_SERVICE_BASE_URL` | PandaData 必需 | PandaData 服务地址 |
 | `MCP_SEARCH_URL` | 可选 | MCP 搜索 HTTP endpoint |
+| `A2A_BEARER_TOKEN` | 临时兼容 | 旧 A2A 入口的 bootstrap Bearer Token；正常接入应由管理员 API 创建数据库客户端 |
+| `A2A_BOOTSTRAP_CLIENT_TOKEN` | 生产发布可选 | 启动时幂等创建全能力外部客户端；仅保存 SHA-256 hash，原始值必须来自 Secret |
 | `ADMIN_USERNAME` | 可选 | 首个管理员初始化用户名 |
 | `ADMIN_INITIAL_PASSWORD` | 可选 | 首个管理员初始化临时密码 |
 | `ALLOW_REGISTRATION` | 可选 | 是否开放注册，默认 `true` |
 
 示例骨架维护在 `.env.example` 和 `.env.prod.example`，其中只能放不可用占位值。
+
+### 外部 A2A 客户端
+
+外部平台应由管理员通过 `POST /api/v1/admin/a2a-clients` 创建数据库客户端，并在创建响应中接收一次性 Bearer Token。客户端列表与详情接口不会返回原始 Token；需要换密钥时调用 `POST /api/v1/admin/a2a-clients/{id}/rotate-token`，旧 Token 会立即失效，新 Token 同样只在本次响应中返回。创建和轮换请求都必须携带 `Idempotency-Key`。
+
+管理员可通过 `GET /api/v1/admin/a2a-clients`、`GET /api/v1/admin/a2a-clients/{id}` 和带数字 `If-Match` 的 `PATCH /api/v1/admin/a2a-clients/{id}` 管理 capability scope、速率限制与启用状态。数据库只保存 Token 的 SHA-256 hash；`A2A_BEARER_TOKEN` 仅用于迁移期兼容旧静态入口。
+
+Agent Card 位于 `/.well-known/agent-card.json`。外部客户端可通过 JSON-RPC `/api/a2a/message-send` 或 HTTP+JSON `/api/a2a/message:send` 调用 Chief Advisor、多轮多空辩论、分支情景模拟和独立研究搜索；任务读取/取消使用 `/api/a2a/tasks`，上下文默认保留 30 天。
 
 ## 本地启动
 

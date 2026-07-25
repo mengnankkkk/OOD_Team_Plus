@@ -71,6 +71,7 @@ jobs:
           DEPLOY_USER="$(doppler_secret DEPLOY_USER)"
           DEPLOY_PASSWORD="$(doppler_secret DEPLOY_PASSWORD)"
           DEPLOY_PATH="$(doppler_secret DEPLOY_PATH)"
+          APP_ORIGIN="$(doppler_secret APP_ORIGIN)"
 
           echo "::add-mask::$DOPPLER_TOKEN"
           echo "::add-mask::$DEPLOY_PASSWORD"
@@ -81,6 +82,7 @@ jobs:
             echo "DEPLOY_USER=$DEPLOY_USER"
             echo "DEPLOY_PASSWORD=$DEPLOY_PASSWORD"
             echo "DEPLOY_PATH=$DEPLOY_PATH"
+            echo "APP_ORIGIN=$APP_ORIGIN"
           } >> "$GITHUB_ENV"
 
       - name: Package source
@@ -151,8 +153,11 @@ jobs:
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          A2A_BOOTSTRAP_CLIENT_TOKEN: ${{ secrets.A2A_BOOTSTRAP_CLIENT_TOKEN }}
         run: |
           set -euo pipefail
+          : "${A2A_BOOTSTRAP_CLIENT_TOKEN:?A2A_BOOTSTRAP_CLIENT_TOKEN GitHub secret is required}"
+          echo "::add-mask::$A2A_BOOTSTRAP_CLIENT_TOKEN"
 
           quote() {
             printf '%q' "$1"
@@ -256,6 +261,7 @@ jobs:
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          A2A_BOOTSTRAP_CLIENT_TOKEN: ${{ secrets.A2A_BOOTSTRAP_CLIENT_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -263,7 +269,7 @@ jobs:
             printf '%q' "$1"
           }
 
-          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") SOURCE_REMOTE_PATH=$(quote "$SOURCE_REMOTE_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
+          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") A2A_BOOTSTRAP_CLIENT_TOKEN=$(quote "$A2A_BOOTSTRAP_CLIENT_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") SOURCE_REMOTE_PATH=$(quote "$SOURCE_REMOTE_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
 
           export SSHPASS="$DEPLOY_PASSWORD"
           sshpass -e ssh \
@@ -277,6 +283,7 @@ jobs:
           set -euo pipefail
 
           : "${DOPPLER_TOKEN:?}"
+          : "${A2A_BOOTSTRAP_CLIENT_TOKEN:?}"
           : "${DEPLOY_PATH:?}"
           : "${GITHUB_SHA:?}"
           : "${DOPPLER_PROJECT:?}"
@@ -284,6 +291,7 @@ jobs:
           : "${SOURCE_REMOTE_PATH:?}"
 
           export DOPPLER_TOKEN
+          export A2A_BOOTSTRAP_CLIENT_TOKEN
           export GIT_SHA="$GITHUB_SHA"
 
           SUDO=""
@@ -338,9 +346,9 @@ jobs:
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
             -- docker compose -p money-whisperer run --rm --no-deps -T money-whisperer \
-              node -e 'if (!process.env.A2A_BEARER_TOKEN?.trim()) { console.error("A2A_BEARER_TOKEN is missing from the container environment."); process.exit(1); }' \
+              node -e 'if (!process.env.A2A_BEARER_TOKEN?.trim() || !process.env.A2A_BOOTSTRAP_CLIENT_TOKEN?.trim()) { console.error("Required A2A runtime secrets are missing from the container environment."); process.exit(1); }' \
             </dev/null
-          echo "[deploy] Required A2A runtime secret is available in the container."
+          echo "[deploy] Required A2A runtime secrets are available in the container."
           echo "::endgroup::"
 
           $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_PATH/current"
@@ -363,3 +371,66 @@ jobs:
           timeout --signal=TERM --kill-after=15s 2m $SUDO docker builder prune --force --filter until=168h || echo "[deploy] BuildKit cache cleanup skipped after timeout."
           echo "::endgroup::"
           REMOTE
+
+      - name: Verify public A2A gateway
+        if: steps.freshness.outputs.stale != 'true'
+        shell: bash
+        env:
+          A2A_BOOTSTRAP_CLIENT_TOKEN: ${{ secrets.A2A_BOOTSTRAP_CLIENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${A2A_BOOTSTRAP_CLIENT_TOKEN:?}"
+          echo "::add-mask::$A2A_BOOTSTRAP_CLIENT_TOKEN"
+          BASE_URL="${APP_ORIGIN%%,*}"
+          BASE_URL="${BASE_URL%/}"
+          CARD="$(curl --fail --silent --show-error "$BASE_URL/.well-known/agent-card.json")"
+          jq -e '
+            [.skills[].id] == [
+              "chief_advisor_conversation",
+              "debate_mode",
+              "scenario_simulation",
+              "research_search"
+            ]
+            and ([.supportedInterfaces[].protocolBinding] | index("JSONRPC") != null)
+            and ([.supportedInterfaces[].protocolBinding] | index("HTTP+JSON") != null)
+          ' <<<"$CARD" >/dev/null
+          STATUS="$(curl --silent --output /tmp/a2a-tasks.json --write-out '%{http_code}' \
+            -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
+            "$BASE_URL/api/a2a/tasks?limit=1")"
+          test "$STATUS" = "200"
+          jq -e '.items | type == "array"' /tmp/a2a-tasks.json >/dev/null
+          RESEARCH_BODY="$(jq -nc --arg messageId "deploy-research-$GITHUB_SHA" '{
+            message: {
+              messageId: $messageId,
+              parts: [{ kind: "text", text: "Verify the external A2A knowledge base research path." }],
+              metadata: {
+                capabilityId: "research_search",
+                operation: "start",
+                input: {
+                  query: "A2A capability gateway",
+                  adapters: ["KNOWLEDGE_BASE"],
+                  maximumResults: 3
+                }
+              }
+            }
+          }')"
+          RESEARCH_TASK="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
+            -H "content-type: application/json" \
+            -d "$RESEARCH_BODY" \
+            "$BASE_URL/api/a2a/message:send")"
+          RESEARCH_TASK_ID="$(jq -er '.id' <<<"$RESEARCH_TASK")"
+          RESEARCH_STATE=""
+          for _ in $(seq 1 30); do
+            RESEARCH_STATE="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
+              "$BASE_URL/api/a2a/tasks/$RESEARCH_TASK_ID" | jq -r '.status.state')"
+            case "$RESEARCH_STATE" in
+              completed) break ;;
+              failed|canceled) echo "[deploy] Research smoke test ended in $RESEARCH_STATE." >&2; exit 1 ;;
+            esac
+            sleep 2
+          done
+          test "$RESEARCH_STATE" = "completed"
+          echo "[deploy] Public Agent Card: $BASE_URL/.well-known/agent-card.json"
+          echo "[deploy] Client-specific A2A authentication, task listing, and research execution verified."

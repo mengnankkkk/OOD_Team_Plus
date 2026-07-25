@@ -143,4 +143,17 @@ describe("buildFinancialReportMarkdown", () => {
     expect(markdown).not.toContain("## 数据与风险");
     expect(markdown).not.toContain("## 你还可以查看");
   });
+
+  it("parses the new Chinese advisor action when no recommendation object is attached", () => {
+    const markdown = buildFinancialReportMarkdown(
+      "资产深度报告",
+      "建议状态：暂不执行；建议动作：停止加仓\n核心结论：当前集中度过高，先不要继续追加资金",
+      [],
+      null,
+      "BLOCKED",
+    );
+
+    expect(markdown).toContain("**建议动作：** 停止加仓，先控制集中度");
+    expect(markdown).not.toContain("STOP_ADDING");
+  });
 });

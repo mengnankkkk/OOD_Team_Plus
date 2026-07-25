@@ -32,6 +32,7 @@ export type ChiefAdvisorPromptContext = {
   holdings?: unknown;
   portfolioSnapshot?: Record<string, unknown> | null;
   instruments?: unknown;
+  candidates?: unknown;
   targetInstrument?: unknown;
   marketData?: unknown;
   semanticTools?: unknown;
@@ -42,24 +43,7 @@ export type ChiefAdvisorPromptContext = {
   [key: string]: unknown;
 };
 
-const ChiefAdvisorDecisionSchema = z.object({
-  action: AdvisorDecisionSchema.shape.action.optional(),
-  requestedDirection: AdvisorDecisionSchema.shape.requestedDirection.optional(),
-  summary: z.string().optional(),
-  suitability: AdvisorDecisionSchema.shape.suitability.optional(),
-  confidence: z.number().optional(),
-  rationales: z.array(z.string()).optional(),
-  counterEvidence: z.array(z.string()).optional(),
-  risks: z.array(z.string()).optional(),
-  portfolioImpact: z.string().optional(),
-  invalidationConditions: z.array(z.string()).optional(),
-  compliance: z.object({
-    approved: z.boolean().optional(),
-    decision: AdvisorDecisionSchema.shape.compliance.shape.decision.optional(),
-    reason: z.string().optional(),
-  }).optional(),
-  debateSuggestion: DebateSuggestionSchema.partial().optional(),
-});
+const ChiefAdvisorDecisionSchema = AdvisorDecisionSchema;
 
 export type ChiefAdvisorDecisionIntegrity = {
   complete: boolean;
@@ -76,6 +60,11 @@ export type ChiefAdvisorResult = {
 };
 
 export type ChiefAdvisorConversationResult = {
+  answer: string;
+  provider: "CHIEF_ADVISOR";
+};
+
+export type ChiefAdvisorScreeningResult = {
   answer: string;
   provider: "CHIEF_ADVISOR";
 };
@@ -128,6 +117,23 @@ export async function runChiefAdvisorConversation(input: {
   for await (const chunk of stream.textStream) answer += chunk;
   const normalized = answer.trim();
   if (!normalized) throw new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR_CONVERSATION");
+  return { answer: normalized, provider: "CHIEF_ADVISOR" };
+}
+
+export async function runChiefAdvisorScreening(input: {
+  question: string;
+  context: ChiefAdvisorPromptContext & { candidates: unknown };
+}): Promise<ChiefAdvisorScreeningResult> {
+  const chief = createChiefAdvisorAgent();
+  const prompt = buildAdvisorPrompt(chiefScreeningPrompt(input.question), input.context);
+  const stream = await chief.stream(prompt, {
+    maxSteps: 1,
+    modelSettings: { maxOutputTokens: 1_200, temperature: 0.2 },
+  });
+  let answer = "";
+  for await (const chunk of stream.textStream) answer += chunk;
+  const normalized = answer.trim();
+  if (!normalized) throw new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR_SCREENING");
   return { answer: normalized, provider: "CHIEF_ADVISOR" };
 }
 
@@ -348,7 +354,7 @@ function coerceModelDecision(
         compliance: {
           approved: false,
           decision: decision.compliance.decision === "BLOCKED" ? "BLOCKED" : "DOWNGRADED",
-          reason: [...new Set([decision.compliance.reason, ...integrity.reasons])].join("；").slice(0, 500),
+          reason: userFacingIncompleteDecisionReason(decision.compliance.reason),
         },
       },
     };
@@ -379,6 +385,11 @@ function coerceDebateSuggestion(value: unknown): DebateSuggestion {
       recommended ? "当前问题存在可比较的多空判断，适合让用户同时听取两方依据。" : "当前问题还没有形成清晰的多空议题，先完成基础信息整理更有帮助。",
     ),
   });
+}
+
+function userFacingIncompleteDecisionReason(reason: string): string {
+  if (reason && !/(?:schema|coercion|rationales|counterEvidence|debateSuggestion)/iu.test(reason)) return reason;
+  return "当前证据仍需进一步核验，本次结论仅供谨慎参考，不建议直接执行。";
 }
 
 function normalizeRecord(value: unknown): Record<string, unknown> {
@@ -423,6 +434,18 @@ function chiefConversationPrompt(question: string, conversationMessages: string[
   ].join("\n\n");
 }
 
+function chiefScreeningPrompt(question: string): string {
+  return [
+    "当前任务是受控候选池筛选。你是面向理财小白的 Chief Advisor，要基于服务端提供的候选标的和真实行情核验结果，帮助用户缩小研究范围。",
+    `用户当前要求：${question}`,
+    "最多给出 3 个研究候选。每个候选必须写清名称和代码、值得继续研究的原因、不适合或需要警惕的原因，以及下一步应核验什么。",
+    "候选只是研究起点，不得写成确定买入、保证收益、立即建仓或绕过完整建议卡的交易指令。",
+    "如果行情核验失败或数据为空，要明确说明数据限制，但仍可基于受控目录给出待核验名单；不得编造价格、涨跌幅、估值或基本面。",
+    "结合用户现有持仓和画像指出集中度、偏好冲突或风险预算问题，但不要重复追问已经在结构化上下文中的信息。",
+    "只输出自然中文，不要 JSON，不要内部 Agent 名、schema、coercion、英文状态码或工作流诊断。",
+  ].join("\n\n");
+}
+
 function buildAdvisorPrompt(prompt: string, context?: ChiefAdvisorPromptContext): string {
   const contextLines = formatAdvisorContext(context);
   if (!contextLines.length) return prompt;
@@ -443,6 +466,7 @@ function formatAdvisorContext(context?: ChiefAdvisorPromptContext): string[] {
     ["组合快照", context.portfolioSnapshot],
     ["持仓", context.holdings],
     ["自选/可交易标的", context.instruments],
+    ["候选标的", context.candidates],
     ["目标标的", context.targetInstrument],
     ["行情与研究上下文", context.marketData],
     ["语义工具上下文", context.semanticTools],
@@ -463,6 +487,7 @@ function describeKnownContext(context: ChiefAdvisorPromptContext): string[] {
   if (hasKnownFields(context.goals)) coverage.push("目标/资金用途");
   if (hasKnownFields(context.portfolioSnapshot)) coverage.push("现金与组合快照");
   if (hasKnownFields(context.holdings)) coverage.push("持仓");
+  if (hasKnownFields(context.candidates)) coverage.push("候选标的");
   if (hasKnownFields(context.targetInstrument)) coverage.push("目标标的");
   if (hasKnownFields(context.marketData)) coverage.push("行情/研究数据");
   if (hasKnownFields(context.conversationMemory)) coverage.push("会话记忆");
@@ -492,7 +517,7 @@ function chiefDecisionPrompt(prompt: string, findings: AgentFinding[], context?:
   return [
     "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
     "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 或 LATEST_TRADING_DAY 时不得声称数据过期；不得在证据不足时给出 ACTIVE 交易承诺。",
-    "最终 JSON 必须包含 debateSuggestion：recommended、motion、reason。",
+    "最终 JSON 必须完整包含 action、requestedDirection、summary、suitability、confidence、rationales、counterEvidence、risks、portfolioImpact、invalidationConditions、compliance 和 debateSuggestion，不得省略字段。",
     "你是最终理财顾问，不只是流程调度器；必须回答用户当前问题，并把解释、方案、诊断、风险和合规边界整合成可展示结论。",
     "如果显式结构化顾问上下文已经包含画像、目标、资金用途、可投资金额、期限、最大回撤、方向偏好或持仓，禁止把这些列为 missingInformation，也不要再次追问。",
     context ? `已知上下文覆盖：${describeKnownContext(context).join("、") || "无"}` : "未提供额外结构化上下文。",

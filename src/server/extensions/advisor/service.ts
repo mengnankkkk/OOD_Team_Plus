@@ -32,7 +32,7 @@ type ConversationAgentResult = {
   answer: string | null;
   recommendationId: string | null;
   missingQuestions: string[];
-  conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION" | null;
+  conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "SCREENING" | "DECISION" | null;
   dataQueryId: string | null;
   debateSuggestion: DebateSuggestion | null;
   clarificationId?: string;
@@ -289,7 +289,7 @@ function loadAdvisorContext(userId: string): AdvisorContext {
   return { profile: profile ?? null, goals, snapshot: snapshot ?? null, holdings, instruments };
 }
 
-function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
+function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "SCREENING" | "DECISION"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
@@ -380,7 +380,7 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   return result;
 }
 
-function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED", conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"): void {
+function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED", conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "SCREENING" | "DECISION"): void {
   const lines = answer.split("\n").map((line) => line.trim()).filter(Boolean);
   if (lines.length === 0) return;
   persistSseEvent({
@@ -392,6 +392,8 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
         ? "顾问正在梳理你的目标"
         : conversationKind === "CONVERSATION"
           ? "顾问正在回应你"
+        : conversationKind === "SCREENING"
+          ? "顾问正在筛选研究候选"
         : conversationKind === "FINANCIAL_PLAN"
           ? "顾问正在整理你的资金方案"
           : status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",
@@ -571,7 +573,7 @@ function parseAnswerFields(answer: string): Record<string, string> {
     .map((line) => line.match(new RegExp(`^${label}[：:]\\s*(.+)$`, "u"))?.[1]?.trim() ?? "")
     .find(Boolean) ?? "";
   return {
-    action: answer.match(/建议动作[：:]\s*(.+)$/mu)?.[1]?.trim() ?? "",
+    action: answer.match(/建议动作[：:]\s*([^；;\n]+)/u)?.[1]?.trim() ?? "",
     conclusion: valueFor("核心结论"),
     profile: valueFor("用户画像与投资目标依据") || valueFor("本次画像假设"),
     research: valueFor("数据研究"),
@@ -589,18 +591,16 @@ function parseAnswerFields(answer: string): Record<string, string> {
 
 function extractAction(value: string): RecommendationDraft["action"] {
   const actions: RecommendationDraft["action"][] = ["WATCH", "TRIAL_BUY", "SCALE_IN", "HOLD", "STOP_ADDING", "SCALE_OUT", "EXIT"];
-  const labels: Record<string, RecommendationDraft["action"]> = {
-    "观察": "WATCH",
-    "小额试仓": "TRIAL_BUY",
-    "分批加仓": "SCALE_IN",
-    "继续持有": "HOLD",
-    "停止加仓": "STOP_ADDING",
-    "分批减仓": "SCALE_OUT",
-    "清仓退出": "EXIT",
-  };
-  return actions.find((action) => value.includes(action))
-    ?? Object.entries(labels).find(([label]) => value.includes(label))?.[1]
-    ?? "WATCH";
+  const direct = actions.find((action) => value.includes(action));
+  if (direct) return direct;
+  if (/暂缓加仓|停止加仓/u.test(value)) return "STOP_ADDING";
+  if (/小额试仓/u.test(value)) return "TRIAL_BUY";
+  if (/分批加仓/u.test(value)) return "SCALE_IN";
+  if (/分批减仓/u.test(value)) return "SCALE_OUT";
+  if (/退出持仓|清仓退出/u.test(value)) return "EXIT";
+  if (/继续持有/u.test(value)) return "HOLD";
+  if (/观察/u.test(value)) return "WATCH";
+  return "WATCH";
 }
 
 function translateStatus(status: string): string {

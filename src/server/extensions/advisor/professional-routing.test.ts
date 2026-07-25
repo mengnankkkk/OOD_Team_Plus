@@ -164,11 +164,17 @@ describe("runProfessionalAdvisor routing", () => {
     expect(result.recommendation).toEqual(expect.objectContaining({
       instrumentId: "CAMBRICON",
       symbol: "688256.SH",
+      action: "STOP_ADDING",
     }));
+    expect(result.answer).toContain("建议状态：暂不执行");
+    expect(result.answer).toContain("建议动作：停止加仓");
+    expect(result.answer).not.toContain("BLOCKED");
+    expect(result.answer).not.toContain("SCALE_IN");
     expect(executePandaSourcesMock).toHaveBeenCalledTimes(1);
     expect(executePandaSourcesMock.mock.calls[0][0].sources).toHaveLength(1);
     expect(executePandaSourcesMock.mock.calls[0][0].sources[0].parameters.symbol).toBe("688256.SH");
   });
+
 });
 
 function createRootRun(id: string): void {

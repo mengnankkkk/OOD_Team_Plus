@@ -1,0 +1,13 @@
+import { NextRequest } from "next/server";
+
+import { capabilityAdapters } from "@/server/a2a/adapter-registry";
+import { createA2ARequestHandlers } from "@/server/a2a/gateway";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const { handleHttpListTasks } = createA2ARequestHandlers(capabilityAdapters);
+
+export async function GET(request: NextRequest) {
+  return handleHttpListTasks(request);
+}

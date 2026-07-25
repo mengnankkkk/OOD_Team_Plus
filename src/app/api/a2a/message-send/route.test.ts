@@ -1,5 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { NextRequest } from "next/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { runConversationAgentMock } = vi.hoisted(() => ({
   runConversationAgentMock: vi.fn(),
@@ -7,108 +12,176 @@ const { runConversationAgentMock } = vi.hoisted(() => ({
 
 vi.mock("@/server/extensions/advisor/service", () => ({
   runConversationAgent: runConversationAgentMock,
+  runAdvisorPublicationGate: vi.fn(),
 }));
 
 import { POST } from "./route";
+import { resetA2ARateLimitsForTests } from "@/server/a2a/auth";
+import { createExternalClient } from "@/server/a2a/client-service";
+import { getDatabase, isoNow } from "@/server/http/context";
 
-describe("A2A message send", () => {
+let dbPath = "";
+
+beforeEach(() => {
+  dbPath = join(tmpdir(), `money-whisperer-a2a-message-${randomUUID()}.db`);
+  vi.stubEnv("DB_PATH", dbPath);
+  vi.stubEnv("A2A_BEARER_TOKEN", "");
+  runConversationAgentMock.mockReset();
+  resetA2ARateLimitsForTests();
+});
+
+afterEach(() => {
+  resetA2ARateLimitsForTests();
+  vi.unstubAllEnvs();
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${dbPath}${suffix}`, { force: true });
+});
+
+describe("A2A message gateway", () => {
   it("rejects requests without bearer auth", async () => {
-    vi.stubEnv("A2A_BEARER_TOKEN", "secret");
-    const response = await POST(jsonRequest({ message: { parts: [{ kind: "text", text: "分析 AAPL" }] } }));
+    const response = await POST(request(advisorBody()));
     expect(response.status).toBe(401);
-    vi.unstubAllEnvs();
   });
 
-  it("runs the advisor and returns an A2A task", async () => {
-    vi.stubEnv("A2A_BEARER_TOKEN", "secret");
-    runConversationAgentMock.mockResolvedValueOnce({
-      messageId: "user-message-1",
-      assistantMessageId: "assistant-message-1",
-      analysis: { analysisId: "analysis-1", status: "COMPLETED", streamUrl: "/api/v1/analyses/analysis-1/events" },
-      answer: "结论：暂不加仓。",
-      recommendationId: "recommendation-1",
-      missingQuestions: [],
-      dataQueryId: null,
-      outputMode: "SQL_ONLY",
-    });
+  it("rejects database clients without the requested capability", async () => {
+    const client = createDatabaseClient(["tasks_read"]);
+    const response = await POST(request(advisorBody(), client.token));
 
-    const response = await POST(jsonRequest({
-      message: {
-        kind: "message",
-        role: "user",
-        messageId: "remote-message-1",
-        contextId: "remote-context-1",
-        parts: [{ kind: "text", text: "分析 AAPL 当前是否适合加仓" }],
-      },
-    }, "secret"));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "CAPABILITY_NOT_ALLOWED" } });
+    expect(runConversationAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("runs scoped clients under an isolated non-login execution principal", async () => {
+    const client = createDatabaseClient([
+      "chief_advisor_conversation",
+      "tasks_read",
+      "tasks_cancel",
+    ]);
+    runConversationAgentMock.mockResolvedValueOnce(completedAdvisor());
+
+    const response = await POST(request(advisorBody(), client.token));
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
       kind: "task",
-      id: "analysis-1",
       contextId: "remote-context-1",
       status: { state: "completed" },
-      artifacts: [{ artifactId: "recommendation-1" }],
+      metadata: { capabilityId: "chief_advisor_conversation" },
     });
-    expect(body.status.message.parts[0].text).toContain("风险提示");
+    expect(body.status.message.parts[0].text).toContain("Risk notice");
     expect(runConversationAgentMock).toHaveBeenCalledWith(expect.objectContaining({
-      userId: "a2a-remote-agent",
-      sessionId: "remote-context-1",
-      content: "分析 AAPL 当前是否适合加仓",
+      userId: expect.stringMatching(/^a2a_exec_/u),
+      sessionId: "remote-context-1:advisor",
       clientMessageId: "remote-message-1",
     }));
-    vi.unstubAllEnvs();
+
+    const db = getDatabase();
+    const context = db.prepare(`SELECT c.execution_user_id,u.username,u.password_hash
+      FROM a2a_contexts c JOIN users u ON u.id=c.execution_user_id
+      WHERE c.id=? AND c.external_client_id=?`).get("remote-context-1", client.client.id);
+    db.close();
+    expect(context).toMatchObject({ username: null, password_hash: null });
   });
 
-  it("accepts JSON-RPC message/send envelopes", async () => {
-    vi.stubEnv("A2A_BEARER_TOKEN", "secret");
-    runConversationAgentMock.mockResolvedValueOnce({
-      messageId: "user-message-2",
-      assistantMessageId: "assistant-message-2",
-      analysis: { analysisId: "analysis-2", status: "WAITING_FOR_USER" },
-      answer: "在给出交易倾向前还缺少关键信息。",
-      recommendationId: null,
-      missingQuestions: ["你能接受的风险等级是稳健、平衡还是进取？"],
-      dataQueryId: null,
-      outputMode: "SQL_ONLY",
-    });
-
-    const response = await POST(jsonRequest({
+  it("supports JSON-RPC task aliases after message/send", async () => {
+    const client = createDatabaseClient(["chief_advisor_conversation", "tasks_read"]);
+    runConversationAgentMock.mockResolvedValueOnce(completedAdvisor());
+    const sent = await POST(request({
       jsonrpc: "2.0",
-      id: "rpc-1",
+      id: "rpc-send",
       method: "message/send",
-      params: {
-        message: {
-          kind: "message",
-          role: "user",
-          messageId: "remote-message-2",
-          parts: [{ kind: "text", text: "帮我评估当前组合风险" }],
-        },
-      },
-    }, "secret"));
-    const body = await response.json();
+      params: advisorBody(),
+    }, client.token));
+    const sentBody = await sent.json();
+    const taskId = sentBody.result.id;
+
+    const fetched = await POST(request({
+      jsonrpc: "2.0",
+      id: "rpc-get",
+      method: "GetTask",
+      params: { id: taskId },
+    }, client.token));
+
+    expect(await fetched.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: "rpc-get",
+      result: { id: taskId, status: { state: "completed" } },
+    });
+  });
+
+  it("keeps the legacy bearer token compatible with the unified gateway", async () => {
+    vi.stubEnv("A2A_BEARER_TOKEN", "legacy-secret");
+    runConversationAgentMock.mockResolvedValueOnce(completedAdvisor());
+
+    const response = await POST(request(advisorBody(), "legacy-secret"));
 
     expect(response.status).toBe(200);
-    expect(body).toMatchObject({
-      jsonrpc: "2.0",
-      id: "rpc-1",
-      result: {
-        kind: "task",
-        id: "analysis-2",
-        status: { state: "input-required" },
-      },
+    expect(await response.json()).toMatchObject({
+      kind: "task",
+      status: { state: "completed" },
+      metadata: { capabilityId: "chief_advisor_conversation" },
     });
-    vi.unstubAllEnvs();
   });
 });
 
-function jsonRequest(body: unknown, bearer?: string): NextRequest {
+function advisorBody() {
+  return {
+    message: {
+      kind: "message",
+      role: "user",
+      messageId: "remote-message-1",
+      contextId: "remote-context-1",
+      parts: [{ kind: "text", text: "Analyze AAPL current add-on suitability" }],
+      metadata: {
+        capabilityId: "chief_advisor_conversation",
+        operation: "send",
+      },
+    },
+  };
+}
+
+function completedAdvisor() {
+  return {
+    messageId: "user-message-1",
+    assistantMessageId: "assistant-message-1",
+    analysis: { analysisId: "analysis-1", status: "COMPLETED" },
+    answer: "Conclusion: do not add yet.",
+    recommendationId: "recommendation-1",
+    missingQuestions: [],
+    dataQueryId: null,
+    outputMode: "SQL_ONLY",
+  };
+}
+
+function request(body: unknown, bearer?: string): NextRequest {
   const headers = new Headers({ "content-type": "application/json" });
   if (bearer) headers.set("authorization", `Bearer ${bearer}`);
   return new NextRequest("http://localhost/api/a2a/message-send", {
     method: "POST",
     headers,
     body: JSON.stringify(body),
+  });
+}
+
+function createDatabaseClient(capabilities: Parameters<typeof createExternalClient>[1]["capabilities"]) {
+  const actorUserId = "a2a-admin";
+  const now = isoNow();
+  const db = getDatabase();
+  db.prepare(`INSERT OR IGNORE INTO users
+    (id,username,username_normalized,display_name,role,status,force_password_change,created_at,updated_at,row_version)
+    VALUES (?,?,?,?, 'ADMIN','ACTIVE',0,?,?,1)`).run(
+    actorUserId,
+    actorUserId,
+    actorUserId,
+    "A2A Admin",
+    now,
+    now,
+  );
+  db.close();
+  return createExternalClient(actorUserId, {
+    name: `Database client ${randomUUID()}`,
+    capabilities,
+    rateLimitPerMinute: 60,
   });
 }

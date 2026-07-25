@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { runConversationAgent, type ConversationOutputMode } from "@/server/extensions/advisor/service";
 import { createId, getDatabase, isoNow } from "@/server/http/context";
 import { publicBaseUrl } from "./agent-card";
-import { A2A_SERVICE_USER_ID, authenticateA2A } from "./auth";
+import { A2A_SERVICE_USER_ID, authenticateA2AForCapability } from "./auth";
 import { answerA2AClarification, getA2AClarificationReplay } from "./clarification";
 
 type A2ATextPart = { kind?: string; type?: string; text?: unknown };
@@ -29,8 +29,9 @@ type RpcContext = { id: string | number | null } | null;
 export async function handleSendMessage(request: NextRequest): Promise<Response> {
   const rawBody = await request.json().catch(() => null) as (A2ASendRequest & JsonRpcEnvelope) | null;
   const rpc = jsonRpcContext(rawBody);
-  const authFailure = authenticateA2A(request);
-  if (authFailure) return a2aError(authFailure.status, authFailure.code, authFailure.message, rpc);
+  const authentication = authenticateA2AForCapability(request, "chief_advisor_conversation");
+  if (!authentication.ok) return a2aError(authentication.failure.status, authentication.failure.code, authentication.failure.message, rpc);
+  if (authentication.principal.clientId !== "a2a-legacy-client") return a2aError(503, "A2A_GATEWAY_NOT_READY", "External A2A conversation gateway is not ready.", rpc);
   if (rawBody && rawBody.jsonrpc && rawBody.method !== "message/send") {
     return a2aError(400, "METHOD_NOT_FOUND", "Unsupported A2A JSON-RPC method.", rpc);
   }

@@ -3,11 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 export async function searchKnowledgeBase(query: string, filters: SearchFilters = {}): Promise<SearchResult[]> {
+  filters.signal?.throwIfAborted();
   const root = path.resolve(process.cwd(), "docs");
   if (!fs.existsSync(root)) return [];
   const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
   const results: SearchResult[] = [];
   for (const file of walkMarkdown(root).slice(0, 100)) {
+    filters.signal?.throwIfAborted();
     const text = fs.readFileSync(file, "utf8");
     const lower = text.toLowerCase();
     if (!terms.some((term) => lower.includes(term))) continue;

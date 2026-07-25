@@ -91,6 +91,26 @@ describe("recommendation and evidence mapping", () => {
     });
   });
 
+  it("preserves stop-adding as its own Chinese-facing action instead of mapping it to reduction", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      id: "recommendation-stop-adding",
+      analysisId: "analysis-stop-adding",
+      action: "STOP_ADDING",
+      status: "BLOCKED",
+      summary: "当前集中度过高，停止继续加仓",
+      positionRange: ["0%", "0%"],
+      reasons: ["单一持仓占比过高"],
+      counterEvidence: ["长期逻辑仍可能成立"],
+      risks: ["集中度风险"],
+      compliance: { status: "BLOCKED", reasons: ["先控制集中度"] },
+      createdAt: "2026-07-25T08:00:00.000Z",
+    });
+
+    const recommendation = await getRecommendation("user-1", "recommendation-stop-adding");
+
+    expect(recommendation?.action).toBe("stop_adding");
+  });
+
   it("keeps the full backend evidence pack instead of replacing it with placeholders", async () => {
     vi.mocked(apiGet).mockResolvedValue({
       analysisId: "analysis-1",

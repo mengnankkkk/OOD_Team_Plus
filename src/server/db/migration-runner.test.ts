@@ -11,8 +11,8 @@ describe("database migration guard", () => {
     const db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     prepareDatabase(db as never, ":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(15);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(19);
     expect(db.prepare(`SELECT name FROM sqlite_master
       WHERE type='table' AND name IN ('debate_sessions','debate_rounds','debate_turns','debate_arguments','debate_judgements')
       ORDER BY name`).all()).toEqual([
@@ -28,6 +28,29 @@ describe("database migration guard", () => {
       VALUES ('debate-session','test-user','missing-conversation','debate-run','Motion','2026-07-25T00:00:00.000Z','2026-07-25T00:00:00.000Z')`).run())
       .toThrow(/FOREIGN KEY constraint failed/u);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
+    db.close();
+  });
+
+  it("creates the external A2A gateway tables", () => {
+    const db = new Database(":memory:");
+    prepareDatabase(db as never, ":memory:");
+
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(19);
+
+    for (const table of [
+      "a2a_external_clients",
+      "a2a_external_client_tokens",
+      "a2a_contexts",
+      "a2a_tasks",
+      "a2a_task_events",
+      "a2a_debate_sessions",
+      "a2a_debate_rounds",
+      "a2a_debate_turns",
+    ]) {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)).toEqual({ name: table });
+    }
+
     db.close();
   });
 

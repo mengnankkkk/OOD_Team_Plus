@@ -12,7 +12,7 @@ const OutcomeCompare = ({ before, after, rec }: OutcomeCompareProps) => {
   const scenarios = [
     { key: "adopt", label: "采纳该建议", desc: "按 Agent 推荐节奏执行", tone: "primary", metrics: after },
     { key: "hold", label: "不操作", desc: "保持当前持仓", tone: "muted", metrics: before },
-    { key: "alt", label: "替代方案", desc: rec.action === "decrease" ? "只减一半，保留观察" : "分批更慢执行", tone: "watch", metrics: interpolate(before, after) },
+    { key: "alt", label: "替代方案", desc: rec.action === "decrease" ? "只减一半，保留观察" : rec.action === "stop_adding" ? "保持现有仓位，不再追加资金" : "分批更慢执行", tone: "watch", metrics: interpolate(before, after) },
   ];
 
   return (
