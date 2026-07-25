@@ -2,6 +2,8 @@ import { apiGet, apiPatch, apiPost, FrontendApiError } from "@/features/frontend
 import { createClientId } from "@/lib/client-id";
 import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOutputMode, OnboardingMessage, TraceSpan } from "@/types/app/onboarding";
 
+type AdvisorWorkflow = "CONVERSATION" | "DAILY_PORTFOLIO";
+
 type ConversationRow = { id: string; title: string; created_at: string; updated_at: string; row_version: number; last_message_preview?: string };
 type MessageRow = { id: string; role: string; content: string; metadata_json?: string; created_at: string; session_id?: string; agent_run_id?: string | null };
 type StreamStarted = {
@@ -113,6 +115,7 @@ export async function sendAdvisorMessageStream(
   sessionId: string | null,
   outputMode: ConversationOutputMode,
   observer: AdvisorStreamObserver = {},
+  workflow: AdvisorWorkflow = "CONVERSATION",
 ): Promise<AdvisorReply> {
   const activeSessionId = await ensureConversation(sessionId, message);
   observer.onSessionId?.(activeSessionId);
@@ -121,6 +124,7 @@ export async function sendAdvisorMessageStream(
     clientMessageId: createClientId(),
     content: message,
     outputMode,
+    workflow,
   });
   const analysisId = result.analysis?.analysisId ?? null;
   const streamUrl = result.analysis?.streamUrl;
@@ -173,7 +177,7 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
           return;
         }
         observer.onProgress?.(streamLabel(type, payload));
-        if (type === "agent.completed" && !payload.agent) finish();
+        if (type === "agent.completed" && (!payload.agent || payload.status === "WAITING_FOR_USER" || payload.status === "BLOCKED")) finish();
         if (type === "agent.failed" && payload.code === "ADVISOR_RUN_FAILED") finish();
       });
     }

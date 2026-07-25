@@ -148,8 +148,11 @@ test("首页从建议卡生成今日组合建议", async ({ page }, testInfo) =>
   await expect(card.getByRole("button", { name: "生成今日组合建议" })).toBeVisible();
   await expect(page.locator(".newsprint-masthead").getByRole("button", { name: /Agent 建议|组合建议/u })).toHaveCount(0);
 
+  const streamRequestPromise = page.waitForRequest("**/api/v1/conversations/conversation-today/messages/stream");
   await card.getByRole("button", { name: "生成今日组合建议" }).click();
   await expect(card.getByRole("button", { name: "正在生成今日建议" })).toBeDisabled();
+  const streamRequest = await streamRequestPromise;
+  expect((streamRequest.postDataJSON() as { workflow?: string }).workflow).toBe("DAILY_PORTFOLIO");
   await expect(card.getByRole("heading", { name: recommendation.summary })).toBeVisible();
   await expect(card.getByRole("button", { name: "更新今日建议" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("home-daily-advice.png"), fullPage: true });

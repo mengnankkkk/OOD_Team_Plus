@@ -10,6 +10,7 @@ import { POST as answerClarification } from "../clarifications/[clarificationId]
 import { GET as listClarifications } from "../clarifications/route";
 import { POST } from "./route";
 import { getDatabase, isoNow } from "@/server/http/context";
+import { getSseEvents } from "@/server/extensions/sse/event-persister";
 
 const conversationId = "conversation-advisor-test";
 let dbPath = "";
@@ -127,13 +128,36 @@ describe("conversation advisor clarifications", () => {
     expect(followUpBody.data.answer).toContain("你更想优先实现哪个目标");
     expect(followUpBody.data.answer).not.toContain("准备拿出多少作为可投资金额");
   });
+
+  it("completes the daily portfolio workflow without creating a clarification", async () => {
+    const response = await sendMessage(
+      "请生成今日组合建议，直接基于现有持仓完成一次组合诊断。",
+      "daily-portfolio-message",
+      "DAILY_PORTFOLIO",
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(body.data.analysis.status).toBe("COMPLETED");
+    expect(body.data.clarificationId).toBeUndefined();
+    expect(body.data.missingQuestions).toEqual([]);
+    expect(body.data.answer).not.toContain("更偏好个股、行业 ETF 还是宽基指数");
+
+    const events = getSseEvents(body.data.analysis.analysisId);
+    expect(events.some((event) => event.type === "agent.completed")).toBe(true);
+
+    const db = getDatabase();
+    const profile = db.prepare("SELECT * FROM user_profiles WHERE user_id=?").get(TEST_USER_ID) as Record<string, unknown> | undefined;
+    db.close();
+    expect(profile).toBeUndefined();
+  });
 });
 
-async function sendMessage(content: string, clientMessageId: string) {
+async function sendMessage(content: string, clientMessageId: string, workflow?: "CONVERSATION" | "DAILY_PORTFOLIO") {
   return POST(
     authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, clientMessageId }),
+      body: JSON.stringify({ content, clientMessageId, workflow }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": `idem-${clientMessageId}` },
     }),
     { params: Promise.resolve({ id: conversationId }) },

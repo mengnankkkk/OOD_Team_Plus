@@ -83,6 +83,10 @@ describe("buildPortfolioRecommendationDraft", () => {
     ]));
   });
 
+  it("allows daily portfolio diagnosis to use temporary profile assumptions", () => {
+    expect(criticalMissingInformation("DIAGNOSIS", undefined, null, null, true, true)).toEqual([]);
+  });
+
   it("uses a concise portfolio headline when market evidence blocks publication", () => {
     const draft = buildPortfolioRecommendationDraft({
       status: "BLOCKED",

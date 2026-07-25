@@ -52,6 +52,7 @@ describe("runAgentWorkflow", () => {
       null,
       "SQL_ONLY",
       expect.any(Object),
+      "DAILY_PORTFOLIO",
     );
     expect(result.recommendations).toHaveLength(1);
     expect(result.recommendations[0]?.id).toBe("recommendation-today");

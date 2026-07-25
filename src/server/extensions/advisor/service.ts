@@ -54,7 +54,16 @@ export function startConversationAgent(input: AdvisorRunInput) {
 
 async function executePreparedConversationAgent(input: AdvisorRunInput, prepared: PreparedNewRun) {
   const { analysisId, userMessageId, outputMode } = prepared;
-  persistSseEvent({ analysisId, type: "agent.started", payload: { type: "CONVERSATION_AGENT", conversationId: input.sessionId, outputMode } });
+  persistSseEvent({
+    analysisId,
+    type: "agent.started",
+    payload: {
+      type: "CONVERSATION_AGENT",
+      conversationId: input.sessionId,
+      outputMode,
+      workflow: input.workflow ?? "CONVERSATION",
+    },
+  });
 
   try {
     const context = loadAdvisorContext(input.userId);
@@ -63,9 +72,12 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
       sessionId: input.sessionId,
       analysisId,
       content: input.content,
+      workflow: input.workflow,
     });
     const guidedIntake = professional.kind === "GUIDED_INTAKE";
-    const missingQuestions = guidedIntake ? [] : clarificationQuestions(professional.missingInformation);
+    const missingQuestions = input.workflow === "DAILY_PORTFOLIO" || guidedIntake
+      ? []
+      : clarificationQuestions(professional.missingInformation);
     const waitingForUser = !guidedIntake && professional.status === "BLOCKED" && missingQuestions.length > 0;
     return completeRun({
       ...input,
@@ -125,7 +137,16 @@ function prepareRun(input: AdvisorRunInput) {
   const userMessageId = createId("message");
   const create = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES (?,?,?,?,?)").run(analysisId, input.userId, "conversation_agent", "running", now);
-    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,client_message_id,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?,?)").run(userMessageId, input.sessionId, "user", input.content, now, input.clientMessageId ?? null, analysisId, json({ outputMode }));
+    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,client_message_id,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?,?)").run(
+      userMessageId,
+      input.sessionId,
+      "user",
+      input.content,
+      now,
+      input.clientMessageId ?? null,
+      analysisId,
+      json({ outputMode, workflow: input.workflow ?? "CONVERSATION" }),
+    );
     db.prepare("UPDATE conversation_sessions SET updated_at=? WHERE id=? AND user_id=?").run(now, input.sessionId, input.userId);
   });
   create();
@@ -199,8 +220,19 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     resultDb.close();
   }
   if (recommendationId) persistSseEvent({ analysisId: input.analysisId, type: "recommendation.created", payload: { recommendationId, status: input.recommendation?.compliance.status } });
-  if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider } });
-  if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED" } });
+  if (input.status === "completed" || input.status === "blocked" || input.status === "waiting_for_user") {
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "agent.completed",
+      payload: {
+        assistantMessageId,
+        recommendationId,
+        provider: input.provider,
+        ...(input.status === "blocked" ? { status: "BLOCKED" } : {}),
+        ...(input.status === "waiting_for_user" ? { status: "WAITING_FOR_USER" } : {}),
+      },
+    });
+  }
   return result;
 }
 

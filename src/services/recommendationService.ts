@@ -233,9 +233,13 @@ const DAILY_PORTFOLIO_PROMPT = [
 
 export async function runAgentWorkflow(_trigger = "manual", observer: AgentWorkflowObserver = {}) {
   void _trigger;
-  const result = await sendAdvisorMessageStream(DAILY_PORTFOLIO_PROMPT, null, "SQL_ONLY", {
-    onProgress: observer.onProgress,
-  });
+  const result = await sendAdvisorMessageStream(
+    DAILY_PORTFOLIO_PROMPT,
+    null,
+    "SQL_ONLY",
+    { onProgress: observer.onProgress },
+    "DAILY_PORTFOLIO",
+  );
   const recommendation = result.recommendationId
     ? await getRecommendation("", result.recommendationId)
     : null;
