@@ -19,6 +19,22 @@ const ChiefAgentFindingSchema = z.object({
 
 type ChiefAgentFinding = z.infer<typeof ChiefAgentFindingSchema>;
 
+export type ChiefAdvisorPromptContext = {
+  profile?: Record<string, unknown> | null;
+  goals?: unknown;
+  holdings?: unknown;
+  portfolioSnapshot?: Record<string, unknown> | null;
+  instruments?: unknown;
+  targetInstrument?: unknown;
+  marketData?: unknown;
+  semanticTools?: unknown;
+  conversationMemory?: unknown;
+  knownFacts?: unknown;
+  missingInformation?: unknown;
+  workflow?: string;
+  [key: string]: unknown;
+};
+
 const ChiefAdvisorDecisionSchema = z.object({
   action: AdvisorDecisionSchema.shape.action.optional(),
   requestedDirection: AdvisorDecisionSchema.shape.requestedDirection.optional(),
@@ -60,7 +76,10 @@ export function createChiefAdvisorAgent() {
     // their persisted findings, so it must not start a second delegation loop.
     defaultOptions: { maxSteps: 1, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } },
     instructions: [
-      "你是 Money Whisperer 唯一的 Chief Advisor，按问题复杂度动态委派，不使用固定通用工作流。",
+      "你是 Money Whisperer 唯一的 Chief Advisor，也是真正面向用户的理财顾问；你要直接回答用户当前追问，并按复杂度动态委派，不使用固定通用工作流。",
+      "服务端可能提供显式结构化顾问上下文，包括用户画像、目标、持仓、现金、会话记忆和已知事实；这些是已知信息，禁止重复追问。",
+      "只有关键事实确实缺失且会改变结论时才追问；已知可投资金额、期限、目标、回撤边界或方向偏好时，应继续解释、资金分层、组合诊断、风险复核或合规建议。",
+      "普通理财咨询不等于必须立刻给具体标的；但也不能只说先分层。你要基于已知画像给出可执行的解释、方案边界、诊断步骤和下一步选择。",
       "涉及买入、卖出、加仓、减仓时必须委派 research、risk、recommendation、compliance。",
       "专业角色只返回可展示的结构化结论，不得输出隐藏思维链。",
       "服务端提供的计算、行情新鲜度和持仓事实不可被模型改写；LATEST_TRADING_DAY 是经官方交易日历确认的最近正式收盘数据，不等于过期。",
@@ -74,6 +93,7 @@ export function createChiefAdvisorAgent() {
 
 export async function runChiefAdvisor(input: {
   prompt: string;
+  context?: ChiefAdvisorPromptContext;
   requiredAgents: AgentFinding["agent"][];
   fallbackFindings?: AgentFinding[];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
@@ -87,11 +107,12 @@ export async function runChiefAdvisor(input: {
   const fallbackAgents = new Set<AgentFinding["agent"]>();
   const specialists = createSpecialistAgents();
   const failures: Array<{ role: AgentFinding["agent"]; error: unknown }> = [];
+  const advisorPrompt = buildAdvisorPrompt(input.prompt, input.context);
 
   const requiredAgents = [...new Set(input.requiredAgents)];
   const runSpecialist = async (role: AgentFinding["agent"], priorFindings: AgentFinding[]): Promise<AgentFinding> => {
     const specialistAgent = specialists[role];
-    const prompt = specialistPrompt(input.prompt, role, priorFindings);
+    const prompt = specialistPrompt(advisorPrompt, role, priorFindings, input.context);
     delegated.add(role);
     input.onAgentStarted?.(role, prompt);
     let finding: AgentFinding | undefined;
@@ -155,7 +176,7 @@ export async function runChiefAdvisor(input: {
   let lastDecisionError: unknown;
   for (let attempt = 0; attempt < 2 && !modelDecision; attempt += 1) {
     try {
-      const decisionPrompt = chiefDecisionPrompt(input.prompt, findings) + (attempt === 0
+      const decisionPrompt = chiefDecisionPrompt(advisorPrompt, findings, input.context) + (attempt === 0
         ? ""
         : "\n\n这是一次真实模型重试。只返回一个完整、可解析的 AdvisorDecision JSON 对象，不要 Markdown，不要解释文字。");
       const modelObject = await streamModelObject(chief, decisionPrompt, ChiefAdvisorDecisionSchema, (partial) => {
@@ -291,10 +312,78 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
+function buildAdvisorPrompt(prompt: string, context?: ChiefAdvisorPromptContext): string {
+  const contextLines = formatAdvisorContext(context);
+  if (!contextLines.length) return prompt;
+  return [
+    prompt,
+    "显式结构化顾问上下文如下。该上下文由服务端提供，优先级高于自然语言里的模糊表述；字段存在时视为已知事实。",
+    ...contextLines,
+    "上下文使用规则：禁止重复追问上述已知画像、目标、资金用途、风险边界、持仓或现金信息；只对真正缺失且会改变结论的关键事实提问。",
+  ].join("\n\n");
+}
+
+function formatAdvisorContext(context?: ChiefAdvisorPromptContext): string[] {
+  if (!context) return [];
+  const entries: Array<[string, unknown]> = [
+    ["工作模式", context.workflow],
+    ["用户画像", context.profile],
+    ["用户目标", context.goals],
+    ["组合快照", context.portfolioSnapshot],
+    ["持仓", context.holdings],
+    ["自选/可交易标的", context.instruments],
+    ["目标标的", context.targetInstrument],
+    ["行情与研究上下文", context.marketData],
+    ["语义工具上下文", context.semanticTools],
+    ["会话记忆", context.conversationMemory],
+    ["服务端已知事实", context.knownFacts],
+    ["服务端仍缺失的信息", context.missingInformation],
+  ];
+  const knownCoverage = describeKnownContext(context);
+  return [
+    `已知信息覆盖：${knownCoverage.length ? knownCoverage.join("、") : "未提供结构化画像/目标/持仓"}`,
+    ...entries.flatMap(([label, value]) => typeof value === "undefined" ? [] : [`${label}：${safeJson(value)}`]),
+  ];
+}
+
+function describeKnownContext(context: ChiefAdvisorPromptContext): string[] {
+  const coverage: string[] = [];
+  if (hasKnownFields(context.profile)) coverage.push("用户画像");
+  if (hasKnownFields(context.goals)) coverage.push("目标/资金用途");
+  if (hasKnownFields(context.portfolioSnapshot)) coverage.push("现金与组合快照");
+  if (hasKnownFields(context.holdings)) coverage.push("持仓");
+  if (hasKnownFields(context.targetInstrument)) coverage.push("目标标的");
+  if (hasKnownFields(context.marketData)) coverage.push("行情/研究数据");
+  if (hasKnownFields(context.conversationMemory)) coverage.push("会话记忆");
+  if (hasKnownFields(context.knownFacts)) coverage.push("服务端已知事实");
+  return coverage;
+}
+
+function hasKnownFields(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (!isPlainRecord(value)) return typeof value !== "undefined" && value !== null && value !== "";
+  return Object.values(value).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (isPlainRecord(item)) return hasKnownFields(item);
+    return typeof item !== "undefined" && item !== null && item !== "";
+  });
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function chiefDecisionPrompt(prompt: string, findings: AgentFinding[], context?: ChiefAdvisorPromptContext): string {
   return [
     "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
     "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 或 LATEST_TRADING_DAY 时不得声称数据过期。",
+    "你是最终理财顾问，不只是流程调度器；必须回答用户当前问题，并把解释、方案、诊断、风险和合规边界整合成可展示结论。",
+    "如果显式结构化顾问上下文已经包含画像、目标、资金用途、可投资金额、期限、最大回撤、方向偏好或持仓，禁止把这些列为 missingInformation，也不要再次追问。",
+    context ? `已知上下文覆盖：${describeKnownContext(context).join("、") || "无"}` : "未提供额外结构化上下文。",
     prompt,
     `专业子 Agent 发现：${JSON.stringify(findings)}`,
   ].join("\n\n");
@@ -311,14 +400,39 @@ function createSpecialistAgents(): Record<AgentFinding["agent"], Agent> {
   };
 }
 
-function specialistPrompt(prompt: string, role: AgentFinding["agent"], priorFindings: AgentFinding[]): string {
+function specialistPrompt(
+  prompt: string,
+  role: AgentFinding["agent"],
+  priorFindings: AgentFinding[],
+  context?: ChiefAdvisorPromptContext,
+): string {
   return [
     `当前角色：${role}`,
     "你是 Money Whisperer 的真实专业子 Agent。你必须基于服务端事实、上游角色发现和用户问题输出可展示的结构化发现。",
     "不要复述隐藏思维链；不要编造行情、持仓或用户画像；证据不足时写入 missingInformation 和 counterEvidence。",
+    specialistResponsibility(role),
+    context ? `已知上下文覆盖：${describeKnownContext(context).join("、") || "无"}` : "未提供额外结构化上下文。",
+    "如果显式结构化顾问上下文已经给出相关信息，禁止重复追问；missingInformation 只列真正缺失且会改变本角色结论的内容。",
     `用户与服务端上下文：\n${prompt}`,
     priorFindings.length ? `已完成的上游发现：${JSON.stringify(priorFindings)}` : "暂无上游发现。",
   ].join("\n\n");
+}
+
+function specialistResponsibility(role: AgentFinding["agent"]): string {
+  switch (role) {
+    case "PROFILE_CONTEXT":
+      return "职责：识别已知画像、目标、资金用途、期限、回撤边界和偏好；不要因为没有重新采集表单就重复询问已在上下文中的信息。";
+    case "DATA_RESEARCH":
+      return "职责：围绕用户当前追问确认是否需要行情、财务、估值或宏观证据；不需要外部数据的问题要明确说明 NOT_REQUIRED 的原因。";
+    case "PORTFOLIO_RISK":
+      return "职责：结合持仓、现金、目标和回撤边界做组合诊断、集中度、流动性、波动和情景风险复核。";
+    case "RECOMMENDATION":
+      return "职责：在风险和合规边界内给出可执行方案、仓位区间、观察条件或替代路径；未请求具体标的时给资金分层和配置框架。";
+    case "COMPLIANCE_REVIEWER":
+      return "职责：检查适当性、信息缺口、数据状态和模拟交易边界；可以降级或阻断，但要说明用户还能继续做什么。";
+    case "EXPLANATION_REPORT":
+      return "职责：把顾问结论解释成用户能继续决策的语言，回应追问，不要只重复流程下一步。";
+  }
 }
 
 function specialist(id: string, name: string, agent: AgentFinding["agent"]) {

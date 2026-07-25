@@ -65,8 +65,9 @@ function format(row: Record<string, unknown>, goalCount = 0) {
     && row.investment_amount_decimal
     && row.horizon
     && row.max_drawdown_decimal
-    && Object.hasOwn(preferences, "instrumentPreference")
-    && Object.hasOwn(preferences, "nearTermUse"),
+    && preferences.instrumentPreference != null
+    && preferences.instrumentPreference !== ""
+    && preferences.nearTermUse != null,
   );
   return {
     id: row.id,

@@ -104,24 +104,29 @@ describe("conversation advisor clarifications", () => {
     expect(body.error.code).toBe("RUN_ALREADY_ACTIVE");
   });
 
-  it("keeps open-ended normal conversations in guided intake without generating a recommendation", async () => {
+  it("lets complete-profile users ask open-ended questions in the advisor flow", async () => {
     createCompleteProfile();
     const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，想学理财", "guided-intake-message");
     const body = await response.json();
 
     expect(response.status).toBe(202);
     expect(body.data.analysis.status).toBe("COMPLETED");
+    expect(body.data.conversationKind).toBe("DECISION");
+    expect(body.data.answer).not.toContain("请先完成投资画像");
+    expect(body.data.answer).toContain("核心结论");
+
+    const events = getSseEvents(body.data.analysis.analysisId);
+    expect(events.some((event) => event.type === "agent.started")).toBe(true);
+  });
+
+  it("keeps incomplete-profile open-ended questions in guided intake", async () => {
+    const response = await sendMessage("我想了解怎么开始理财", "guided-incomplete-message");
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
     expect(body.data.conversationKind).toBe("GUIDED_INTAKE");
     expect(body.data.recommendationId).toBeNull();
     expect(body.data.answer).toContain("普通模式会先把目标、资金用途和风险边界聊清楚");
-
-    const db = getDatabase();
-    const recommendationCount = db.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE user_id=?").get(TEST_USER_ID) as { count: number };
-    db.close();
-    expect(recommendationCount.count).toBe(0);
-
-    const events = getSseEvents(body.data.analysis.analysisId);
-    expect(events.some((event) => event.type === "agent.delegated")).toBe(false);
   });
 
   it("completes the daily portfolio workflow without creating a clarification", async () => {
