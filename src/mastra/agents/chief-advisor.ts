@@ -52,19 +52,14 @@ export type ChiefAdvisorStreamEvent =
   | { type: "decision.object"; partial: Partial<AdvisorDecision> };
 
 export function createChiefAdvisorAgent() {
-  const profile = specialist("professional-profile-context", "Profile Context", "PROFILE_CONTEXT");
-  const research = specialist("professional-data-research", "Data & Research", "DATA_RESEARCH");
-  const risk = specialist("professional-portfolio-risk", "Portfolio & Risk", "PORTFOLIO_RISK");
-  const recommendation = specialist("professional-recommendation", "Recommendation", "RECOMMENDATION");
-  const compliance = specialist("professional-compliance", "Compliance Reviewer", "COMPLIANCE_REVIEWER");
-  const explanation = specialist("professional-explanation-report", "Explanation Report", "EXPLANATION_REPORT");
   return new Agent({
     id: "professional-chief-advisor",
     name: "Chief Advisor",
     description: "根据问题风险动态委派画像、研究、组合风险、建议和合规角色。",
     model: getDeepSeekModelConfig(),
-    defaultOptions: { maxSteps: 10, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } },
-    agents: { profile, research, risk, recommendation, compliance, explanation },
+    // Specialists are executed explicitly above. The chief only synthesizes
+    // their persisted findings, so it must not start a second delegation loop.
+    defaultOptions: { maxSteps: 1, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } },
     instructions: [
       "你是 Money Whisperer 唯一的 Chief Advisor，按问题复杂度动态委派，不使用固定通用工作流。",
       "涉及买入、卖出、加仓、减仓时必须委派 research、risk、recommendation、compliance。",
