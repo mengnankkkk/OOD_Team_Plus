@@ -16,10 +16,15 @@ describe("A2A agent card route", () => {
     const serviceEndpoint = "https://agents.example.com/api/a2a/message-send";
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
     expect(body).toMatchObject({
       name: "Money Whisperer Chief Advisor",
       url: serviceEndpoint,
       preferredTransport: "JSONRPC",
+      provider: {
+        organization: "OOD Team Plus",
+        url: "https://agents.example.com",
+      },
       supportedInterfaces: [
         {
           url: serviceEndpoint,
@@ -28,6 +33,8 @@ describe("A2A agent card route", () => {
         },
       ],
       metadata: {
+        agentCardUrl: "https://agents.example.com/.well-known/agent-card.json",
+        serviceEndpoint,
         agentArchitecture: {
           rootAgent: "professional-chief-advisor",
           conversationEntrypoint: "runConversationAgent",
@@ -39,7 +46,6 @@ describe("A2A agent card route", () => {
         ]),
       },
     });
-
     expect(body.skills.map((skill: { id: string }) => skill.id)).toEqual([
       "chief_advisor_conversation",
       "profile_and_goal_planning",

@@ -39,20 +39,7 @@ export async function runBranchScenarioAgent(
     callbacks.onAgentStarted?.("SCENARIO_PLANNER", "提出互斥的 A/B/C 分支方案");
     callbacks.onAgentStarted?.("COMPLIANCE_REVIEWER", "检查模拟边界、证据和失效条件");
     const agent = createBranchScenarioAgent();
-    const stream = await agent.stream(buildPrompt(input), {
-      maxSteps: 10,
-      modelSettings: { maxOutputTokens: 2_400, temperature: 0.1 },
-      structuredOutput: {
-        schema: BranchScenarioModelPlanSchema,
-        instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。",
-      },
-    });
-    let latestPartial: Partial<BranchScenarioModelPlan> = {};
-    for await (const partial of stream.objectStream) {
-      if (partial && typeof partial === "object") latestPartial = { ...latestPartial, ...partial };
-    }
-    const streamedObject = await stream.object.catch(() => undefined);
-    const modelPlan = parseModelPlan(streamedObject, latestPartial);
+    const modelPlan = await generateModelPlan(agent, buildPrompt(input));
     const plan = BranchScenarioPlanSchema.parse({
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
@@ -75,6 +62,31 @@ export async function runBranchScenarioAgent(
     const plan = deterministicFallback(input);
     return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"] };
   }
+}
+
+async function generateModelPlan(agent: Agent, prompt: string): Promise<BranchScenarioModelPlan> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请完整输出全部候选方案。" : "上一轮结构化输出不完整。请重新完整输出 options 数组，不要省略任何字段。"}`, {
+        maxSteps: 10,
+        modelSettings: { maxOutputTokens: 3_600, temperature: 0.1 },
+        structuredOutput: {
+          schema: BranchScenarioModelPlanSchema,
+          instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。必须完整输出 options 数组及每个方案的全部字段。",
+        },
+      });
+      let latestPartial: Partial<BranchScenarioModelPlan> = {};
+      for await (const partial of stream.objectStream) {
+        if (partial && typeof partial === "object") latestPartial = deepMergePartial(latestPartial, partial) as Partial<BranchScenarioModelPlan>;
+      }
+      const streamedObject = await stream.object.catch(() => undefined);
+      return parseModelPlan(streamedObject, latestPartial);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 export function createBranchScenarioAgent() {
@@ -214,10 +226,37 @@ function normalizeModelPlan(value: unknown): unknown {
     options: plan.options.map((rawOption) => {
       if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) return rawOption;
       const option = rawOption as Record<string, unknown>;
-      const trades = Array.isArray(option.trades) ? option.trades : [];
-      return { ...option, strategy: normalizeStrategy(option.strategy, trades) };
+      const trades = Array.isArray(option.trades)
+        ? option.trades.map((trade) => normalizeModelTrade(trade))
+        : [];
+      const targetAllocations = Array.isArray(option.targetAllocations)
+        ? option.targetAllocations.map((allocation) => normalizeModelAllocation(allocation))
+        : [];
+      return {
+        ...option,
+        strategy: normalizeStrategy(option.strategy, trades),
+        trades,
+        targetAllocations,
+      };
     }),
   };
+}
+
+function normalizeModelTrade(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const trade = value as Record<string, unknown>;
+  return { ...trade, quantity: normalizeDecimalValue(trade.quantity) };
+}
+
+function normalizeModelAllocation(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const allocation = value as Record<string, unknown>;
+  return { ...allocation, weight: normalizeDecimalValue(allocation.weight) };
+}
+
+function normalizeDecimalValue(value: unknown): unknown {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" ? value.trim() : value;
 }
 
 function mergeDefined(partial: Partial<BranchScenarioModelPlan>, completed: unknown): Record<string, unknown> {
@@ -236,6 +275,24 @@ function parseModelPlan(completed: unknown, partial: Partial<BranchScenarioModel
     }
   }
   throw lastError;
+}
+
+function deepMergePartial(previous: unknown, incoming: unknown): unknown {
+  if (incoming === undefined) return previous;
+  if (Array.isArray(incoming)) {
+    const priorItems = Array.isArray(previous) ? previous : [];
+    const length = Math.max(priorItems.length, incoming.length);
+    return Array.from({ length }, (_, index) => deepMergePartial(priorItems[index], incoming[index]));
+  }
+  if (incoming && typeof incoming === "object") {
+    const priorRecord = previous && typeof previous === "object" && !Array.isArray(previous)
+      ? previous as Record<string, unknown>
+      : {};
+    const incomingRecord = incoming as Record<string, unknown>;
+    return Object.fromEntries([...new Set([...Object.keys(priorRecord), ...Object.keys(incomingRecord)])]
+      .map((key) => [key, deepMergePartial(priorRecord[key], incomingRecord[key])]));
+  }
+  return incoming;
 }
 
 function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] | unknown {
