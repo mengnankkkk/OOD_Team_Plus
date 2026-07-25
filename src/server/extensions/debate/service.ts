@@ -25,6 +25,15 @@ type RoundInput = { userId: string; conversationId: string; debateSessionId: str
 type DebateResult = { debateSessionId: string; roundId: string; roundIndex: number; analysis: { analysisId: string; type: "DEBATE"; status: "COMPLETED"; streamUrl: string }; judgement: DebateJudgement; publication: AdvisorPublicationResult | null };
 type DebateStarted = { debateSessionId: string; roundIndex: number; analysis: { analysisId: string; type: "DEBATE"; status: "RUNNING"; streamUrl: string } };
 export type DebateBackgroundScheduler = (task: () => Promise<DebateResult>) => void;
+export type DebateSessionErrorCode = "DEBATE_NOT_FOUND" | "DEBATE_BLOCKED" | "DEBATE_NOT_ACTIVE";
+
+export class DebateSessionError extends Error {
+  constructor(public readonly code: DebateSessionErrorCode, message: string) {
+    super(message);
+    this.name = "DebateSessionError";
+  }
+}
+
 type Speaker = "user" | "evidence" | "bull" | "bear" | "judge";
 type Stance = "bull" | "bear" | "neutral";
 
@@ -92,11 +101,21 @@ function prepareDebateStart(input: StartInput): { round: RoundInput; started: De
 function prepareDebateContinuation(input: ContinueInput): { round: RoundInput; started: DebateStarted } {
   const db = getDatabase();
   let session: Record<string, unknown> | undefined;
+  let sessionError: DebateSessionError | null = null;
   try {
     const reserve = db.transaction(() => {
-      session = db.prepare("SELECT * FROM debate_sessions WHERE id=? AND user_id=? AND status='active'")
+      session = db.prepare("SELECT * FROM debate_sessions WHERE id=? AND user_id=?")
         .get(input.debateSessionId, input.userId) as Record<string, unknown> | undefined;
       if (!session) return;
+      const status = String(session.status ?? "").toLowerCase();
+      if (status === "blocked") {
+        sessionError = new DebateSessionError("DEBATE_BLOCKED", "Debate is blocked; start a new Battle");
+        return;
+      }
+      if (status !== "active") {
+        sessionError = new DebateSessionError("DEBATE_NOT_ACTIVE", "Debate is no longer active; start a new Battle");
+        return;
+      }
       const reserved = db.prepare(`UPDATE agent_runs
         SET status='running',completed_at=NULL,failure_code=NULL,failure_message=NULL
         WHERE id=? AND user_id=? AND status<>'running'`)
@@ -113,7 +132,8 @@ function prepareDebateContinuation(input: ContinueInput): { round: RoundInput; s
   } finally {
     db.close();
   }
-  if (!session) throw new Error("Debate not found");
+  if (!session) throw new DebateSessionError("DEBATE_NOT_FOUND", "Debate not found");
+  if (sessionError) throw sessionError;
   const round: RoundInput = {
     userId: input.userId, conversationId: String(session.conversation_id), debateSessionId: input.debateSessionId, analysisId: String(session.root_agent_run_id), content: input.content,
     userRole: input.userRole ?? roleFrom(session.user_debate_role), targetSymbol: typeof session.target_symbol === "string" ? session.target_symbol : null,

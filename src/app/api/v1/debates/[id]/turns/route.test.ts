@@ -74,4 +74,26 @@ describe("POST /api/v1/debates/:id/turns", () => {
     expect(retried.status).toBe(202);
     expect(continueDebateInBackground).toHaveBeenCalledTimes(2);
   });
+
+  it("returns a distinct recoverable error when a debate is blocked", async () => {
+    vi.mocked(continueDebateInBackground).mockImplementationOnce(() => {
+      const error = new Error("Debate is blocked; start a new Battle") as Error & { code: string };
+      error.code = "DEBATE_BLOCKED";
+      throw error;
+    });
+
+    const res = await POST(authenticatedRequest(`http://localhost/api/v1/debates/${debateId}/turns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "debate-turn-blocked" },
+      body: JSON.stringify({ content: "请重新开始。", userRole: "neutral" }),
+    }), { params: Promise.resolve({ id: debateId }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body.error).toMatchObject({
+      code: "DEBATE_BLOCKED",
+      message: "Debate is blocked; start a new Battle",
+      retryable: false,
+    });
+  });
 });

@@ -192,7 +192,8 @@ function watchDebateStream(streamUrl: string, observer: DebateStreamObserver, ex
       });
     }
     source.onerror = () => {
-      observer.onProgress?.("Battle 事件流中断，正在自动重连");
+      observer.onProgress?.("Battle 事件流暂时中断，正在读取当前状态");
+      finish();
     };
   });
 }
@@ -237,6 +238,14 @@ export function isDebatePackSettled(pack: DebatePack, expectedRoundIndex?: numbe
   if (roundStatus !== "COMPLETED") return false;
   const roundId = typeof targetRound?.id === "string" ? targetRound.id : null;
   return Boolean(roundId && pack.judgements.some((judgement) => judgement.roundId === roundId));
+}
+
+export function isDebateSessionUnavailable(error: unknown): boolean {
+  if (!(error instanceof FrontendApiError)) return false;
+  return error.status === 404
+    || error.code === "DEBATE_NOT_FOUND"
+    || error.code === "DEBATE_BLOCKED"
+    || error.code === "DEBATE_NOT_ACTIVE";
 }
 
 export function shouldFinishDebateStream(

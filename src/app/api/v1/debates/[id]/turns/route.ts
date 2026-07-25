@@ -32,11 +32,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   } catch (error) {
     if (!started) await releaseIdempotentRequest(userId, routeCode, key, idem.requestHash);
     const message = error instanceof Error ? error.message : "Debate turn failed";
-    const status = message === "Debate not found" ? 404 : message === "RUN_ALREADY_ACTIVE" ? 409 : 502;
-    return NextResponse.json({ error: { code: status === 404 ? "RESOURCE_NOT_FOUND" : status === 409 ? message : "DEBATE_TURN_FAILED", message, retryable: status >= 500 } }, { status });
+    const code = isDebateSessionError(error)
+      ? error.code
+      : message === "RUN_ALREADY_ACTIVE"
+        ? "RUN_ALREADY_ACTIVE"
+        : "DEBATE_TURN_FAILED";
+    const status = code === "DEBATE_NOT_FOUND"
+      ? 404
+      : code === "RUN_ALREADY_ACTIVE" || code === "DEBATE_BLOCKED" || code === "DEBATE_NOT_ACTIVE"
+        ? 409
+        : 502;
+    return NextResponse.json({ error: { code, message, retryable: status >= 500 } }, { status });
   }
 }
 
 const scheduleAfterResponse: DebateBackgroundScheduler = (task) => {
   after(() => task().catch(() => undefined));
 };
+
+function isDebateSessionError(
+  error: unknown,
+): error is { code: "DEBATE_NOT_FOUND" | "DEBATE_BLOCKED" | "DEBATE_NOT_ACTIVE" } {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (
+      error.code === "DEBATE_NOT_FOUND"
+      || error.code === "DEBATE_BLOCKED"
+      || error.code === "DEBATE_NOT_ACTIVE"
+    );
+}

@@ -9,6 +9,7 @@ import {
 import {
   continueDebateMessage,
   isDebatePackSettled,
+  isDebateSessionUnavailable,
   loadDebatePack,
   resumeDebateMessage,
   startDebateMessage,
@@ -248,11 +249,15 @@ const AdvisorPage = () => {
       setMessages(restoredRows);
 
       const restoredPack = await restoredPackPromise.catch(() => null);
-      if (
-        !restoredPack
-        || restoredDebate.roundIndex === null
-        || isDebatePackSettled(restoredPack, restoredDebate.roundIndex)
-      ) return;
+      if (!restoredPack) {
+        setActiveDebateSessionId(null);
+        return;
+      }
+      if (restoredPack.status.toUpperCase() === "BLOCKED") {
+        setActiveDebateSessionId(null);
+        return;
+      }
+      if (restoredDebate.roundIndex === null || isDebatePackSettled(restoredPack, restoredDebate.roundIndex)) return;
 
       const streamMessageId = `debate-resume-${restoredDebate.debateSessionId}-${restoredDebate.roundIndex}`;
       setMessages((current) => [...current, {
@@ -457,21 +462,33 @@ const AdvisorPage = () => {
     setDebateActivity({ role: "user", phase: "started", eventType: "ui.user.submitted" });
     setDraft("");
     try {
-      const result = activeDebateSessionId && !forceNewDebate
-        ? await continueDebateMessage(activeDebateSessionId, text.trim(), role, {
-            onProgress: updateDebateProgress(streamMessageId),
-            onActivity: setDebateActivity,
-          })
-        : await startDebateMessage(
-            text.trim(),
-            currentSessionId,
-            role,
-            {
-              onProgress: updateDebateProgress(streamMessageId),
-              onActivity: setDebateActivity,
-            },
-            pendingDebateContext?.motion.trim() === text.trim() ? pendingDebateContext.targetSymbol : null,
-          );
+      const observer = {
+        onProgress: updateDebateProgress(streamMessageId),
+        onActivity: setDebateActivity,
+      };
+      let result;
+      try {
+        result = activeDebateSessionId && !forceNewDebate
+          ? await continueDebateMessage(activeDebateSessionId, text.trim(), role, observer)
+          : await startDebateMessage(
+              text.trim(),
+              currentSessionId,
+              role,
+              observer,
+              pendingDebateContext?.motion.trim() === text.trim() ? pendingDebateContext.targetSymbol : null,
+            );
+      } catch (error) {
+        if (!activeDebateSessionId || forceNewDebate || !isDebateSessionUnavailable(error)) throw error;
+        setActiveDebateSessionId(null);
+        updateDebateProgress(streamMessageId)("旧 Battle 已失效，正在重新开启一场 Battle");
+        result = await startDebateMessage(
+          text.trim(),
+          currentSessionId,
+          role,
+          observer,
+          pendingDebateContext?.motion.trim() === text.trim() ? pendingDebateContext.targetSymbol : null,
+        );
+      }
       const returnedSid = result.sessionId || currentSessionId;
       const roundId = latestDebateRoundId(result.pack);
       const messageMetadata = {
@@ -483,7 +500,7 @@ const AdvisorPage = () => {
         : result.pack;
       if (returnedSid && returnedSid !== currentSessionId) setActiveSessionId(returnedSid);
       setAdvisorMode("debate");
-      setActiveDebateSessionId(result.debateSessionId);
+      setActiveDebateSessionId(result.pack.status.toUpperCase() === "BLOCKED" ? null : result.debateSessionId);
       setPendingDebateContext(null);
       setMessages((m) => m.map((item) => item.id === optimistic.id || item.id === streamMessageId
         ? { ...item, sessionId: returnedSid ?? currentSessionId }
@@ -505,6 +522,7 @@ const AdvisorPage = () => {
       void refreshSessions();
     } catch (err: any) {
       toast.error(err?.message ?? "多空 Battle 暂时无响应");
+      if (activeDebateSessionId && isDebateSessionUnavailable(err)) setActiveDebateSessionId(null);
       setMessages((m) => m.filter((x) => x.id !== optimistic.id && x.id !== streamMessageId));
     } finally {
       setSending(false);

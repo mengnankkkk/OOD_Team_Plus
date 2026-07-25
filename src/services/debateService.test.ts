@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { FrontendApiError } from "@/features/frontend-migration/api";
 import { normalizeDebateSuggestion } from "./advisorService";
 import {
   extractDebateTargetSymbol,
   formatDebateReply,
   debateStreamActivity,
   isDebatePackSettled,
+  isDebateSessionUnavailable,
   selectDebateTargetSymbol,
   shouldFinishDebateStream,
   type DebatePack,
@@ -65,6 +67,12 @@ describe("debateService helpers", () => {
     blocked.rounds = [];
     blocked.judgements = [];
     expect(isDebatePackSettled(blocked)).toBe(true);
+  });
+
+  it("treats blocked and missing API sessions as recoverable Battle state", () => {
+    expect(isDebateSessionUnavailable(new FrontendApiError("Debate is blocked", "DEBATE_BLOCKED", 409))).toBe(true);
+    expect(isDebateSessionUnavailable(new FrontendApiError("Debate not found", "DEBATE_NOT_FOUND", 404))).toBe(true);
+    expect(isDebateSessionUnavailable(new FrontendApiError("Other conflict", "RUN_ALREADY_ACTIVE", 409))).toBe(false);
   });
 
   it("settles and closes the stream only for the expected round", () => {
