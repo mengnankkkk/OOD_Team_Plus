@@ -49,7 +49,7 @@ export async function runBranchScenarioAgent(
     });
     let latestPartial: Partial<BranchScenarioModelPlan> = {};
     for await (const partial of stream.objectStream) {
-      if (partial && typeof partial === "object") latestPartial = { ...latestPartial, ...partial };
+      if (partial && typeof partial === "object") latestPartial = deepMergePartial(latestPartial, partial) as Partial<BranchScenarioModelPlan>;
     }
     const streamedObject = await stream.object.catch(() => undefined);
     const modelPlan = parseModelPlan(streamedObject, latestPartial);
@@ -236,6 +236,24 @@ function parseModelPlan(completed: unknown, partial: Partial<BranchScenarioModel
     }
   }
   throw lastError;
+}
+
+function deepMergePartial(previous: unknown, incoming: unknown): unknown {
+  if (incoming === undefined) return previous;
+  if (Array.isArray(incoming)) {
+    const priorItems = Array.isArray(previous) ? previous : [];
+    const length = Math.max(priorItems.length, incoming.length);
+    return Array.from({ length }, (_, index) => deepMergePartial(priorItems[index], incoming[index]));
+  }
+  if (incoming && typeof incoming === "object") {
+    const priorRecord = previous && typeof previous === "object" && !Array.isArray(previous)
+      ? previous as Record<string, unknown>
+      : {};
+    const incomingRecord = incoming as Record<string, unknown>;
+    return Object.fromEntries([...new Set([...Object.keys(priorRecord), ...Object.keys(incomingRecord)])]
+      .map((key) => [key, deepMergePartial(priorRecord[key], incomingRecord[key])]));
+  }
+  return incoming;
 }
 
 function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] | unknown {
