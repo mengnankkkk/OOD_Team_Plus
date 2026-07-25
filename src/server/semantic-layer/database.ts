@@ -93,7 +93,7 @@ export function jsonValue(value: string[] | undefined) {
   return value ? JSON.stringify(value) : null;
 }
 
-export function nullable(value: string | undefined) {
+export function nullable(value: string | null | undefined) {
   return value && value.length > 0 ? value : null;
 }
 

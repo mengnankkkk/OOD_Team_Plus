@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const optionalText = (max: number) => z.string().trim().max(max).optional();
+const optionalText = (max: number) => z.string().trim().max(max).nullish();
 
 export const entityIdSchema = z.string().trim().min(1).max(128);
 
