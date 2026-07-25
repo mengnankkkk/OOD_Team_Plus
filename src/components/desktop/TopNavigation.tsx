@@ -23,6 +23,7 @@ const historyEntries = [
 ];
 
 const workspaceEntries = [
+  { path: "/injective", label: "Injective 链上存证" },
   { path: "/system-health", label: "系统健康" },
 ];
 

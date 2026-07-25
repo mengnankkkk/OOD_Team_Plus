@@ -15,6 +15,7 @@ import {
   Check,
   ChevronDown,
   FileText,
+  Fingerprint,
   Image as ImageIcon,
   MoreHorizontal,
   MessageSquarePlus,
@@ -40,6 +41,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useSearchParams } from "@/features/frontend-migration/router";
 import { useNavigate } from "@/features/frontend-migration/router";
 import { recordRecommendationDecision } from "@/services/recommendationService";
+import { saveInjectiveProofDraft } from "@/lib/injective-proof";
 
 const SUGGESTIONS = [
   "我想三年后在杭州付首付，月入 2 万，帮我建档",
@@ -720,14 +722,28 @@ const AdvisorPage = () => {
                           </div>
                         ) : null}
                       </div>
-                      {msg.role === "advisor" && meta.recommendationId ? (
-                        <button
-                          type="button"
-                          onClick={() => navigate(`/recommendations/${meta.recommendationId}`)}
-                          className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/75"
-                        >
-                          <FileText className="size-3.5" /> 查看建议卡
-                        </button>
+                      {msg.role === "advisor" && !meta.streaming && msg.content.trim() ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-4">
+                          {meta.recommendationId ? (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/recommendations/${meta.recommendationId}`)}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/75"
+                            >
+                              <FileText className="size-3.5" /> 查看建议卡
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              saveInjectiveProofDraft({ content: msg.content, sourceId: msg.id, sourceLabel: "Advisor AI 回答" });
+                              navigate("/injective");
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-700 transition-colors hover:text-cyan-500"
+                          >
+                            <Fingerprint className="size-3.5" /> 存入 Injective 证据链
+                          </button>
+                        </div>
                       ) : null}
                       {msg.role === "advisor" && meta.trace ? <AdvisorTrace trace={meta.trace} /> : null}
                     </div>
