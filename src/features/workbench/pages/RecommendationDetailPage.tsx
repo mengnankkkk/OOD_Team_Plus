@@ -61,10 +61,11 @@ const RecommendationDetailPage = () => {
 
   const handleReject = async () => {
     if (!user || !rec) return;
-    prompt("为什么拒绝这条建议？（可选）");
+    const reason = prompt("为什么拒绝这条建议？（可选）");
+    if (reason === null) return;
     setBusy("reject");
     try {
-      await updateRecommendationStatus(user.id, rec.id, "rejected");
+      await updateRecommendationStatus(user.id, rec.id, "rejected", { reason: reason.trim() || undefined });
       toast.success("已拒绝并写入决策日志");
       invalidate();
       navigate("/");

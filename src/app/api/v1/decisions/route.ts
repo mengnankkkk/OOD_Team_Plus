@@ -1,5 +1,86 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getDatabase, getRequestContext, meta, parseJson } from "@/server/http/context";
+import { getDatabase, getRequestContext, meta, pageParams, parseJson } from "@/server/http/context";
 
-export async function GET(req: NextRequest) { const db = getDatabase(); const rows = db.prepare("SELECT * FROM decision_logs WHERE user_id=? ORDER BY created_at DESC LIMIT ?").all(getRequestContext(req).userId, Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 20), 100)) as Array<Record<string, unknown>>; db.close(); return NextResponse.json({ data: { items: rows.map((row) => ({ id: row.id, action: row.action, decision: row.decision, recommendation: parseJson(row.recommendation_json as string, {}), createdAt: row.created_at })) }, meta: meta() }); }
+type Row = Record<string, unknown>;
+
+const ACTIONS = new Set(["ACCEPT", "REJECT", "DEFER", "REVOKE", "FOLLOW_UP", "VIEWED", "COMMENT"]);
+
+function record(value: unknown): Row {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
+}
+
+function normalizedAction(value: unknown): string {
+  const action = String(value ?? "VIEWED").toUpperCase();
+  if (action === "SIMULATED") return "ACCEPT";
+  if (action === "REJECTED") return "REJECT";
+  if (action === "REVOKED") return "REVOKE";
+  if (action === "LATER") return "DEFER";
+  if (action === "FOLLOWUP_QUESTION") return "FOLLOW_UP";
+  if (action === "COMMENTED") return "COMMENT";
+  return action;
+}
+
+export async function GET(req: NextRequest) {
+  const { userId } = getRequestContext(req);
+  const { limit } = pageParams(req);
+  const actionFilter = normalizedAction(req.nextUrl.searchParams.get("action"));
+  const hasActionFilter = req.nextUrl.searchParams.has("action") && ACTIONS.has(actionFilter);
+  const db = getDatabase();
+  const rows = db.prepare(`SELECT * FROM decision_logs
+    WHERE user_id=? ${hasActionFilter ? "AND UPPER(action)=?" : ""}
+    ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .all(...(hasActionFilter ? [userId, actionFilter, limit] : [userId, limit])) as Row[];
+
+  const items = rows.map((row) => {
+    const payload = record(parseJson(String(row.recommendation_json ?? "{}"), {}));
+    const recommendation = record(payload.recommendation ?? payload);
+    const recommendationId = recommendation.id == null ? null : String(recommendation.id);
+    const conversationId = row.conversation_id == null
+      ? recommendation.conversationId == null ? null : String(recommendation.conversationId)
+      : String(row.conversation_id);
+    const analysisId = recommendation.analysisId == null ? null : String(recommendation.analysisId);
+    const current = recommendationId
+      ? db.prepare("SELECT status,updated_at FROM recommendations WHERE id=? AND user_id=? AND status!='deleted'").get(recommendationId, userId) as Row | undefined
+      : undefined;
+    const instrument = recommendation.instrumentId
+      ? db.prepare("SELECT symbol,name,market,asset_type FROM instruments WHERE id=?").get(String(recommendation.instrumentId)) as Row | undefined
+      : undefined;
+    const conversation = conversationId
+      ? db.prepare("SELECT title FROM conversation_sessions WHERE id=? AND user_id=?").get(conversationId, userId) as Row | undefined
+      : undefined;
+    const userMessage = conversationId
+      ? db.prepare(`SELECT content FROM messages WHERE session_id=? AND role='user' AND created_at<=?
+          ORDER BY created_at DESC,id DESC LIMIT 1`).get(conversationId, String(recommendation.createdAt ?? row.created_at)) as Row | undefined
+      : undefined;
+    const advisorMessage = conversationId && analysisId
+      ? db.prepare(`SELECT content FROM messages WHERE session_id=? AND role='assistant' AND agent_run_id=?
+          ORDER BY created_at DESC,id DESC LIMIT 1`).get(conversationId, analysisId) as Row | undefined
+      : undefined;
+
+    return {
+      id: row.id,
+      recommendationId,
+      conversationId,
+      analysisId,
+      action: normalizedAction(row.action ?? row.decision),
+      reason: payload.reason == null ? null : String(payload.reason),
+      note: payload.note == null ? null : String(payload.note),
+      recommendation,
+      currentStatus: current?.status == null ? recommendation.status ?? null : current.status,
+      currentUpdatedAt: current?.updated_at ?? null,
+      conversationTitle: conversation?.title ?? null,
+      userQuestion: userMessage?.content ?? null,
+      advisorReply: advisorMessage?.content ?? null,
+      instrument: instrument ? {
+        symbol: instrument.symbol,
+        name: instrument.name,
+        market: instrument.market,
+        assetType: instrument.asset_type,
+      } : null,
+      createdAt: row.created_at,
+    };
+  });
+  db.close();
+  return NextResponse.json({ data: { items }, meta: meta({ count: items.length }) });
+}

@@ -42,8 +42,21 @@ export type DecisionAction = "viewed" | "followup_question" | "simulated" | "rev
 export interface DecisionLog {
   id: string;
   recommendationId: string | null;
+  conversationId: string | null;
+  analysisId: string | null;
   action: DecisionAction;
   reason: string | null;
+  note: string | null;
+  currentStatus: string | null;
+  conversationTitle: string | null;
+  userQuestion: string | null;
+  advisorReply: string | null;
+  instrument: {
+    symbol: string;
+    name: string;
+    market: string;
+    assetType: string;
+  } | null;
   agentSnapshot: Record<string, unknown>;
   createdAt: string;
 }

@@ -71,14 +71,43 @@ export async function getAlertSyncState(): Promise<AlertSyncState> {
 
 export async function listDecisionLogs(_userId: string, limit = 50): Promise<DecisionLog[]> {
   const result = await apiGet<{ items: Array<Record<string, unknown>> }>(`/api/v1/decisions?limit=${limit}`);
-  return result.items.map((row) => ({
+  return result.items.map(mapDecisionLog);
+}
+
+function mapDecisionLog(row: Record<string, unknown>): DecisionLog {
+  const instrument = isRecord(row.instrument) ? row.instrument : null;
+  return {
     id: String(row.id),
     recommendationId: row.recommendationId == null ? null : String(row.recommendationId),
-    action: String(row.action ?? "viewed").toLowerCase() as DecisionLog["action"],
+    conversationId: row.conversationId == null ? null : String(row.conversationId),
+    analysisId: row.analysisId == null ? null : String(row.analysisId),
+    action: mapDecisionAction(row.action),
     reason: row.reason == null ? null : String(row.reason),
-    agentSnapshot: (row.recommendation as Record<string, unknown>) ?? {},
+    note: row.note == null ? null : String(row.note),
+    currentStatus: row.currentStatus == null ? null : String(row.currentStatus).toLowerCase(),
+    conversationTitle: row.conversationTitle == null ? null : String(row.conversationTitle),
+    userQuestion: row.userQuestion == null ? null : String(row.userQuestion),
+    advisorReply: row.advisorReply == null ? null : String(row.advisorReply),
+    instrument: instrument ? {
+      symbol: String(instrument.symbol ?? ""),
+      name: String(instrument.name ?? "未知标的"),
+      market: String(instrument.market ?? ""),
+      assetType: String(instrument.assetType ?? ""),
+    } : null,
+    agentSnapshot: isRecord(row.recommendation) ? row.recommendation : {},
     createdAt: String(row.createdAt),
-  }));
+  };
+}
+
+function mapDecisionAction(value: unknown): DecisionLog["action"] {
+  const action = String(value ?? "VIEWED").toUpperCase();
+  if (action === "ACCEPT" || action === "SIMULATED") return "simulated";
+  if (action === "REJECT" || action === "REJECTED") return "rejected";
+  if (action === "REVOKE" || action === "REVOKED") return "revoked";
+  if (action === "DEFER" || action === "LATER") return "later";
+  if (action === "FOLLOW_UP" || action === "FOLLOWUP_QUESTION") return "followup_question";
+  if (action === "COMMENT" || action === "COMMENTED") return "commented";
+  return "viewed";
 }
 
 export function subscribeAlerts(_userId: string, onChange: () => void) {

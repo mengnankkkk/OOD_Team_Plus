@@ -56,5 +56,6 @@ export function useDecisionLogs(limit = 50) {
     queryFn: () => listDecisionLogs(user!.id, limit),
     enabled: !!user,
     staleTime: 20_000,
+    refetchInterval: 30_000,
   });
 }

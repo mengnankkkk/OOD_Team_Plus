@@ -37,6 +37,8 @@ import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSearchParams } from "@/features/frontend-migration/router";
+import { useNavigate } from "@/features/frontend-migration/router";
+import { recordRecommendationDecision } from "@/services/recommendationService";
 
 const SUGGESTIONS = [
   "我想三年后在杭州付首付，月入 2 万，帮我建档",
@@ -99,6 +101,7 @@ const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
@@ -304,6 +307,10 @@ const AdvisorPage = () => {
 
   const send = async (text: string) => {
     if (!user || !text.trim() || sending) return;
+    const relatedRecommendationId = [...messages].reverse().find((message) => {
+      const recommendationId = (message.metadata as { recommendationId?: unknown } | undefined)?.recommendationId;
+      return message.role === "advisor" && typeof recommendationId === "string";
+    })?.metadata as { recommendationId?: string } | undefined;
     setSending(true);
     const currentSessionId = activeSessionId;
     const optimistic: OnboardingMessage = {
@@ -392,6 +399,9 @@ const AdvisorPage = () => {
       if (profileUpdate) {
         toast.success("已更新你的财务档案");
         await refreshProfile();
+      }
+      if (relatedRecommendationId?.recommendationId) {
+        void recordRecommendationDecision(user.id, relatedRecommendationId.recommendationId, "FOLLOW_UP", { reason: text.trim() }).catch(() => undefined);
       }
       void refreshSessions();
     } catch (err: any) {
@@ -661,7 +671,7 @@ const AdvisorPage = () => {
           ) : (
             <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
-                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: Array<{ key: string; title: string; content: string }> };
+                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; recommendationId?: string; streaming?: boolean; streamStatus?: string; thinkingSteps?: Array<{ key: string; title: string; content: string }> };
                 return (
                   <li key={msg.id} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role !== "user" && (
@@ -703,6 +713,15 @@ const AdvisorPage = () => {
                           </div>
                         ) : null}
                       </div>
+                      {msg.role === "advisor" && meta.recommendationId ? (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/recommendations/${meta.recommendationId}`)}
+                          className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/75"
+                        >
+                          <FileText className="size-3.5" /> 查看建议卡
+                        </button>
+                      ) : null}
                       {msg.role === "advisor" && meta.trace ? <AdvisorTrace trace={meta.trace} /> : null}
                     </div>
                   </li>

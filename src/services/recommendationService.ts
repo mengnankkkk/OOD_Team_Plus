@@ -56,9 +56,25 @@ export async function getRecommendation(_userId: string, id: string): Promise<Re
   catch { return null; }
 }
 
-export async function updateRecommendationStatus(_userId: string, id: string, status: string): Promise<void> {
-  const action = status === "rejected" ? "REJECT" : status === "simulated" ? "ACCEPT" : "DEFER";
-  await apiPost(`/api/v1/recommendations/${id}/decisions`, { action });
+export type RecommendationDecisionAction = "ACCEPT" | "REJECT" | "DEFER" | "REVOKE" | "FOLLOW_UP" | "VIEWED" | "COMMENT";
+
+export async function recordRecommendationDecision(
+  _userId: string,
+  id: string,
+  action: RecommendationDecisionAction,
+  details: { reason?: string; note?: string } = {},
+): Promise<void> {
+  await apiPost(`/api/v1/recommendations/${id}/decisions`, { action, ...details });
+}
+
+export async function updateRecommendationStatus(
+  userId: string,
+  id: string,
+  status: string,
+  details: { reason?: string; note?: string } = {},
+): Promise<void> {
+  const action = status === "rejected" ? "REJECT" : status === "simulated" ? "ACCEPT" : status === "active" ? "REVOKE" : "DEFER";
+  await recordRecommendationDecision(userId, id, action, details);
 }
 
 export async function listAgentRuns(userId: string, limit = 10): Promise<AgentRun[]> {
