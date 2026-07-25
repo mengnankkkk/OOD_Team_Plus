@@ -14,13 +14,21 @@ import {
   type AdvisorDecision,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
+import { runFinancialPlanningAdvisor } from "./planning-advisor";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
 import type { AdvisorWorkflow, RecommendationDraft } from "./types";
 
 export { AgentFindingSchema, AdvisorDecisionSchema } from "./professional-contracts";
 export type { AgentFinding, AdvisorDecision, ProfessionalAgentRole } from "./professional-contracts";
 
-type AdvisorIntent = "BUY" | "SELL" | "DIAGNOSIS" | "FACTOR_RESEARCH" | "STRATEGY_BACKTEST" | "GENERAL";
+type AdvisorIntent =
+  | "BUY"
+  | "SELL"
+  | "DIAGNOSIS"
+  | "FACTOR_RESEARCH"
+  | "STRATEGY_BACKTEST"
+  | "PLANNING"
+  | "GENERAL";
 type PublicationStatus = "ACTIVE" | "DEGRADED" | "BLOCKED";
 type DataState = "LIVE_FRESH" | "LATEST_TRADING_DAY" | "STALE" | "UNAVAILABLE" | "NOT_REQUIRED";
 
@@ -80,7 +88,7 @@ type RoleRunResult = {
 };
 
 export type ProfessionalAdvisorResult = {
-  kind: "GUIDED_INTAKE" | "DECISION";
+  kind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION";
   runId: string;
   status: PublicationStatus;
   direction: AdvisorDecision["requestedDirection"];
@@ -89,7 +97,7 @@ export type ProfessionalAdvisorResult = {
   missingInformation: string[];
   recommendation: RecommendationDraft | null;
   answer: string;
-  provider: "CHIEF_ADVISOR" | "DETERMINISTIC_FALLBACK";
+  provider: "CHIEF_ADVISOR" | "PLANNING_ADVISOR" | "DETERMINISTIC_FALLBACK";
 };
 
 export async function runProfessionalAdvisor(input: {
@@ -133,6 +141,30 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
+    if (!dailyPortfolio && intent === "PLANNING" && !requestsFullAgentLoop(input.content)) {
+      const planning = await runFinancialPlanningAdvisor({
+        question: input.content,
+        messages: conversationMessages.map((message) => message.content),
+        profile,
+        goals,
+        holdings,
+      });
+      db.prepare("UPDATE agent_runs SET agent_type='planning_advisor',model_provider=?,model_name=?,output_summary=? WHERE id=? AND user_id=?")
+        .run(planning.provider === "PLANNING_ADVISOR" ? "deepseek" : "deterministic", planning.modelName, planning.answer.slice(0, 500), input.analysisId, input.userId);
+      return {
+        kind: "FINANCIAL_PLAN",
+        runId: input.analysisId,
+        status: "DEGRADED",
+        direction: "HOLD",
+        action: "WATCH",
+        findings: [],
+        missingInformation: [],
+        recommendation: null,
+        answer: planning.answer,
+        provider: planning.provider,
+      };
+    }
+
     if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content)) {
       return {
         kind: "GUIDED_INTAKE",
@@ -1152,9 +1184,21 @@ function inferIntent(content: string): AdvisorIntent {
   if (/因子|factor|ICIR|Rank\s*IC|横截面/u.test(content)) return "FACTOR_RESEARCH";
   if (/回测|backtest|策略收益|策略验证|交易规则/u.test(content)) return "STRATEGY_BACKTEST";
   if (/卖出|减仓|止盈|止损|退出|清仓/u.test(content)) return "SELL";
-  if (/买入|入场|加仓|追高|试仓|增配|配置/u.test(content)) return "BUY";
-  if (/诊断|健康|风险|回撤|浮盈|持仓分析|集中度/u.test(content)) return "DIAGNOSIS";
+  if (isDiagnosisRequest(content)) return "DIAGNOSIS";
+  if (/买入|入场|加仓|追高|试仓|增配/u.test(content)) return "BUY";
+  if (isFinancialPlanningRequest(content)) return "PLANNING";
   return "GENERAL";
+}
+
+function isDiagnosisRequest(content: string): boolean {
+  if (/诊断|持仓分析|集中度|组合健康/u.test(content)) return true;
+  return /(?:分析|评估|看看|检查).*(?:风险|回撤|浮盈)|(?:风险|回撤|浮盈).*(?:怎么样|如何|多少|分析|评估)/u.test(content);
+}
+
+function isFinancialPlanningRequest(content: string): boolean {
+  const financeTopic = /理财|投资|资产|资金|存款|现金流|应急金|方案|规划|配置|基金|ETF|债券/u;
+  const asksForHelp = /帮我|请|怎么|如何|应该|怎么办|能不能|可以吗|是否|给我|整理|制定|安排|做一份|适合我|有什么区别|为什么/u;
+  return financeTopic.test(content) && asksForHelp.test(content);
 }
 
 function directionForIntent(intent: AdvisorIntent): AdvisorDecision["requestedDirection"] {
