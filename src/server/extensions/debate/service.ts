@@ -374,6 +374,18 @@ function currentMotion(debateSessionId: string, fallback: string): string {
   return row?.motion?.trim() || fallback;
 }
 
+function debateMotion(userContent: string, plannedMotion: string): string {
+  const content = userContent.trim();
+  const motion = plannedMotion.trim();
+  if (
+    !motion
+    || /(?:^|[\s.:])x?amine\b.*(?:claim|evidence)|examine\b.*available evidence|available evidence|围绕用户提出的问题比较看多与看空证据/iu.test(motion)
+  ) {
+    return content || "本轮多空 Battle 辩题";
+  }
+  return motion;
+}
+
 function advocatePrompt(stance: "bull" | "bear", content: string, plan: DebateRoundPlan, board: DebateEvidenceBoard, speeches: AdvocateSpeech[]): string {
   return JSON.stringify({ stance, userMessage: content, plan, evidenceBoard: board, priorPublicSpeeches: speeches.map(summaryForPrompt) }, null, 2);
 }
