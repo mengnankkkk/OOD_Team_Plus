@@ -99,14 +99,12 @@ export async function runChiefAdvisor(input: {
     try {
       let streamedText = "";
       const stream = await specialistAgent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens: 900, temperature: 0.1 } });
-      const consumeText = consumeTextStream(stream.textStream, (text) => {
+      const consumeText = consumeFullTextStream(stream.fullStream, (text) => {
         streamedText += text;
         input.onStreamEvent?.({ type: "agent.chunk", agent: role, text });
       });
-      const [textResult] = await Promise.allSettled([stream.text, consumeText]);
-      if (textResult.status === "rejected") throw textResult.reason;
-      const modelText = typeof textResult.value === "string" && textResult.value.trim() ? textResult.value : streamedText;
-      const finding = coerceModelFinding(role, parseModelJson(modelText));
+      await consumeText;
+      const finding = coerceModelFinding(role, parseModelJson(streamedText));
       findings.push(finding);
       input.onAgentCompleted?.(finding);
     } catch (error) {
@@ -118,16 +116,29 @@ export async function runChiefAdvisor(input: {
 
   let streamedDecisionText = "";
   const decisionStream = await chief.stream(chiefDecisionPrompt(input.prompt, findings), { maxSteps: 1, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } });
-  const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => {
+  const consumeDecisionText = consumeFullTextStream(decisionStream.fullStream, (text) => {
     streamedDecisionText += text;
     input.onStreamEvent?.({ type: "decision.chunk", text });
   });
-  const [decisionResult] = await Promise.allSettled([decisionStream.text, consumeDecisionText]);
-  if (decisionResult.status === "rejected") throw decisionResult.reason;
-  const modelDecisionText = typeof decisionResult.value === "string" && decisionResult.value.trim() ? decisionResult.value : streamedDecisionText;
+  await consumeDecisionText;
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: coerceModelDecision(parseModelJson(modelDecisionText)), findings, delegatedAgents: [...delegated] };
+  return { decision: coerceModelDecision(parseModelJson(streamedDecisionText)), findings, delegatedAgents: [...delegated] };
+}
+
+async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (!value || typeof value !== "object") continue;
+      const chunk = value as { type?: string; payload?: { text?: unknown } };
+      if ((chunk.type === "text-delta" || chunk.type === "text") && typeof chunk.payload?.text === "string") onChunk(chunk.payload.text);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function parseModelJson(value: string): unknown {
