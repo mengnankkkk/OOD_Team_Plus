@@ -54,7 +54,7 @@ export async function listOnboardingMessages(_userId: string, sessionId?: string
   const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
   return Promise.all(result.items.map(async (row) => {
     const message = mapMessage(row);
-    if (row.role !== "assistant" || !row.agent_run_id || message.metadata.conversationKind === "GUIDED_INTAKE") return message;
+    if (row.role !== "assistant" || !row.agent_run_id || !shouldLoadAdvisorTrace(message.metadata)) return message;
     const trace = await loadAdvisorTrace(row.agent_run_id).catch(() => null);
     return trace ? { ...message, metadata: { ...message.metadata, trace } } : message;
   }));
@@ -95,7 +95,7 @@ export async function sendAdvisorMessage(message: string, sessionId: string | nu
     outputMode,
   });
   const analysis = result.analysis as { analysisId?: string } | undefined;
-  const trace = analysis?.analysisId && result.conversationKind !== "GUIDED_INTAKE"
+  const trace = analysis?.analysisId && shouldLoadAdvisorTrace(result)
     ? await loadAdvisorTrace(analysis.analysisId).catch(() => null)
     : null;
   return {
@@ -136,7 +136,7 @@ export async function sendAdvisorMessageStream(
   }
   const assistant = analysisId ? await waitForAssistantMessage(activeSessionId, analysisId) : null;
   const metadata = assistant?.metadata ?? {};
-  const trace = analysisId && metadata.conversationKind !== "GUIDED_INTAKE"
+  const trace = analysisId && shouldLoadAdvisorTrace(metadata)
     ? await loadAdvisorTrace(analysisId).catch(() => null)
     : null;
   return {
@@ -149,6 +149,11 @@ export async function sendAdvisorMessageStream(
     artifact: result.artifact && typeof result.artifact === "object" ? result.artifact : null,
     clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
   };
+}
+
+function shouldLoadAdvisorTrace(metadata: Record<string, unknown>): boolean {
+  if (metadata.conversationKind === "DECISION") return true;
+  return metadata.conversationKind === undefined && typeof metadata.recommendationId === "string";
 }
 
 function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver): Promise<void> {

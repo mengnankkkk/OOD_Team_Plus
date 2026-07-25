@@ -106,7 +106,7 @@ describe("conversation advisor clarifications", () => {
 
   it("keeps open-ended normal conversations in guided intake without generating a recommendation", async () => {
     createCompleteProfile();
-    const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，想学理财", "guided-intake-message");
+    const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，也担心风险，想学理财", "guided-intake-message");
     const body = await response.json();
 
     expect(response.status).toBe(202);
@@ -120,13 +120,20 @@ describe("conversation advisor clarifications", () => {
     db.close();
     expect(recommendationCount.count).toBe(0);
 
-    const followUp = await sendMessage("未来三年不用，我准备拿 5 万长期投资，最多能接受 10% 浮亏", "guided-intake-follow-up");
+    const followUp = await sendMessage("未来三年不用，我准备拿 5 万长期投资，最大回撤约 10%", "guided-intake-follow-up");
     const followUpBody = await followUp.json();
     expect(followUpBody.data.conversationKind).toBe("GUIDED_INTAKE");
     expect(followUpBody.data.recommendationId).toBeNull();
     expect(followUpBody.data.answer).toContain("我把你刚补充的内容接上了");
     expect(followUpBody.data.answer).toContain("你更想优先实现哪个目标");
     expect(followUpBody.data.answer).not.toContain("准备拿出多少作为可投资金额");
+
+    const planning = await sendMessage("帮我整理适合我的投资方案", "financial-plan-message");
+    const planningBody = await planning.json();
+    expect(planningBody.data.conversationKind).toBe("FINANCIAL_PLAN");
+    expect(planningBody.data.recommendationId).toBeNull();
+    expect(planningBody.data.answer).toContain("资金分层");
+    expect(planningBody.data.answer).toContain("执行顺序");
   });
 
   it("completes the daily portfolio workflow without creating a clarification", async () => {
