@@ -20,7 +20,7 @@ import type { AdvisorWorkflow, RecommendationDraft } from "./types";
 export { AgentFindingSchema, AdvisorDecisionSchema } from "./professional-contracts";
 export type { AgentFinding, AdvisorDecision, ProfessionalAgentRole } from "./professional-contracts";
 
-type AdvisorIntent = "BUY" | "SELL" | "DIAGNOSIS" | "GENERAL";
+type AdvisorIntent = "BUY" | "SELL" | "DIAGNOSIS" | "FACTOR_RESEARCH" | "STRATEGY_BACKTEST" | "GENERAL";
 type PublicationStatus = "ACTIVE" | "DEGRADED" | "BLOCKED";
 type DataState = "LIVE_FRESH" | "LATEST_TRADING_DAY" | "STALE" | "UNAVAILABLE" | "NOT_REQUIRED";
 
@@ -67,7 +67,12 @@ type ResearchState = {
   quotes: Array<{ symbol: string; latest: string | null; asOfDate: string | null; method: string }>;
   riskMetrics: Array<{ symbol: string; observations: number; annualizedVolatility: string | null; maxDrawdown: string | null }>;
   correlations: Array<{ left: string; right: string; observations: number; value: string | null }>;
+  study?: ResearchStudy;
 };
+
+type ResearchStudy =
+  | { kind: "FACTOR_RESEARCH"; factors: string[]; rows: number; summary: string; missing: string[] }
+  | { kind: "STRATEGY_BACKTEST"; strategy: string; observations: number; trades: number; totalReturn: string | null; buyAndHoldReturn: string | null; maxDrawdown: string | null; summary: string; missing: string[] };
 
 type RoleRunResult = {
   childRunId: string;
@@ -148,7 +153,7 @@ export async function runProfessionalAdvisor(input: {
     let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] };
     if (requiredRoles.includes("DATA_RESEARCH")) {
       registerFinding(await runRole(db, input, "DATA_RESEARCH", async (childRunId) => {
-        const result = await researchInstrument(db, input.analysisId, childRunId, target, holdings);
+        const result = await researchInstrument(db, input.analysisId, childRunId, target, holdings, intent, input.content);
         research = result.state;
         return result.finding;
       }, { emitEvents: false }));
@@ -254,7 +259,7 @@ export async function runProfessionalAdvisor(input: {
       findings,
       modelFallback,
       unresolvedConflict,
-      marketDataRequired: requiredRoles.includes("DATA_RESEARCH") && (dailyPortfolio || intent === "BUY" || intent === "SELL"),
+      marketDataRequired: requiredRoles.includes("DATA_RESEARCH") && (dailyPortfolio || intent === "BUY" || intent === "SELL" || isResearchStudy(intent)),
       latestTradingDayAllowed: dailyPortfolio,
     });
     candidate = {
@@ -269,7 +274,7 @@ export async function runProfessionalAdvisor(input: {
             : `建议可供研究和模拟采纳；数据状态为 ${research.dataState}`,
       },
     };
-    const recommendation = target
+    const recommendation = !isResearchStudy(intent) && target
       ? buildRecommendationDraft({
         status,
         candidate,
@@ -280,7 +285,7 @@ export async function runProfessionalAdvisor(input: {
         research,
         snapshot,
       })
-      : holdings.length > 0
+      : !isResearchStudy(intent) && holdings.length > 0
         ? buildPortfolioRecommendationDraft({
           status,
           candidate,
@@ -296,7 +301,7 @@ export async function runProfessionalAdvisor(input: {
       .run(provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null,
         candidate.summary, json({ status, approved: status === "ACTIVE", simulationOnly: true }), input.analysisId);
     persistSseEvent({ analysisId: input.analysisId, type: "compliance.completed", payload: { status, dataState: research.dataState, modelFallback, unresolvedConflict } });
-    const missingInformation = [...new Set([...criticalMissing, ...findings.flatMap((finding) => finding.missingInformation)])];
+    const missingInformation = followUpInformation(intent, criticalMissing, findings);
     return {
       kind: "DECISION",
       runId: input.analysisId,
@@ -312,6 +317,13 @@ export async function runProfessionalAdvisor(input: {
   } finally {
     db.close();
   }
+}
+
+function followUpInformation(intent: AdvisorIntent, criticalMissing: string[], findings: AgentFinding[]): string[] {
+  const promptable = new Set(["risk_level", "investment_amount", "horizon", "max_drawdown", "instrument_preference", "near_term_use", "instrument", "target_holding", "holdings"]);
+  const derived = findings.flatMap((finding) => finding.missingInformation).filter((key) => promptable.has(key));
+  const needsHoldings = intent === "DIAGNOSIS";
+  return [...new Set([...criticalMissing, ...derived.filter((key) => key !== "holdings" || needsHoldings)])];
 }
 
 async function runRole(
@@ -456,6 +468,8 @@ async function researchInstrument(
   childRunId: string,
   target: Instrument | null,
   holdings: Holding[],
+  intent: AdvisorIntent,
+  content: string,
 ): Promise<{ finding: AgentFinding; state: ResearchState }> {
   const instruments = target ? [target] : holdings.map((holding) => ({
     id: holding.instrument_id,
@@ -467,7 +481,7 @@ async function researchInstrument(
   if (!instruments.length) return {
     state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] },
     finding: AgentFindingSchema.parse({
-      agent: "DATA_RESEARCH", conclusion: "未识别到可研究标的", supportEvidence: [], counterEvidence: ["没有明确标的时不能形成个股买卖结论"],
+      agent: "DATA_RESEARCH", conclusion: isResearchStudy(intent) ? "未识别到可研究标的，无法执行研究任务" : "未识别到可研究标的", supportEvidence: [], counterEvidence: ["没有明确标的时不能形成个股买卖结论"],
       missingInformation: ["instrument"], risks: ["标的歧义可能导致错误数据关联"], confidence: 0.2, needsAnotherAgent: false,
     }),
   };
@@ -475,6 +489,23 @@ async function researchInstrument(
   const startDate = new Date();
   startDate.setUTCDate(startDate.getUTCDate() - 180);
   const sources = instruments.map((instrument): PandaQuerySource => {
+    if (intent === "FACTOR_RESEARCH") {
+      const symbol = pandaSymbol(instrument.symbol, instrument.asset_type, instrument.market);
+      return {
+        dataset: "FACTOR_STOCK",
+        method: "get_factor",
+        parameters: {
+          symbol: [symbol],
+          start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""),
+          end_date: end,
+          factors: factorNames(content),
+          type: "stock",
+        },
+        columns: ["symbol", "date", ...factorNames(content)],
+        joinKeys: ["symbol", "date"],
+        assetType: "STOCK",
+      };
+    }
     const method = marketMethod(instrument);
     const symbol = pandaSymbol(instrument.symbol, instrument.asset_type, instrument.market);
     const realtime = method === "get_stock_rt_daily";
@@ -541,17 +572,24 @@ async function researchInstrument(
       asOfDate: execution.result.asOfDate,
       method: execution.source.method,
     }));
+    const study = intent === "FACTOR_RESEARCH"
+      ? factorStudy(executions, factorNames(content))
+      : intent === "STRATEGY_BACKTEST"
+        ? strategyStudy(executions, content)
+        : undefined;
+    const studyMissing = study?.missing ?? [];
+    const studySummary = study?.summary;
     persistSseEvent({ analysisId: rootRunId, type: "tool.completed", payload: { toolName: sources.map((source) => source.method), childRunId, rowCount: allRows.length, dataState, symbolCount: executions.length } });
     return {
-      state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes, riskMetrics, correlations },
+      state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes, riskMetrics, correlations, study },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH",
-        conclusion: `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
+        conclusion: studySummary ?? `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
         supportEvidence: [
           latest ? `最新价格样本：${latest.toString()}` : "市场接口已完成 live call",
           `数据日期：${asOfDates.at(-1) ?? "未知"}`,
-          `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
-        ],
+          studySummary ?? `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
+        ].slice(0, 3),
         counterEvidence: [
           dataState === "LIVE_FRESH"
             ? "历史价格不能保证未来走势"
@@ -561,7 +599,7 @@ async function researchInstrument(
                 ? "日线日期与官方最近交易日不一致，需要刷新后再确认"
                 : "行情数据需要刷新后再确认",
         ],
-        missingInformation: latest ? [] : ["close"],
+        missingInformation: [...(latest ? [] : ["close"]), ...studyMissing],
         risks: ["短期价格和成交量可能快速变化", "财务或估值字段缺失时不会推导替代值"],
         confidence: latest && (dataState === "LIVE_FRESH" || dataState === "LATEST_TRADING_DAY") ? 0.82 : 0.4,
         needsAnotherAgent: true,
@@ -569,12 +607,17 @@ async function researchInstrument(
       }),
     };
   } catch (error) {
+    const unavailableStudy = intent === "FACTOR_RESEARCH"
+      ? factorStudy([], factorNames(content))
+      : intent === "STRATEGY_BACKTEST"
+        ? strategyStudy([], content)
+        : undefined;
     persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: sources.map((source) => source.method), childRunId, code: "PANDADATA_UNAVAILABLE" } });
     return {
-      state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] },
+      state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [], study: unavailableStudy },
       finding: AgentFindingSchema.parse({
-        agent: "DATA_RESEARCH", conclusion: `${target?.symbol ?? instruments.map((instrument) => instrument.symbol).join("、")} 的 PandaData live call 不可用，保留建议方向但强制阻断`, supportEvidence: [],
-        counterEvidence: [`真实行情处理失败：${safeMessage(error)}`], missingInformation: [],
+        agent: "DATA_RESEARCH", conclusion: `${unavailableStudy?.summary ?? `${target?.symbol ?? instruments.map((instrument) => instrument.symbol).join("、")} 的 PandaData live call 不可用`}；真实数据调用失败，保留研究边界并阻断发布`, supportEvidence: unavailableStudy ? [unavailableStudy.summary] : [],
+        counterEvidence: [`真实行情处理失败：${safeMessage(error)}`], missingInformation: unavailableStudy?.missing ?? [],
         risks: ["缺少新鲜行情时参考区间和触发价不可执行"], confidence: 0.2, needsAnotherAgent: true, suggestedNextAgent: "COMPLIANCE_REVIEWER",
       }),
     };
@@ -653,6 +696,83 @@ export function deterministicAdvisorSummary(input: {
     return "已完成画像与组合诊断，当前应暂停加仓并优先降低集中度";
   }
   return "已完成画像与组合诊断，当前组合以继续观察为主";
+}
+
+function factorNames(content: string): string[] {
+  const supported = ["open", "close", "high", "low", "volume", "amount", "market_cap", "turnover"];
+  const requested = content.toLowerCase().match(/\b(?:open|close|high|low|volume|amount|market_cap|turnover)\b/gu) ?? [];
+  const translated = /成交量/u.test(content) ? ["volume"] : [];
+  const names = [...new Set([...requested, ...translated].filter((name) => supported.includes(name)))];
+  return names.length ? names : ["close", "volume", "turnover"];
+}
+
+function factorStudy(executions: PandaSourceExecution[], factors: string[]): ResearchStudy {
+  const rows = executions.reduce((count, execution) => count + execution.result.data.length, 0);
+  const summaries = factors.flatMap((factor) => {
+    const values = executions.flatMap((execution) => execution.result.data.map((row) => decimal(row[factor]))).filter((value): value is Decimal => value !== null);
+    if (!values.length) return [];
+    const mean = Decimal.sum(...values).div(values.length).toDecimalPlaces(4).toString();
+    const low = values.reduce((current, value) => Decimal.min(current, value));
+    const high = values.reduce((current, value) => Decimal.max(current, value));
+    return [`${factor}：样本 ${values.length}，均值 ${mean}，区间 ${low.toDecimalPlaces(4).toString()}~${high.toDecimalPlaces(4).toString()}`];
+  });
+  const missing = rows && summaries.length ? [] : ["factor_data"];
+  return {
+    kind: "FACTOR_RESEARCH",
+    factors,
+    rows,
+    summary: rows && summaries.length
+      ? `因子研究已通过 PandaData get_factor 获取 ${rows} 行 ${factors.join("、")} 数据；${summaries.join("；")}。单标的样本不等于横截面 IC/Rank IC。`
+      : "PandaData get_factor 未返回可计算的因子样本，不能声称已完成因子评价。",
+    missing,
+  };
+}
+
+function strategyStudy(executions: PandaSourceExecution[], content: string): ResearchStudy {
+  const execution = executions.find((candidate) => candidate.result.data.some((row) => decimal(row.close) !== null));
+  const points = execution?.result.data
+    .sort(compareMarketRows)
+    .flatMap((row) => {
+      const close = decimal(row.close);
+      return close && close.gt(0) ? [close] : [];
+    }) ?? [];
+  const strategy = /均线|移动平均/u.test(content) ? "20日均线择时" : /动量|趋势/u.test(content) ? "20日动量择时" : "20日均线择时（默认规则）";
+  if (points.length < 22) {
+    return { kind: "STRATEGY_BACKTEST", strategy, observations: points.length, trades: 0, totalReturn: null, buyAndHoldReturn: null, maxDrawdown: null, summary: `策略回测需要至少 22 个有效收盘样本；当前只有 ${points.length} 个，未生成收益结论。`, missing: ["historical_market_series"] };
+  }
+  const lookback = 20;
+  const portfolio = [new Decimal(1)];
+  const buyAndHold = [new Decimal(1)];
+  let previousSignal = false;
+  let trades = 0;
+  for (let index = lookback + 1; index < points.length; index += 1) {
+    const movingAverage = Decimal.sum(...points.slice(index - lookback - 1, index - 1)).div(lookback);
+    const signal = points[index - 1].gt(movingAverage);
+    if (signal !== previousSignal) trades += 1;
+    const dailyReturn = points[index].div(points[index - 1]).minus(1);
+    const transactionCost = signal !== previousSignal ? new Decimal("0.001") : new Decimal(0);
+    portfolio.push(portfolio.at(-1)!.mul(signal ? dailyReturn.plus(1).minus(transactionCost) : 1));
+    buyAndHold.push(buyAndHold.at(-1)!.mul(dailyReturn.plus(1)));
+    previousSignal = signal;
+  }
+  const totalReturn = portfolio.at(-1)!.minus(1);
+  const buyAndHoldReturn = buyAndHold.at(-1)!.minus(1);
+  const drawdown = maximumDrawdown(portfolio);
+  return {
+    kind: "STRATEGY_BACKTEST",
+    strategy,
+    observations: portfolio.length - 1,
+    trades,
+    totalReturn: percentDecimal(totalReturn),
+    buyAndHoldReturn: percentDecimal(buyAndHoldReturn),
+    maxDrawdown: drawdown ? percentDecimal(drawdown.negated()) : null,
+    summary: `${strategy}已用 ${portfolio.length - 1} 个样本完成确定性回测：策略收益 ${percentDecimal(totalReturn)}，买入并持有 ${percentDecimal(buyAndHoldReturn)}，最大回撤 ${drawdown ? percentDecimal(drawdown.negated()) : "不可计算"}，换手信号 ${trades} 次；已计入单次 0.1% 成交成本，未处理涨跌停和滑点。`,
+    missing: [],
+  };
+}
+
+function percentDecimal(value: Decimal): string {
+  return `${value.mul(100).toDecimalPlaces(2).toString()}%`;
 }
 
 function deterministicDecisionFor(input: {
@@ -989,6 +1109,7 @@ export function criticalMissingInformation(
   hasHoldings = true,
   allowProfileAssumptions = false,
 ): string[] {
+  if (intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return target ? [] : ["instrument"];
   if (intent !== "BUY" && intent !== "SELL" && intent !== "DIAGNOSIS") return [];
   const preferences = parsePreferences(profile?.preferences_json);
   const profileMissing = [
@@ -1013,6 +1134,7 @@ function rolesFor(intent: AdvisorIntent, hasTarget: boolean, hasHoldings: boolea
     return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
   }
   if (intent === "BUY" || intent === "SELL") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+  if (intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
   if (intent === "DIAGNOSIS") {
     const roles: ProfessionalAgentRole[] = ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
     return hasTarget || hasHoldings ? ["PROFILE_CONTEXT", "DATA_RESEARCH", ...roles.slice(1)] : roles;
@@ -1027,6 +1149,8 @@ function requestsFullAgentLoop(content: string): boolean {
 }
 
 function inferIntent(content: string): AdvisorIntent {
+  if (/因子|factor|ICIR|Rank\s*IC|横截面/u.test(content)) return "FACTOR_RESEARCH";
+  if (/回测|backtest|策略收益|策略验证|交易规则/u.test(content)) return "STRATEGY_BACKTEST";
   if (/卖出|减仓|止盈|止损|退出|清仓/u.test(content)) return "SELL";
   if (/买入|入场|加仓|追高|试仓|增配|配置/u.test(content)) return "BUY";
   if (/诊断|健康|风险|回撤|浮盈|持仓分析|集中度/u.test(content)) return "DIAGNOSIS";
@@ -1036,8 +1160,12 @@ function inferIntent(content: string): AdvisorIntent {
 function directionForIntent(intent: AdvisorIntent): AdvisorDecision["requestedDirection"] {
   if (intent === "BUY") return "BUY";
   if (intent === "SELL") return "SELL";
-  if (intent === "DIAGNOSIS") return "ANALYZE";
+  if (intent === "DIAGNOSIS" || intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return "ANALYZE";
   return "HOLD";
+}
+
+function isResearchStudy(intent: AdvisorIntent): boolean {
+  return intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST";
 }
 
 function actionMatchesDirection(action: AdvisorDecision["action"], direction: AdvisorDecision["requestedDirection"]): boolean {
@@ -1101,6 +1229,7 @@ export function chiefPrompt(
     "状态说明：LATEST_TRADING_DAY 表示行情日期已由 PandaData 官方交易日历确认，是当前非交易时段可获得的最近正式收盘数据，不得称为 STALE；执行时需复核下一交易时段价格。",
     `实时/行情数据摘要：${json(research.quotes)}`,
     `服务端历史风险指标：${json({ riskMetrics: research.riskMetrics, correlations: research.correlations })}`,
+    `因子/策略研究结果（仅服务端确定性计算）：${json(research.study ?? null)}`,
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
@@ -1118,6 +1247,7 @@ function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, find
     `核心结论：${decision.summary}`,
     ...(profile?.conclusion.includes("默认假设") ? [`本次画像假设：${profile.supportEvidence.join("；")}`] : []),
     `数据研究：${research?.conclusion ?? `本次不要求外部数据（${dataState}）`}`,
+    ...(research?.supportEvidence.filter((evidence) => /因子研究|策略回测|PandaData get_factor|均线择时/u.test(evidence)).slice(0, 2) ?? []),
     `组合影响：${decision.portfolioImpact}`,
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,

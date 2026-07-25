@@ -12,7 +12,7 @@ export function buildAgentCard(request?: NextRequest) {
 
   return {
     name: AGENT_NAME,
-    description: "A remote research agent for portfolio diagnostics, factor-style analysis, strategy backtesting summaries, and compliance-aware investment research explanations.",
+    description: "Handles natural-language investment research through an A2A Remote Agent endpoint, reusing the local advisor workflow for profiling, evidence-backed research, portfolio risk analysis, factor research, deterministic strategy backtests, recommendation drafting, and compliance-gated explanations. The product is research- and simulation-only and does not connect to brokers or place orders.",
     provider: {
       organization: TEAM_NAME,
       url: baseUrl,
@@ -30,7 +30,7 @@ export function buildAgentCard(request?: NextRequest) {
       },
     ],
     capabilities: {
-      streaming: false,
+      streaming: true,
       pushNotifications: false,
       stateTransitionHistory: true,
     },
@@ -48,20 +48,20 @@ export function buildAgentCard(request?: NextRequest) {
     defaultOutputModes: ["text/markdown", "application/json"],
     skills: [
       {
+        id: "advisor_chat",
+        name: "advisor_chat",
+        description: "Run the Chief Advisor conversation loop and surface specialist findings.",
+        tags: ["advisor", "chat", "research"],
+        inputModes: ["text/plain"],
+        outputModes: ["text/markdown", "application/json"],
+      },
+      {
         id: "factor_analysis",
         name: "factor_analysis",
         description: "Analyze factor, signal, and market context using authorized data and research skills.",
         tags: ["factor", "research", "market"],
         inputModes: ["text/plain"],
         outputModes: ["text/markdown"],
-      },
-      {
-        id: "strategy_backtest",
-        name: "strategy_backtest",
-        description: "Run or summarize strategy backtests and explain assumptions, limits, and risks.",
-        tags: ["backtest", "strategy", "simulation"],
-        inputModes: ["text/plain"],
-        outputModes: ["text/markdown", "application/json"],
       },
       {
         id: "portfolio_risk_review",
@@ -71,6 +71,22 @@ export function buildAgentCard(request?: NextRequest) {
         inputModes: ["text/plain"],
         outputModes: ["text/markdown"],
       },
+      {
+        id: "factor_research",
+        name: "factor_research",
+        description: "通过顾问入口调用 PandaData get_factor，返回因子样本、描述统计、数据日期和不能据此推导的 IC 限制。",
+        tags: ["factor", "quant", "research", "pandadata"],
+        inputModes: ["text/plain"],
+        outputModes: ["text/markdown", "application/json"],
+      },
+      {
+        id: "strategy_backtest",
+        name: "strategy_backtest",
+        description: "通过顾问入口调用历史行情并执行确定性策略回测，公开样本区间、交易成本、收益、回撤和限制。",
+        tags: ["strategy", "backtest", "research", "simulation"],
+        inputModes: ["text/plain"],
+        outputModes: ["text/markdown", "application/json"],
+      },
     ],
     documentationUrl: `${baseUrl}/docs/a2a-submission`,
     metadata: {
@@ -78,23 +94,85 @@ export function buildAgentCard(request?: NextRequest) {
       agentCardUrl,
       serviceEndpoint,
       auth: "Bearer token",
+      agentArchitecture: {
+        rootAgent: "professional-chief-advisor",
+        rootAgentName: "Chief Advisor",
+        conversationEntrypoint: "runConversationAgent",
+        professionalEntrypoint: "runProfessionalAdvisor",
+        orchestration: "Chief Advisor delegates specialist agents, then the server applies the publication gate.",
+        specialistAgents: [
+          "PROFILE_CONTEXT",
+          "DATA_RESEARCH",
+          "PORTFOLIO_RISK",
+          "RECOMMENDATION",
+          "COMPLIANCE_REVIEWER",
+          "EXPLANATION_REPORT",
+        ],
+        publicationStates: ["ACTIVE", "DEGRADED", "BLOCKED"],
+      },
+      productCapabilities: [
+        {
+          id: "advisor_chat",
+          name: "Advisor Chat",
+          access: "a2a_and_workbench",
+          description: "The main Chief Advisor conversation experience.",
+        },
+        {
+          id: "factor_research",
+          name: "Factor Research",
+          access: "a2a_and_workbench",
+          description: "通过顾问 Agent 调用 PandaData get_factor 并公开样本统计和研究限制。",
+        },
+        {
+          id: "strategy_backtest",
+          name: "Strategy Backtest",
+          access: "a2a_and_workbench",
+          description: "通过顾问 Agent 调用历史行情执行确定性策略回测，并公开回测假设。",
+        },
+      ],
+      a2aScope: {
+        gateway: "message/send",
+        directAccess: ["advisor_chat", "factor_research", "strategy_backtest"],
+        productWorkflows: [],
+        note: "Every declared A2A skill is routed through the Chief Advisor message/send entrypoint; no separate factor or backtest endpoint is implied.",
+      },
       dataSkills: ["semantic_catalog", "pandadata_research", "portfolio_snapshot", "market_observability"],
-      researchSkills: ["factor_analysis", "strategy_backtest", "portfolio_risk_review", "compliance_review"],
+      researchSkills: ["factor_analysis", "strategy_backtest", "portfolio_risk_review", "compliance_review", "profile_context", "data_research", "factor_research", "portfolio_risk", "recommendation", "explanation_report"],
       examplePrompts: [
-        "分析 AAPL 当前是否适合加仓，并说明主要风险。",
-        "基于我的持仓做一次组合风险诊断，给出需要补充的数据。",
-        "回测一个低波动因子策略，并解释假设和预期输出格式。",
+        "Analyze AAPL current add-on suitability and explain the main risks.",
+        "Diagnose my portfolio risk and list the data you still need.",
+        "Run factor research on 000001.SZ, return close and volume sample stats, and say what is still missing for IC.",
+        "Run a 20-day moving-average backtest on AAPL and list the sample, cost, return, drawdown, and limits.",
       ],
       disclaimer: "输出仅用于研究和比赛评审，不构成投资建议、收益承诺、荐股或代客理财。",
     },
   };
 }
 
-function publicBaseUrl(request?: NextRequest): string {
+export function publicBaseUrl(request?: NextRequest): string {
   const configured = process.env.APP_ORIGIN?.split(",")[0]?.trim();
-  if (configured) return configured.replace(/\/+$/u, "");
   if (!request) return "http://localhost:3000";
-  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || request.nextUrl.protocol.replace(":", "");
-  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host") || request.nextUrl.host;
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const requestHost = request.headers.get("host") || request.nextUrl.host;
+  if (configured && isLocalHost(requestHost) && isLocalConfiguredOrigin(configured)) {
+    const localProto = request.nextUrl.protocol.replace(":", "") || "http";
+    return `${localProto}://${requestHost}`.replace(/\/+$/u, "");
+  }
+  if (configured && (forwardedProto || forwardedHost)) return configured.replace(/\/+$/u, "");
+  const proto = forwardedProto || request.nextUrl.protocol.replace(":", "");
+  const host = forwardedHost || requestHost;
   return `${proto}://${host}`.replace(/\/+$/u, "");
+}
+
+function isLocalHost(host: string): boolean {
+  return /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/iu.test(host);
+}
+
+function isLocalConfiguredOrigin(value: string): boolean {
+  try {
+    return isLocalHost(new URL(value).host);
+  } catch {
+    return false;
+  }
 }

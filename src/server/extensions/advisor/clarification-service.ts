@@ -11,24 +11,34 @@ export function createClarification(db: ReturnType<typeof getDatabase>, input: C
   return id;
 }
 
-export function completeClarification(input: { userId: string; sessionId: string; clarificationId: string; answers: Record<string, unknown> }) {
+export function completeClarification(input: { userId: string; sessionId: string; clarificationId: string; answers: Record<string, unknown>; allowPartial?: boolean }) {
   const db = getDatabase();
   const request = db.prepare("SELECT * FROM information_requests WHERE id=? AND user_id=? AND session_id=?").get(input.clarificationId, input.userId, input.sessionId) as Record<string, unknown> | undefined;
   if (!request) { db.close(); throw new Error("Clarification not found"); }
   if (request.status !== "pending") { db.close(); throw new Error("CLARIFICATION_ALREADY_ANSWERED"); }
   if (request.expires_at && Date.parse(String(request.expires_at)) <= Date.now()) { db.prepare("UPDATE information_requests SET status='expired' WHERE id=?").run(input.clarificationId); db.close(); throw new Error("CLARIFICATION_EXPIRED"); }
   const fields = parseJson<Array<{ key: string; required?: boolean }>>(String(request.fields_json), []);
-  if (fields.some((field) => field.required && (input.answers[field.key] === undefined || input.answers[field.key] === null || String(input.answers[field.key]).trim() === ""))) { db.close(); throw new Error("CLARIFICATION_VALIDATION_FAILED"); }
+  const previousAnswers = parseJson<Record<string, unknown>>(String(request.answers_json ?? "{}"), {});
+  const answers = { ...previousAnswers, ...input.answers };
+  const missingFields = fields.filter((field) => field.required && (answers[field.key] === undefined || answers[field.key] === null || String(answers[field.key]).trim() === ""));
   const original = db.prepare("SELECT content FROM messages WHERE agent_run_id=? AND session_id=? AND role='user' ORDER BY created_at ASC LIMIT 1").get(request.analysis_id, input.sessionId) as { content?: string } | undefined;
   if (!original?.content) { db.close(); throw new Error("Original message not found"); }
-  updateProfileFromAnswers(db, input.userId, input.answers);
-  db.prepare("UPDATE information_requests SET status='answered',answers_json=?,answered_at=? WHERE id=? AND status='pending'").run(json(input.answers), isoNow(), input.clarificationId);
+  if (missingFields.length && !input.allowPartial) { db.close(); throw new Error("CLARIFICATION_VALIDATION_FAILED"); }
+  updateProfileFromAnswers(db, input.userId, answers);
+  if (missingFields.length) {
+    db.prepare("UPDATE information_requests SET answers_json=? WHERE id=? AND status='pending'").run(json(answers), input.clarificationId);
+  } else {
+    db.prepare("UPDATE information_requests SET status='answered',answers_json=?,answered_at=? WHERE id=? AND status='pending'").run(json(answers), isoNow(), input.clarificationId);
+  }
   db.close();
-  const instrument = input.answers.instrument;
+  const instrument = answers.instrument;
   return {
     originalContent: instrument === undefined
       ? original.content
       : `${original.content}\n补充标的：${String(instrument).trim()}`,
+    analysisId: String(request.analysis_id),
+    pending: missingFields.length > 0,
+    missingFields: missingFields.map((field) => ({ key: field.key, label: (field as { label?: string }).label ?? field.key })),
   };
 }
 

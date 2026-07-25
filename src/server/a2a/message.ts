@@ -1,9 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
-
 import type { NextRequest } from "next/server";
 
 import { runConversationAgent, type ConversationOutputMode } from "@/server/extensions/advisor/service";
 import { createId, getDatabase, isoNow } from "@/server/http/context";
+import { publicBaseUrl } from "./agent-card";
+import { A2A_SERVICE_USER_ID, authenticateA2A } from "./auth";
+import { answerA2AClarification, getA2AClarificationReplay } from "./clarification";
 
 type A2ATextPart = { kind?: string; type?: string; text?: unknown };
 type A2AMessage = {
@@ -28,7 +29,7 @@ type RpcContext = { id: string | number | null } | null;
 export async function handleSendMessage(request: NextRequest): Promise<Response> {
   const rawBody = await request.json().catch(() => null) as (A2ASendRequest & JsonRpcEnvelope) | null;
   const rpc = jsonRpcContext(rawBody);
-  const authFailure = authenticate(request);
+  const authFailure = authenticateA2A(request);
   if (authFailure) return a2aError(authFailure.status, authFailure.code, authFailure.message, rpc);
   if (rawBody && rawBody.jsonrpc && rawBody.method !== "message/send") {
     return a2aError(400, "METHOD_NOT_FOUND", "Unsupported A2A JSON-RPC method.", rpc);
@@ -40,19 +41,26 @@ export async function handleSendMessage(request: NextRequest): Promise<Response>
   const userId = ensureServiceUser();
   const contextId = await ensureConversationContext(userId, parsed.contextId, parsed.taskId, parsed.text);
   try {
-    const result = await runConversationAgent({
-      userId,
-      sessionId: contextId,
-      content: parsed.text,
-      clientMessageId: parsed.messageId,
-      outputMode: outputModeFor(parsed.acceptedOutputModes),
-    });
-    return a2aJson(resultForRpc(taskFromResult(result as AdvisorResult, contextId, parsed.text), rpc));
+    const replay = getA2AClarificationReplay(userId, contextId, parsed.messageId);
+    const clarification = replay ? null : pendingClarification(userId, contextId, parsed.taskId);
+    const result = replay
+      ?? (clarification
+        ? await answerA2AClarification({ userId, sessionId: contextId, clarificationId: clarification.id, text: parsed.text, messageId: parsed.messageId, outputMode: outputModeFor(parsed.acceptedOutputModes) })
+      : await runConversationAgent({
+        userId,
+        sessionId: contextId,
+        content: parsed.text,
+        clientMessageId: parsed.messageId,
+        outputMode: outputModeFor(parsed.acceptedOutputModes),
+      }));
+    return a2aJson(resultForRpc(taskFromResult(result as AdvisorResult, contextId, parsed.text, publicBaseUrl(request)), rpc));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Agent run failed";
     const code = message === "RUN_ALREADY_ACTIVE" ? "RUN_ALREADY_ACTIVE" : "AGENT_RUN_FAILED";
-    const status = message === "RUN_ALREADY_ACTIVE" ? 409 : 500;
-    return a2aError(status, code, message, rpc);
+    const clarificationError = ["Clarification not found", "CLARIFICATION_ALREADY_ANSWERED", "CLARIFICATION_EXPIRED", "CLARIFICATION_VALIDATION_FAILED"].includes(message);
+    const codeForError = clarificationError ? message : code;
+    const status = message === "RUN_ALREADY_ACTIVE" || message === "CLARIFICATION_ALREADY_ANSWERED" ? 409 : clarificationError ? 422 : 500;
+    return a2aError(status, codeForError, clarificationError || message === "RUN_ALREADY_ACTIVE" ? message : "Agent run failed", rpc);
   }
 }
 
@@ -66,6 +74,7 @@ type AdvisorResult = {
   dataQueryId?: string | null;
   outputMode?: string;
   artifact?: unknown;
+  clarificationId?: string | null;
 };
 
 function parseSendRequest(body: A2ASendRequest | null):
@@ -116,7 +125,7 @@ async function ensureConversationContext(userId: string, requestedContextId: str
 }
 
 function ensureServiceUser(): string {
-  const userId = "a2a-remote-agent";
+  const userId = A2A_SERVICE_USER_ID;
   const username = userId.replaceAll(/[^a-z0-9_]/giu, "_").toLowerCase().slice(0, 60) || "a2a_remote_agent";
   const now = isoNow();
   const db = getDatabase();
@@ -134,7 +143,19 @@ function ensureServiceUser(): string {
   return userId;
 }
 
-function taskFromResult(result: AdvisorResult, contextId: string, userText: string) {
+function pendingClarification(userId: string, sessionId: string, taskId: string | null): { id: string; analysis_id: string; fields_json: string } | null {
+  const db = getDatabase();
+  const row = taskId
+    ? db.prepare(`SELECT ir.id,ir.analysis_id,ir.fields_json
+        FROM information_requests ir JOIN agent_runs ar ON ar.id=ir.analysis_id
+        WHERE ir.user_id=? AND ir.session_id=? AND ir.status='pending' AND ar.id=? LIMIT 1`).get(userId, sessionId, taskId)
+    : db.prepare(`SELECT id,analysis_id,fields_json FROM information_requests
+        WHERE user_id=? AND session_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1`).get(userId, sessionId);
+  db.close();
+  return row as { id: string; analysis_id: string; fields_json: string } | null;
+}
+
+function taskFromResult(result: AdvisorResult, contextId: string, userText: string, origin: string) {
   const analysisId = result.analysis?.analysisId || createId("a2a_task");
   const answer = withRiskNotice(result.answer || "任务已接收，但当前还没有可发布结论。");
   const state = stateFrom(result);
@@ -177,10 +198,22 @@ function taskFromResult(result: AdvisorResult, contextId: string, userText: stri
     ],
     metadata: {
       missingQuestions: result.missingQuestions ?? [],
-      streamUrl: result.analysis?.streamUrl ?? null,
-      explainability: "Agent trace and generated artifacts are persisted in the local conversation and analysis tables.",
+      clarificationId: result.clarificationId ?? null,
+      streamUrl: a2aStreamUrl(result.analysis?.streamUrl, analysisId, origin),
+      explainability: "Agent trace and generated artifacts are persisted in the local conversation and analysis tables. Use the streamUrl with the same A2A Bearer token.",
     },
   };
+}
+
+function a2aStreamUrl(streamUrl: string | undefined, analysisId: string, origin: string): string {
+  if (!streamUrl) return `${origin}/api/a2a/analyses/${analysisId}/events`;
+  try {
+    const parsed = new URL(streamUrl, "http://a2a.local");
+    parsed.pathname = `/api/a2a/analyses/${analysisId}/events`;
+    return `${origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return `${origin}/api/a2a/analyses/${analysisId}/events`;
+  }
 }
 
 function stateFrom(result: AdvisorResult): "completed" | "input-required" | "failed" {
@@ -195,20 +228,6 @@ function outputModeFor(modes: string[]): ConversationOutputMode {
   if (normalized.some((mode) => mode.includes("json") || mode.includes("chart"))) return "CHART";
   if (normalized.some((mode) => mode.includes("markdown") || mode.includes("report"))) return "FINANCIAL_REPORT";
   return "SQL_ONLY";
-}
-
-function authenticate(request: NextRequest): { status: number; code: string; message: string } | null {
-  const token = process.env.A2A_BEARER_TOKEN?.trim();
-  if (!token) return { status: 503, code: "A2A_NOT_CONFIGURED", message: "A2A_BEARER_TOKEN is not configured." };
-  const supplied = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/iu)?.[1]?.trim() ?? "";
-  if (!secureEqual(token, supplied)) return { status: 401, code: "UNAUTHENTICATED", message: "Bearer token is required." };
-  return null;
-}
-
-function secureEqual(expected: string, actual: string): boolean {
-  const left = Buffer.from(expected);
-  const right = Buffer.from(actual);
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function cleanId(value: unknown): string | null {
@@ -239,7 +258,14 @@ function a2aJson(body: unknown, status = 200): Response {
 
 function a2aError(status: number, code: string, message: string, rpc: RpcContext): Response {
   const error = rpc
-    ? { jsonrpc: "2.0", id: rpc.id, error: { code: -32000, message, data: { code } } }
+    ? { jsonrpc: "2.0", id: rpc.id, error: { code: rpcErrorCode(code), message, data: { code } } }
     : { error: { code, message } };
   return a2aJson(error, status);
+}
+
+function rpcErrorCode(code: string): number {
+  if (code === "INVALID_REQUEST") return -32600;
+  if (code === "METHOD_NOT_FOUND") return -32601;
+  if (code === "INVALID_PARAMS") return -32602;
+  return -32000;
 }

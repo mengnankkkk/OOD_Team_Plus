@@ -22,6 +22,8 @@ export const PANDA_CONTRACTS = {
   get_us_detail: z.object({ symbol: Symbol.optional(), fields: Fields, status: z.number().int().min(-1).max(1).optional() }).strict(),
   get_index_indicator: z.object({ symbol: Symbol.optional(), start_date: DateString.optional(), end_date: DateString.optional(), fields: Fields }).strict(),
   get_fina_reports: z.object({ symbol: Symbol.optional(), start_quarter: z.string().regex(/^\d{4}q[1-4]$/), end_quarter: z.string().regex(/^\d{4}q[1-4]$/), date: DateString.optional(), is_latest: z.boolean().optional(), fields: Fields }).strict(),
+  get_factor: z.object({ start_date: DateString, end_date: DateString, symbol: Symbol.optional(), factors: Symbol, type: z.string().optional(), index_component: z.string().optional() }).strict(),
+  get_adj_factor: z.object({ symbol: Symbol.optional(), start_date: DateString.optional(), end_date: DateString.optional(), fields: Fields }).strict(),
 } as const;
 
 export type PandaDataMethod = keyof typeof PANDA_CONTRACTS;

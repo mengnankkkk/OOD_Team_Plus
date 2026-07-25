@@ -9,6 +9,7 @@ export const MARKET_DATASETS = {
   MARKET_INDEX_DAILY: { method: "get_index_daily", assetType: "INDEX" },
   MARKET_US_DAILY: { method: "get_us_daily", assetType: "STOCK" },
   MARKET_HK_DAILY: { method: "get_hk_daily", assetType: "STOCK" },
+  FACTOR_STOCK: { method: "get_factor", assetType: "STOCK" },
 } as const satisfies Record<string, { method: PandaDataMethod; assetType: string }>;
 
 export type MarketDatasetKey = keyof typeof MARKET_DATASETS;

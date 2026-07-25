@@ -252,4 +252,10 @@ describe("buildPortfolioRecommendationDraft", () => {
       marketDataRequired: false,
     })).toBe("ACTIVE");
   });
+
+  it("requires a target before factor research or strategy backtesting", () => {
+    expect(criticalMissingInformation("FACTOR_RESEARCH", undefined, null, null, false)).toEqual(["instrument"]);
+    expect(criticalMissingInformation("STRATEGY_BACKTEST", undefined, null, null, false)).toEqual(["instrument"]);
+    expect(criticalMissingInformation("FACTOR_RESEARCH", undefined, { id: "aapl", symbol: "AAPL", name: "Apple", asset_type: "stock", market: "US" }, null, false)).toEqual([]);
+  });
 });
