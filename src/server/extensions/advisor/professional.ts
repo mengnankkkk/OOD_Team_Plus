@@ -13,8 +13,9 @@ import {
   type AdvisorDecision,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
+import { observedAtForFinding } from "./evidence-observation-time";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
-import type { RecommendationDraft } from "./types";
+import type { AdvisorWorkflow, RecommendationDraft } from "./types";
 
 export { AgentFindingSchema, AdvisorDecisionSchema } from "./professional-contracts";
 export type { AgentFinding, AdvisorDecision, ProfessionalAgentRole } from "./professional-contracts";
@@ -65,6 +66,7 @@ type RoleRunResult = {
 };
 
 export type ProfessionalAdvisorResult = {
+  kind: "GUIDED_INTAKE" | "DECISION";
   runId: string;
   status: PublicationStatus;
   direction: AdvisorDecision["requestedDirection"];
@@ -82,6 +84,7 @@ export async function runProfessionalAdvisor(input: {
   analysisId: string;
   content: string;
   targetSymbol?: string;
+  workflow?: AdvisorWorkflow;
 }): Promise<ProfessionalAdvisorResult> {
   const db = getDatabase();
   const now = isoNow();
@@ -99,6 +102,8 @@ export async function runProfessionalAdvisor(input: {
   const targetSymbol = input.targetSymbol ?? extractSymbol(input.content);
   const target = targetSymbol ? findInstrumentBySymbol(instruments, targetSymbol) : null;
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
+  const dailyPortfolio = input.workflow === "DAILY_PORTFOLIO";
+  const decisionProfile = dailyPortfolio ? profileWithDailyAssumptions(profile) : profile;
   const requiredRoles = rolesFor(intent, Boolean(target), holdings.length > 0, input.content);
   const findings: AgentFinding[] = [];
   const roleRunIds = new Map<ProfessionalAgentRole, string>();
@@ -110,7 +115,22 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
-    const profileFinding = registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
+    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content)) {
+      return {
+        kind: "GUIDED_INTAKE",
+        runId: input.analysisId,
+        status: "DEGRADED",
+        direction: "HOLD",
+        action: "WATCH",
+        findings: [],
+        missingInformation: [],
+        recommendation: null,
+        answer: formatGuidedIntakeAnswer(input.content),
+        provider: "DETERMINISTIC_FALLBACK",
+      };
+    }
+
+    const profileFinding = registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile, dailyPortfolio), { emitEvents: false }));
 
     let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] };
     if (requiredRoles.includes("DATA_RESEARCH")) {
@@ -128,7 +148,7 @@ export async function runProfessionalAdvisor(input: {
       requestedDirection,
       target,
       targetHolding,
-      profileReady: profileFinding.missingInformation.length === 0,
+      profileReady: dailyPortfolio || profileFinding.missingInformation.length === 0,
       hasHoldings: holdings.length > 0,
       research,
       riskFinding,
@@ -137,7 +157,7 @@ export async function runProfessionalAdvisor(input: {
       registerFinding(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings), { emitEvents: false }));
     }
 
-    const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding, holdings.length > 0);
+    const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding, holdings.length > 0, dailyPortfolio);
     const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings);
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
       registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding, { emitEvents: false }));
@@ -169,7 +189,7 @@ export async function runProfessionalAdvisor(input: {
     } else {
       try {
         const model = await runChiefAdvisor({
-          prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
+          prompt: chiefPrompt(input.content, decisionProfile, holdings, target, research, findings, requiredRoles, semanticContext, dailyPortfolio),
           requiredAgents: requiredRoles,
           fallbackFindings: findings,
           onAgentStarted: (agent, label) => {
@@ -241,12 +261,21 @@ export async function runProfessionalAdvisor(input: {
         candidate,
         target,
         holding: targetHolding,
-        profile,
+        profile: decisionProfile,
+        assumptions: dailyPortfolio ? profileFinding.supportEvidence : [],
         research,
         snapshot,
       })
       : holdings.length > 0
-        ? buildPortfolioRecommendationDraft({ status, candidate, profile, holdings, research, snapshot })
+        ? buildPortfolioRecommendationDraft({
+          status,
+          candidate,
+          profile: decisionProfile,
+          assumptions: dailyPortfolio ? profileFinding.supportEvidence : [],
+          holdings,
+          research,
+          snapshot,
+        })
         : null;
     persistFindings(db, input.userId, input.analysisId, findings, research.executions);
     db.prepare("UPDATE agent_runs SET model_provider=?,model_name=?,output_summary=?,compliance_json=? WHERE id=?")
@@ -255,6 +284,7 @@ export async function runProfessionalAdvisor(input: {
     persistSseEvent({ analysisId: input.analysisId, type: "compliance.completed", payload: { status, dataState: research.dataState, modelFallback, unresolvedConflict } });
     const missingInformation = [...new Set([...criticalMissing, ...findings.flatMap((finding) => finding.missingInformation)])];
     return {
+      kind: "DECISION",
       runId: input.analysisId,
       status,
       direction: candidate.requestedDirection,
@@ -377,7 +407,7 @@ function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding
   return [...byAgent.values()];
 }
 
-function profileFindingFor(profile: Profile | undefined): AgentFinding {
+function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
   const preferences = parsePreferences(profile?.preferences_json);
   const missing = [
     !profile?.risk_level ? "risk_level" : null,
@@ -389,10 +419,16 @@ function profileFindingFor(profile: Profile | undefined): AgentFinding {
   ].filter((value): value is string => Boolean(value));
   return AgentFindingSchema.parse({
     agent: "PROFILE_CONTEXT",
-    conclusion: missing.length ? "用户画像仍缺少影响适配性的关键信息" : "已加载风险等级、投资金额、期限和最大回撤约束",
-    supportEvidence: missing.length ? [] : [`风险等级：${profile?.risk_level}`, `投资期限：${profile?.horizon}`],
+    conclusion: missing.length && !allowAssumptions
+      ? "用户画像仍缺少影响适配性的关键信息"
+      : allowAssumptions && missing.length
+        ? "已加载现有画像；对缺失字段采用仅用于本次组合建议的保守默认假设"
+        : "已加载风险等级、投资金额、期限和最大回撤约束",
+    supportEvidence: allowAssumptions && missing.length
+      ? ["默认假设：平衡型、中线、最大回撤 10%、偏好宽基 ETF、近期不使用"]
+      : missing.length ? [] : [`风险等级：${profile?.risk_level}`, `投资期限：${profile?.horizon}`],
     counterEvidence: [missing.length ? "缺失画像会使仓位和期限建议失真" : "画像可能随资金用途变化，需要在执行前复核"],
-    missingInformation: missing,
+    missingInformation: allowAssumptions ? [] : missing,
     risks: ["近期资金用途变化会降低风险承受能力"],
     confidence: missing.length ? 0.35 : 0.9,
     needsAnotherAgent: true,
@@ -709,6 +745,7 @@ function buildRecommendationDraft(input: {
   target: Instrument;
   holding: Holding | null;
   profile: Profile | undefined;
+  assumptions?: string[];
   research: ResearchState;
   snapshot: Record<string, unknown> | undefined;
 }): RecommendationDraft {
@@ -745,7 +782,10 @@ function buildRecommendationDraft(input: {
     takeProfit: take ? `价格达到 ${take.toDecimalPlaces(4).toString()}、估值过热或组合需要再平衡` : "达到目标收益、估值过热或组合需要再平衡",
     horizon,
     expiresAt: validUntil.toISOString(),
-    reasons: input.candidate.rationales,
+    reasons: [
+      ...(input.assumptions?.length ? [`本次使用默认画像假设：${input.assumptions.join("；")}`] : []),
+      ...input.candidate.rationales,
+    ].slice(0, 3),
     counterEvidence: input.candidate.counterEvidence,
     risks: input.candidate.risks,
     alternatives: ["宽基 ETF", "低波动资产", "继续持有现金"],
@@ -767,6 +807,7 @@ function buildRecommendationDraft(input: {
       recommendationScope: "INSTRUMENT",
       suggestedReduction: reduction?.toString() ?? null,
       modelCannotOverridePublicationGate: true,
+      assumptions: input.assumptions ?? [],
     },
   };
 }
@@ -775,6 +816,7 @@ export function buildPortfolioRecommendationDraft(input: {
   status: PublicationStatus;
   candidate: AdvisorDecision;
   profile: Profile | undefined;
+  assumptions?: string[];
   holdings: Holding[];
   research: ResearchState;
   snapshot: Record<string, unknown> | undefined;
@@ -798,6 +840,7 @@ export function buildPortfolioRecommendationDraft(input: {
     ? "关键行情数据不可用，今日暂不调整组合"
     : input.candidate.summary;
   const reasons = [...new Set([
+    ...(input.assumptions?.length ? [`本次使用默认画像假设：${input.assumptions.join("；")}`] : []),
     ...(headline === input.candidate.summary ? [] : [input.candidate.summary]),
     ...input.candidate.rationales,
   ])].slice(0, 3);
@@ -841,24 +884,48 @@ export function buildPortfolioRecommendationDraft(input: {
       largestHoldingWeight: largestWeight.toString(),
       holdingCount: input.holdings.length,
       modelCannotOverridePublicationGate: true,
+      assumptions: input.assumptions ?? [],
     },
   };
 }
 
-function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], executions: PandaSourceExecution[]): void {
+function persistFindings(
+  db: ReturnType<typeof getDatabase>,
+  userId: string,
+  rootRunId: string,
+  findings: AgentFinding[],
+  executions: PandaSourceExecution[],
+): void {
   const marketExecutions = executions;
+  const marketDataAsOf = executions
+    .map((execution) => execution.result.asOfDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null;
+  const portfolioSnapshot = db.prepare("SELECT as_of FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1")
+    .get(userId) as { as_of?: string } | undefined;
+  const riskAssessment = db.prepare("SELECT created_at FROM risk_assessments WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
+    .get(userId) as { created_at?: string } | undefined;
   for (const finding of findings) {
     const child = db.prepare("SELECT id FROM agent_runs WHERE root_run_id=? AND agent_type=? ORDER BY created_at DESC LIMIT 1").get(rootRunId, finding.agent.toLowerCase()) as { id?: string } | undefined;
     for (const [stance, statements] of [["support", finding.supportEvidence], ["counter", finding.counterEvidence], ["missing", finding.missingInformation]] as const) {
       for (const statement of statements) {
         const evidenceId = createId("evidence");
         const now = isoNow();
+        const observedAt = observedAtForFinding({
+          agent: finding.agent,
+          stance,
+          generatedAt: now,
+          marketDataAsOf,
+          portfolioSnapshotAsOf: portfolioSnapshot?.as_of ?? null,
+          profileAsOf: riskAssessment?.created_at ?? null,
+        });
         db.prepare(`INSERT INTO evidence_items
-          (id,user_id,recommendation_id,agent_run_id,kind,stance,quality,title,summary,statement,source,is_material,created_at)
-          VALUES (?,?,NULL,?,?,?,?,?,?,?,?,1,?)`).run(
+          (id,user_id,recommendation_id,agent_run_id,kind,stance,quality,title,summary,statement,source,observed_at,is_material,created_at)
+          VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,1,?)`).run(
           evidenceId, userId, child?.id ?? rootRunId, stance === "missing" ? "missing_data" : finding.agent === "DATA_RESEARCH" ? "market_fact" : "model_inference",
           stance, finding.confidence >= 0.75 ? "high" : finding.confidence >= 0.4 ? "medium" : "low", finding.agent, statement, statement,
-          finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", now,
+          finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", observedAt, now,
         );
         const sources = finding.agent === "DATA_RESEARCH"
           ? marketExecutions.length ? marketExecutions : [null]
@@ -890,7 +957,14 @@ function persistConflict(db: ReturnType<typeof getDatabase>, rootRunId: string, 
   );
 }
 
-export function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | undefined, target: Instrument | null, holding: Holding | null, hasHoldings = true): string[] {
+export function criticalMissingInformation(
+  intent: AdvisorIntent,
+  profile: Profile | undefined,
+  target: Instrument | null,
+  holding: Holding | null,
+  hasHoldings = true,
+  allowProfileAssumptions = false,
+): string[] {
   if (intent !== "BUY" && intent !== "SELL" && intent !== "DIAGNOSIS") return [];
   const preferences = parsePreferences(profile?.preferences_json);
   const profileMissing = [
@@ -901,9 +975,10 @@ export function criticalMissingInformation(intent: AdvisorIntent, profile: Profi
     preferences.instrumentPreference === undefined ? "instrument_preference" : null,
     preferences.nearTermUse === undefined ? "near_term_use" : null,
   ].filter((value): value is string => Boolean(value));
-  if (intent === "DIAGNOSIS") return [...profileMissing, ...(!hasHoldings ? ["holdings"] : [])];
+  const requiredProfileMissing = allowProfileAssumptions ? [] : profileMissing;
+  if (intent === "DIAGNOSIS") return [...requiredProfileMissing, ...(!hasHoldings ? ["holdings"] : [])];
   return [
-    ...profileMissing,
+    ...requiredProfileMissing,
     !target ? "instrument" : null,
     intent === "SELL" && !holding ? "target_holding" : null,
   ].filter((value): value is string => Boolean(value));
@@ -956,6 +1031,7 @@ function chiefPrompt(
   findings: AgentFinding[],
   requiredRoles: ProfessionalAgentRole[],
   semanticContext: AdvisorSemanticToolsContext,
+  dailyPortfolio = false,
 ): string {
   const marketFacts = research.executions.map(({ source, result }) => ({
     method: source.method,
@@ -966,6 +1042,9 @@ function chiefPrompt(
   }));
   return [
     `用户问题：${question}`,
+    dailyPortfolio
+      ? "工作模式：DAILY_PORTFOLIO。缺失画像字段只能使用保守默认假设，不得阻塞任务，也不得写回用户画像。"
+      : "工作模式：CONVERSATION。缺失关键画像信息时可以要求用户补充。",
     `服务端当前时间：${isoNow()}；数据状态由服务端计算，禁止自行改写或臆测数据已过期`,
     `必须委派：${requiredRoles.join(", ")}`,
     `用户画像：${json(profile ?? {})}`,
@@ -982,18 +1061,38 @@ function chiefPrompt(
 }
 
 function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, findings: AgentFinding[], dataState: DataState): string {
+  const profile = findings.find((finding) => finding.agent === "PROFILE_CONTEXT");
   const research = findings.find((finding) => finding.agent === "DATA_RESEARCH");
   const risk = findings.find((finding) => finding.agent === "PORTFOLIO_RISK");
   const compliance = findings.find((finding) => finding.agent === "COMPLIANCE_REVIEWER");
   return [
     `建议状态：${status}；建议动作：${decision.action}`,
     `核心结论：${decision.summary}`,
+    ...(profile?.conclusion.includes("默认假设") ? [`本次画像假设：${profile.supportEvidence.join("；")}`] : []),
     `数据研究：${research?.conclusion ?? `本次不要求外部数据（${dataState}）`}`,
     `组合影响：${decision.portfolioImpact}`,
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
+  ].join("\n");
+}
+
+function formatGuidedIntakeAnswer(content: string): string {
+  const mentionsSavings = /存款|现金|余额|积蓄|资金/u.test(content);
+  const mentionsFear = /怕|担心|风险|暴跌|亏损|回撤/u.test(content);
+  const firstQuestion = mentionsSavings
+    ? "这笔钱里，未来 1-3 年已经确定要用的部分大约有多少？"
+    : "未来 1-3 年有没有已经确定的大额用途，例如首付、教育、应急或换车？";
+  const secondQuestion = mentionsFear
+    ? "在账户短期下跌时，你大概能接受多大幅度的浮亏而不影响生活和睡眠？"
+    : "你希望优先解决的是稳住本金、安排阶段目标，还是为长期增值做配置？";
+  return [
+    "收到。普通模式会先把目标、资金用途和风险边界聊清楚，不会因为一条描述就读取历史持仓并生成买卖建议。",
+    "先确认两件事：",
+    `1. ${firstQuestion}`,
+    `2. ${secondQuestion}`,
+    "你回答后，我会先帮你整理资金分层和画像方向；只有你明确提出“诊断我的持仓”或“分析某个标的”时，才会启动完整的数据、风险与合规流程。",
   ].join("\n");
 }
 
@@ -1164,4 +1263,19 @@ function parsePreferences(value: string | null | undefined): Record<string, unkn
   } catch {
     return {};
   }
+}
+
+function profileWithDailyAssumptions(profile: Profile | undefined): Profile {
+  const preferences = parsePreferences(profile?.preferences_json);
+  return {
+    ...profile,
+    risk_level: profile?.risk_level ?? "BALANCED",
+    horizon: profile?.horizon ?? "MEDIUM",
+    max_drawdown_decimal: profile?.max_drawdown_decimal ?? "0.10",
+    preferences_json: json({
+      ...preferences,
+      instrumentPreference: preferences.instrumentPreference ?? "BROAD_INDEX_ETF",
+      nearTermUse: preferences.nearTermUse ?? false,
+    }),
+  };
 }

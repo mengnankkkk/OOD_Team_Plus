@@ -105,9 +105,9 @@ test.beforeEach(async ({ page }) => {
         analysis: { analysisId: "analysis-evidence", type: "CONVERSATION_AGENT", status: "BLOCKED", createdAt: "2026-07-25T08:00:00.000Z", completedAt: "2026-07-25T08:00:03.000Z" },
         dataFreshness: { marketDataAsOf: null, status: "UNAVAILABLE" },
         evidence: [
-          { id: "evidence-support", category: "MODEL_INFERENCE", stance: "SUPPORT", title: "集中度偏高", summary: "单一持仓占比较高", quality: "MEDIUM", dataAsOf: null, sources: [{ type: "DERIVED_ENGINE", reference: "agent:PORTFOLIO_RISK", excerpt: "单一持仓占比较高" }] },
-          { id: "evidence-counter", category: "MARKET_FACT", stance: "COUNTER", title: "行情不可用", summary: "PandaData 没有返回有效行情", quality: "LOW", dataAsOf: null, sources: [{ type: "PANDADATA", reference: "get_us_daily", freshness: "UNAVAILABLE", excerpt: "行情服务不可用" }] },
-          { id: "evidence-missing", category: "MISSING_DATA", stance: "MISSING", title: "缺少波动率", summary: "缺少 AAPL 最新价格与历史波动率", quality: "LOW", dataAsOf: null, sources: [] },
+          { id: "evidence-support", category: "MODEL_INFERENCE", stance: "SUPPORT", title: "集中度偏高", summary: "单一持仓占比较高", quality: "MEDIUM", dataAsOf: "2026-07-25T07:55:00.000Z", timeBasis: "PORTFOLIO_SNAPSHOT", sources: [{ type: "DERIVED_ENGINE", reference: "agent:PORTFOLIO_RISK", dataAsOf: "2026-07-25T07:55:00.000Z", timeBasis: "PORTFOLIO_SNAPSHOT", excerpt: "单一持仓占比较高" }] },
+          { id: "evidence-counter", category: "MARKET_FACT", stance: "COUNTER", title: "行情不可用", summary: "PandaData 没有返回有效行情", quality: "LOW", dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", sources: [{ type: "PANDADATA", reference: "get_us_daily", freshness: "UNAVAILABLE", dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", excerpt: "行情服务不可用" }] },
+          { id: "evidence-missing", category: "MISSING_DATA", stance: "MISSING", title: "缺少波动率", summary: "缺少 AAPL 最新价格与历史波动率", quality: "LOW", dataAsOf: "2026-07-25T08:00:03.000Z", timeBasis: "EVIDENCE_CREATED", sources: [] },
         ],
         agentTrace: [
           { id: "analysis-evidence", parentRunId: null, agent: "CHIEF_ADVISOR", status: "BLOCKED", purpose: "生成组合建议", summary: "发布门阻断", startedAt: "2026-07-25T08:00:00.000Z", completedAt: "2026-07-25T08:00:03.000Z" },
@@ -158,6 +158,11 @@ test("C 端用户可以完成证据查看与决策回放闭环", async ({ page }
   await expect(page.getByText("get_us_daily", { exact: true })).toBeVisible();
   await expect(page.getByText("缺少可用市场行情。", { exact: true })).toBeVisible();
   await expect(page.getByLabel("风险与合规发布门").getByText("风险与合规发布门已阻断该建议。", { exact: true })).toBeVisible();
+  const evidenceBoard = page.getByRole("region", { name: "证据天平" });
+  await expect(evidenceBoard.getByText(/组合快照截至/u).first()).toBeVisible();
+  await expect(evidenceBoard.getByText(/行情核验时间/u).first()).toBeVisible();
+  await expect(evidenceBoard.getByText(/缺口识别时间/u).first()).toBeVisible();
+  await expect(evidenceBoard.getByText("未提供数据时间", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "查看关联建议" })).toBeVisible();
   await expect(page.getByRole("button", { name: "去顾问补充信息" })).toBeVisible();
 

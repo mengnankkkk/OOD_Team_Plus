@@ -10,6 +10,7 @@ import { POST as answerClarification } from "../clarifications/[clarificationId]
 import { GET as listClarifications } from "../clarifications/route";
 import { POST } from "./route";
 import { getDatabase, isoNow } from "@/server/http/context";
+import { getSseEvents } from "@/server/extensions/sse/event-persister";
 
 const conversationId = "conversation-advisor-test";
 let dbPath = "";
@@ -102,13 +103,49 @@ describe("conversation advisor clarifications", () => {
     expect(response.status).toBe(409);
     expect(body.error.code).toBe("RUN_ALREADY_ACTIVE");
   });
+
+  it("keeps open-ended normal conversations in guided intake without generating a recommendation", async () => {
+    createCompleteProfile();
+    const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，想学理财", "guided-intake-message");
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(body.data.analysis.status).toBe("COMPLETED");
+    expect(body.data.conversationKind).toBe("GUIDED_INTAKE");
+    expect(body.data.recommendationId).toBeNull();
+    expect(body.data.answer).toContain("普通模式会先把目标、资金用途和风险边界聊清楚");
+
+    const db = getDatabase();
+    const recommendationCount = db.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE user_id=?").get(TEST_USER_ID) as { count: number };
+    db.close();
+    expect(recommendationCount.count).toBe(0);
+
+    const events = getSseEvents(body.data.analysis.analysisId);
+    expect(events.some((event) => event.type === "agent.delegated")).toBe(false);
+  });
+
+  it("completes the daily portfolio workflow without creating a clarification", async () => {
+    const response = await sendMessage(
+      "请生成今日组合建议，直接基于现有信息完成一次组合诊断。",
+      "daily-portfolio-message",
+      "DAILY_PORTFOLIO",
+    );
+    const body = await response.json();
+    expect(response.status).toBe(202);
+    expect(body.data.analysis.status).toBe("COMPLETED");
+    expect(body.data.clarificationId).toBeUndefined();
+    expect(body.data.missingQuestions).toEqual([]);
+
+    const events = getSseEvents(body.data.analysis.analysisId);
+    expect(events.some((event) => event.type === "agent.completed")).toBe(true);
+  });
 });
 
-async function sendMessage(content: string, clientMessageId: string) {
+async function sendMessage(content: string, clientMessageId: string, workflow?: "CONVERSATION" | "DAILY_PORTFOLIO") {
   return POST(
     authenticatedRequest(`http://localhost/api/v1/conversations/${conversationId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, clientMessageId }),
+      body: JSON.stringify({ content, clientMessageId, workflow }),
       headers: { "Content-Type": "application/json", "Idempotency-Key": `idem-${clientMessageId}` },
     }),
     { params: Promise.resolve({ id: conversationId }) },

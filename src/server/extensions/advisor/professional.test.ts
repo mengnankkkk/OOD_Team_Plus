@@ -83,6 +83,10 @@ describe("buildPortfolioRecommendationDraft", () => {
     ]));
   });
 
+  it("allows the daily portfolio workflow to use non-persistent profile assumptions", () => {
+    expect(criticalMissingInformation("DIAGNOSIS", undefined, null, null, true, true)).toEqual([]);
+  });
+
   it("uses a concise portfolio headline when market evidence blocks publication", () => {
     const draft = buildPortfolioRecommendationDraft({
       status: "BLOCKED",
@@ -226,4 +230,5 @@ describe("buildPortfolioRecommendationDraft", () => {
       marketDataRequired: false,
     })).toBe("ACTIVE");
   });
+
 });

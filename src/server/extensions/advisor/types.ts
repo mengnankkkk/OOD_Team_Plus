@@ -1,10 +1,12 @@
 export type ConversationOutputMode = "SQL_ONLY" | "CHART" | "FINANCIAL_REPORT";
+export type AdvisorWorkflow = "CONVERSATION" | "DAILY_PORTFOLIO";
 
 export interface AdvisorRunInput {
   userId: string;
   sessionId: string;
   content: string;
   outputMode?: ConversationOutputMode;
+  workflow?: AdvisorWorkflow;
   clientMessageId?: string;
 }
 

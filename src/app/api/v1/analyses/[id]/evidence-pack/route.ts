@@ -4,6 +4,9 @@ import { formatRecommendation } from "@/server/extensions/advisor/recommendation
 import { getSseEvents } from "@/server/extensions/sse/event-persister";
 import { getDatabase, getRequestContext, meta, parseJson } from "@/server/http/context";
 
+import { buildMissingEvidence, publicAgentPurpose, sanitizePayload, summarizeFreshness } from "./evidence-pack-format";
+import { formatEvidenceSource, resolveEvidenceTime, type EvidenceTime } from "./evidence-time";
+
 type Row = Record<string, unknown>;
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -34,20 +37,30 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     WHERE ar.user_id=? AND (ar.id=? OR ar.root_run_id=?) ORDER BY pp.created_at,pp.id`).all(userId, id, id) as Row[];
   const recommendations = db.prepare("SELECT * FROM recommendations WHERE analysis_id=? AND user_id=? ORDER BY created_at,id")
     .all(id, userId) as Row[];
-  const evidence = db.prepare(`SELECT ei.* FROM evidence_items ei JOIN agent_runs ar ON ar.id=ei.agent_run_id
+  const evidence = db.prepare(`SELECT ei.*,ar.agent_type AS evidence_agent_type,
+      ar.started_at AS evidence_run_started_at,ar.completed_at AS evidence_run_completed_at,
+      ar.created_at AS evidence_run_created_at
+    FROM evidence_items ei JOIN agent_runs ar ON ar.id=ei.agent_run_id
     WHERE ei.user_id=? AND (ar.id=? OR ar.root_run_id=?) ORDER BY ei.created_at,ei.id`).all(userId, id, id) as Row[];
   const evidenceLinks = evidence.length ? db.prepare(`SELECT esl.*,ds.code AS source_code,ds.name AS source_name,
       ms.as_of AS snapshot_as_of,ms.freshness_status,ms.quality_status AS snapshot_quality,ms.source_method,
-      msm.metric_code AS linked_metric_code,msm.value_decimal AS linked_value_decimal,msm.value_text AS linked_value_text
+      msm.metric_code AS linked_metric_code,msm.value_decimal AS linked_value_decimal,msm.value_text AS linked_value_text,
+      linked_sr.data_as_of AS linked_skill_data_as_of,linked_sr.completed_at AS linked_skill_completed_at
     FROM evidence_source_links esl LEFT JOIN data_sources ds ON ds.id=esl.data_source_id
     LEFT JOIN market_snapshots ms ON ms.id=esl.market_snapshot_id
     LEFT JOIN market_snapshot_metrics msm ON msm.id=esl.market_snapshot_metric_id
+    LEFT JOIN skill_runs linked_sr ON linked_sr.tool_call_id=esl.tool_call_id
     WHERE esl.evidence_id IN (${evidence.map(() => "?").join(",")}) ORDER BY esl.created_at,esl.id`)
     .all(...evidence.map((item) => item.id)) as Row[] : [];
   const snapshotIds = [...new Set(evidenceLinks.map((item) => item.market_snapshot_id).filter(Boolean))];
   const marketSnapshots = snapshotIds.length ? db.prepare(`SELECT ms.*,i.symbol,i.name AS instrument_name,ds.code AS source_code,ds.name AS source_name
     FROM market_snapshots ms JOIN instruments i ON i.id=ms.instrument_id LEFT JOIN data_sources ds ON ds.id=ms.data_source_id
     WHERE ms.id IN (${snapshotIds.map(() => "?").join(",")}) ORDER BY ms.as_of,ms.id`).all(...snapshotIds) as Row[] : [];
+  const analysisReferenceAt = String(run.completed_at ?? run.created_at);
+  const portfolioSnapshot = db.prepare(`SELECT id,as_of FROM portfolio_snapshots
+    WHERE user_id=? AND as_of<=? ORDER BY as_of DESC,created_at DESC LIMIT 1`).get(userId, analysisReferenceAt) as Row | undefined;
+  const riskAssessment = db.prepare(`SELECT id,created_at FROM risk_assessments
+    WHERE user_id=? AND created_at<=? ORDER BY created_at DESC,id DESC LIMIT 1`).get(userId, analysisReferenceAt) as Row | undefined;
   const conflicts = db.prepare("SELECT * FROM agent_conflicts WHERE root_run_id=? ORDER BY created_at,id").all(id) as Row[];
   db.close();
 
@@ -55,6 +68,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   for (const link of evidenceLinks) {
     const evidenceId = String(link.evidence_id);
     linksByEvidence.set(evidenceId, [...(linksByEvidence.get(evidenceId) ?? []), link]);
+  }
+  const skillRunsByAgent = new Map<string, Row[]>();
+  for (const skillRun of skillRuns) {
+    const agentRunId = String(skillRun.agent_run_id);
+    skillRunsByAgent.set(agentRunId, [...(skillRunsByAgent.get(agentRunId) ?? []), skillRun]);
+  }
+  const evidenceTimes = new Map<string, EvidenceTime>();
+  for (const item of evidence) {
+    evidenceTimes.set(String(item.id), resolveEvidenceTime({
+      evidence: item,
+      links: linksByEvidence.get(String(item.id)) ?? [],
+      skillRuns: skillRunsByAgent.get(String(item.agent_run_id)) ?? [],
+      portfolioSnapshot,
+      riskAssessment,
+    }));
   }
   const compliance = parseJson<Record<string, unknown>>(String(run.compliance_json ?? "{}"), {});
   const missingEvidence = buildMissingEvidence({ evidence, evidenceLinks, toolCalls, skillRuns, marketSnapshots, recommendations, conflicts, compliance });
@@ -72,17 +100,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         completedAt: run.completed_at,
       },
       dataFreshness: summarizeFreshness(marketSnapshots, skillRuns),
-      evidence: evidence.map((item) => ({
-        id: item.id,
-        category: String(item.kind).toUpperCase(),
-        stance: String(item.stance).toUpperCase(),
-        title: item.title,
-        summary: item.statement ?? item.summary,
-        quality: String(item.quality).toUpperCase(),
-        dataAsOf: item.observed_at ?? null,
-        confidenceBps: item.confidence_bps ?? null,
-        sources: (linksByEvidence.get(String(item.id)) ?? []).map(formatEvidenceSource),
-      })),
+      evidence: evidence.map((item) => {
+        const time = evidenceTimes.get(String(item.id)) ?? {
+          dataAsOf: String(item.created_at),
+          timeBasis: "EVIDENCE_CREATED" as const,
+        };
+        return {
+          id: item.id,
+          category: String(item.kind).toUpperCase(),
+          stance: String(item.stance).toUpperCase(),
+          title: item.title,
+          summary: item.statement ?? item.summary,
+          quality: String(item.quality).toUpperCase(),
+          dataAsOf: time.dataAsOf,
+          timeBasis: time.timeBasis,
+          confidenceBps: item.confidence_bps ?? null,
+          sources: (linksByEvidence.get(String(item.id)) ?? []).map((source) => formatEvidenceSource(source, time)),
+        };
+      }),
       agentTrace: agentRuns.map((item) => ({
         id: item.id,
         parentRunId: item.parent_run_id ?? null,
@@ -170,91 +205,4 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     },
     meta: meta(),
   });
-}
-
-function formatEvidenceSource(item: Row) {
-  return {
-    type: String(item.source_code ?? "UNKNOWN").toUpperCase(),
-    name: item.source_name,
-    reference: item.source_locator ?? null,
-    toolCallId: item.tool_call_id ?? null,
-    marketSnapshotId: item.market_snapshot_id ?? null,
-    dataAsOf: item.snapshot_as_of ?? null,
-    freshness: item.freshness_status ? String(item.freshness_status).toUpperCase() : null,
-    metric: item.linked_metric_code ? {
-      code: item.linked_metric_code,
-      value: item.linked_value_decimal ?? item.linked_value_text,
-    } : null,
-    excerpt: item.excerpt ?? null,
-  };
-}
-
-function summarizeFreshness(snapshots: Row[], skillRuns: Row[]) {
-  const dates = snapshots.map((item) => String(item.as_of ?? "")).filter(Boolean).sort();
-  const latestByInstrument = new Map<string, Row>();
-  for (const snapshot of snapshots) {
-    const key = String(snapshot.instrument_id ?? snapshot.symbol ?? snapshot.id);
-    const current = latestByInstrument.get(key);
-    if (!current || String(snapshot.as_of ?? "") > String(current.as_of ?? "")) latestByInstrument.set(key, snapshot);
-  }
-  const latestSnapshots = [...latestByInstrument.values()];
-  const hasStale = latestSnapshots.some((item) => String(item.freshness_status).toLowerCase() === "stale");
-  const hasFailed = skillRuns.some((item) => String(item.status).toLowerCase() === "failed");
-  const hasStaleSkillOnly = !snapshots.length && skillRuns.some((item) => String(item.quality_status).toLowerCase() === "stale");
-  return {
-    marketDataAsOf: dates.at(-1) ?? null,
-    financialReportPeriod: null,
-    status: snapshots.length ? hasStale ? "STALE" : "FRESH" : hasFailed ? "UNAVAILABLE" : hasStaleSkillOnly ? "STALE" : "NOT_REQUIRED",
-  };
-}
-
-function buildMissingEvidence(input: { evidence: Row[]; evidenceLinks: Row[]; toolCalls: Row[]; skillRuns: Row[]; marketSnapshots: Row[]; recommendations: Row[]; conflicts: Row[]; compliance: Record<string, unknown> }): string[] {
-  const missing = new Set<string>();
-  if (!input.evidence.length) missing.add("该分析尚未写入结构化证据。");
-  if (!input.evidence.some((item) => String(item.stance).toLowerCase() === "counter")) missing.add("缺少反方证据。");
-  if (input.toolCalls.length && !input.skillRuns.length) missing.add("工具调用没有关联 Skill Run。");
-  if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "succeeded") && !input.marketSnapshots.length) missing.add("成功的数据 Skill 没有关联市场快照。");
-  if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "failed") && !input.marketSnapshots.length) missing.add("缺少可用市场行情。");
-  if (input.evidence.some((item) => String(item.kind).toLowerCase() === "market_fact" && !item.observed_at)) missing.add("市场证据未提供数据时间。");
-  const linkedIds = new Set(input.evidenceLinks.map((item) => String(item.evidence_id)));
-  if (input.evidence.some((item) => !linkedIds.has(String(item.id)))) missing.add("部分证据缺少可追溯的数据来源。");
-  for (const item of input.evidence) {
-    if (String(item.stance).toLowerCase() === "missing") {
-      const statement = String(item.statement ?? item.summary ?? item.title ?? "").trim();
-      if (statement) missing.add(statement);
-    }
-  }
-  if (!input.recommendations.length) missing.add("该分析没有生成建议卡。");
-  if (input.conflicts.some((item) => String(item.resolution_status).toLowerCase() === "unresolved")) missing.add("仍存在未解决的 Agent 冲突。");
-  if (String(input.compliance.status ?? "").toUpperCase() === "BLOCKED") missing.add("风险与合规发布门已阻断该建议。");
-  return [...missing];
-}
-
-function sanitizePayload(value: unknown): unknown {
-  if (Array.isArray(value)) return value.slice(0, 100).map(sanitizePayload);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-    key,
-    /token|password|secret|api[_-]?key|authorization|cookie/iu.test(key) ? "[REDACTED]" : sanitizePayload(item),
-  ]));
-}
-
-const PUBLIC_AGENT_PURPOSES: Record<string, string> = {
-  chief_advisor: "统筹画像、数据、组合风险、建议与合规结论",
-  profile_context: "核对用户画像、目标、资金约束与持仓事实",
-  data_research: "核验市场数据、估值与资讯证据",
-  portfolio_risk: "评估集中度、回撤约束与压力情景",
-  recommendation: "汇总证据并形成候选建议方案",
-  compliance_reviewer: "检查证据完整性、适当性与发布条件",
-  explanation_report: "整理面向用户的结论与证据链",
-};
-
-function publicAgentPurpose(item: Row): string {
-  const agent = String(item.agent_type ?? item.type ?? "").toLowerCase();
-  if (PUBLIC_AGENT_PURPOSES[agent]) return PUBLIC_AGENT_PURPOSES[agent];
-
-  const objective = String(item.objective ?? "").replace(/\s+/gu, " ").trim();
-  const containsInternalContext = /当前角色|服务端上下文|确定性节点发现|已完成的上游发现|请动态委派/iu.test(objective);
-  if (!objective || objective.length > 160 || containsInternalContext) return "执行专业分析任务";
-  return objective;
 }
