@@ -103,8 +103,34 @@ describe("buildFinancialReportMarkdown", () => {
     expect(markdown).toContain("简单说，先不要继续买入占比已经偏高的持仓");
     expect(markdown).toContain("最近交易日收盘数据");
     expect(markdown).toContain("集中度指标为 0.7214");
+    expect(markdown).toContain("### 你的画像和目标");
+    expect(markdown).toContain("### 组合事实");
+    expect(markdown).toContain("### 行情与技术观察");
+    expect(markdown).toContain("### 基本面与消息面");
+    expect(markdown).toContain("### 反方证据");
+    expect(markdown).toContain("### 为什么对应这个动作");
+    expect(markdown).toContain("本次未获得可用的基本面或消息面证据");
     expect(markdown).toContain("| 证券代码 | 持仓名称 | 当前市值（元） | 浮动盈亏（元） | 组合占比 |");
+    expect(markdown).not.toContain("## 数据与风险");
+    expect(markdown).not.toContain("## 你还可以查看");
     expect(markdown).not.toContain("DEGRADED");
     expect(markdown).not.toContain("STOP_ADDING");
+  });
+
+  it("states the evidence gap instead of inventing market or profile support", () => {
+    const markdown = buildFinancialReportMarkdown(
+      "资产深度报告",
+      "建议状态：BLOCKED；建议动作：WATCH\n核心结论：信息还不完整，暂不调整",
+      [],
+      null,
+      "BLOCKED",
+    );
+
+    expect(markdown).toContain("本次未获得可用的用户画像和投资目标证据");
+    expect(markdown).toContain("本次未获得可用的行情或技术面证据");
+    expect(markdown).toContain("本次未获得可用的基本面或消息面证据");
+    expect(markdown).toContain("本次未获得可用的持仓明细");
+    expect(markdown).not.toContain("## 数据与风险");
+    expect(markdown).not.toContain("## 你还可以查看");
   });
 });

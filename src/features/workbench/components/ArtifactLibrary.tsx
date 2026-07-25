@@ -151,7 +151,7 @@ function MarkdownPreview({ markdown }: { markdown: string }) {
     if (line.startsWith("# ")) blocks.push(<h1 key={index}>{line.slice(2)}</h1>);
     else if (line.startsWith("## ")) blocks.push(<h2 key={index}>{line.slice(3)}</h2>);
     else if (line.startsWith("### ")) blocks.push(<h3 key={index}>{line.slice(4)}</h3>);
-    else if (line.startsWith("- ")) blocks.push(<p className="markdown-bullet" key={index}><span>•</span>{line.slice(2)}</p>);
+    else if (line.startsWith("- ")) blocks.push(<p className="markdown-bullet" key={index}><span>•</span>{renderInlineMarkdown(line.slice(2))}</p>);
     else if (line.startsWith("**") && line.endsWith("**")) blocks.push(<p className="markdown-callout" key={index}>{line.slice(2, -2)}</p>);
     else if (line) blocks.push(<p key={index}>{renderInlineMarkdown(line)}</p>);
     else if (blocks.length && lines[index - 1]) blocks.push(<div className="markdown-spacer" key={index} />);

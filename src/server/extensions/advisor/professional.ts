@@ -374,7 +374,7 @@ export async function runProfessionalAdvisor(input: {
       findings,
       missingInformation,
       recommendation,
-      answer: formatAnswer(candidate, status, findings, research.dataState, publicationReasons),
+      answer: formatAnswer(candidate, status, findings, research.dataState, publicationReasons, profile, goals),
       provider,
       debateSuggestion: attachTrustedTargetSymbol(candidate.debateSuggestion, target?.symbol),
     };
@@ -1357,17 +1357,36 @@ function formatAnswer(
   findings: AgentFinding[],
   dataState: DataState,
   publicationReasons: string[],
+  profile: Profile | undefined,
+  goals: Goal[],
 ): string {
-  const profile = findings.find((finding) => finding.agent === "PROFILE_CONTEXT");
+  const profileFinding = findings.find((finding) => finding.agent === "PROFILE_CONTEXT");
   const research = findings.find((finding) => finding.agent === "DATA_RESEARCH");
   const risk = findings.find((finding) => finding.agent === "PORTFOLIO_RISK");
   const compliance = findings.find((finding) => finding.agent === "COMPLIANCE_REVIEWER");
+  const profileEvidence = [
+    profileFinding?.conclusion,
+    ...formatProfileFacts(profile),
+    ...goals.slice(0, 2).map((goal) => `投资目标：${goal.name}，期限：${translateHorizon(goal.horizon)}${goal.target_amount_decimal ? `，目标金额：${goal.target_amount_decimal} 元` : ""}`),
+    ...(profileFinding?.supportEvidence ?? []),
+  ].filter(Boolean);
+  const marketEvidence = [
+    research?.conclusion,
+    ...(research?.supportEvidence ?? []),
+  ].filter(Boolean);
+  const fundamentalEvidence = findings
+    .flatMap((finding) => finding.supportEvidence)
+    .filter((evidence) => /基本面|财务|估值|盈利|营收|利润|公告|新闻|消息|政策|行业景气/u.test(evidence));
+  const technicalEvidence = findings
+    .flatMap((finding) => finding.supportEvidence)
+    .filter((evidence) => /技术|均线|趋势|动量|波动|回撤|成交量|价格|行情/u.test(evidence));
   return [
     `建议状态：${status}；建议动作：${decision.action}`,
     `核心结论：${decision.summary}`,
-    ...(profile?.conclusion.includes("默认假设") ? [`本次画像假设：${profile.supportEvidence.join("；")}`] : []),
+    `用户画像与投资目标依据：${profileEvidence.join("；") || "本次未获得可用的用户画像和投资目标证据"}`,
     `数据研究：${research?.conclusion ?? `本次不要求外部数据（${dataState}）`}`,
-    ...(research?.supportEvidence.filter((evidence) => /因子研究|策略回测|PandaData get_factor|均线择时/u.test(evidence)).slice(0, 2) ?? []),
+    `行情与技术观察：${[...new Set([...technicalEvidence, ...marketEvidence])].slice(0, 4).join("；") || "本次未获得可用的行情或技术面证据"}`,
+    `基本面与消息面依据：${fundamentalEvidence.slice(0, 3).join("；") || "本次未获得可用的基本面或消息面证据，未据此做判断"}`,
     `组合影响：${decision.portfolioImpact}`,
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,
@@ -1376,6 +1395,38 @@ function formatAnswer(
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
+}
+
+function formatProfileFacts(profile: Profile | undefined): string[] {
+  if (!profile) return [];
+  const preferences = parsePreferences(profile.preferences_json);
+  return [
+    profile.risk_level ? `风险承受类型：${translateProfileValue(profile.risk_level)}` : "",
+    profile.investment_amount_decimal ? `可投资金额：${profile.investment_amount_decimal} 元` : "",
+    profile.horizon ? `计划期限：${translateHorizon(profile.horizon)}` : "",
+    profile.max_drawdown_decimal ? `可接受最大回撤：${profile.max_drawdown_decimal}` : "",
+    preferences.instrumentPreference ? `偏好资产：${translateProfileValue(String(preferences.instrumentPreference))}` : "",
+    preferences.nearTermUse !== undefined ? `近期用款：${preferences.nearTermUse ? "有明确安排" : "暂无明确安排"}` : "",
+  ].filter(Boolean);
+}
+
+function translateHorizon(value: string): string {
+  if (value === "SHORT") return "短线（1 年以内）";
+  if (value === "LONG") return "长线（3 年以上）";
+  return value === "MEDIUM" ? "中线（1-3 年）" : value;
+}
+
+function translateProfileValue(value: string): string {
+  return value
+    .replaceAll("R1", "保守型")
+    .replaceAll("R2", "谨慎型")
+    .replaceAll("R3", "稳健型")
+    .replaceAll("R4", "成长型")
+    .replaceAll("R5", "进取型")
+    .replaceAll("BALANCED", "平衡型")
+    .replaceAll("CONSERVATIVE", "保守型")
+    .replaceAll("AGGRESSIVE", "进取型")
+    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF");
 }
 
 function formatGuidedIntakeAnswer(messages: string[]): string {

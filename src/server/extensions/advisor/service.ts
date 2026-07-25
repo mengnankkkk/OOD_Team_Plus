@@ -475,9 +475,32 @@ export function buildFinancialReportMarkdown(
     ? recommendation.reasons
     : fields.conclusion ? [fields.conclusion] : [];
   const risks = recommendation?.risks ?? [];
-  const counterEvidence = recommendation?.counterEvidence ?? [];
+  const counterEvidence = recommendation?.counterEvidence?.length
+    ? recommendation.counterEvidence
+    : fields.counterEvidence ? [fields.counterEvidence] : [];
   const invalidation = recommendation?.invalidation ?? "";
-  const cautions = [...counterEvidence, ...risks].filter(Boolean);
+  const portfolioEvidence = [
+    rows.length ? `报告生成时读取到 ${rows.length} 项持仓快照，具体明细见下方附录。` : "本次未获得可用的持仓明细。",
+    fields.portfolioFacts,
+    fields.portfolioImpact,
+    fields.risk ? translateRiskText(fields.risk) : "",
+  ].filter(Boolean);
+  const marketEvidence = [
+    fields.technical,
+    fields.research,
+    recommendation?.provenance && typeof recommendation.provenance.dataState === "string"
+      ? `数据状态：${recommendation.provenance.dataState}`
+      : "",
+    recommendation?.dataAsOf ? `数据截至：${recommendation.dataAsOf}` : "",
+  ].filter(Boolean);
+  const fundamentalEvidence = fields.fundamental
+    ? [fields.fundamental]
+    : ["本次未获得可用的基本面或消息面证据，未将这类信息作为支持理由。"];
+  const actionEvidence = [
+    ...reasons,
+    fields.portfolioImpact ? `这项判断对组合的影响是：${fields.portfolioImpact}` : "",
+    `因此当前对应的动作是“${translateAction(action)}”。`,
+  ].filter(Boolean);
 
   return [
     `# ${title}`,
@@ -491,22 +514,28 @@ export function buildFinancialReportMarkdown(
     "",
     "## 为什么这样判断",
     "",
-    ...toBulletLines(reasons, "暂未记录明确的支持依据。"),
+    "### 你的画像和目标",
+    ...toBulletLines([fields.profile], "本次未获得可用的用户画像和投资目标证据，不能据此做个性化判断。"),
     "",
-    "## 数据与风险",
+    "### 组合事实",
     "",
-    `- **行情数据：** ${translateReportText(fields.research || "本次不需要外部行情。")}`,
-    `- **对组合的影响：** ${translateReportText(fields.portfolioImpact || "执行前需要重新检查现金、集中度和回撤。")}`,
-    `- **风险提示：** ${translateRiskText(fields.risk || risks[0] || "市场波动可能改变当前判断。")}`,
-    ...toBulletLines(cautions, "暂未记录额外的反方证据。"),
-    `- **安全边界：** ${translateReportText(fields.compliance || "这份报告只用于研究和模拟，不会自动下单。")}`,
-    invalidation ? `- **什么时候需要重新判断：** ${translateReportText(invalidation)}` : "",
+    ...toBulletLines(portfolioEvidence, "本次未获得可用的组合事实。"),
+    "",
+    "### 行情与技术观察",
+    ...toBulletLines(marketEvidence, "本次未获得可用的行情或技术面证据，不能据此判断趋势。"),
+    "",
+    "### 基本面与消息面",
+    ...toBulletLines(fundamentalEvidence, "本次未获得可用的基本面或消息面证据，未据此做判断。"),
+    "",
+    "### 反方证据",
+    ...toBulletLines([...counterEvidence, ...risks].filter(Boolean), "本次未记录额外的反方证据；市场变化仍可能使判断失效。"),
+    "",
+    "### 为什么对应这个动作",
+    ...toBulletLines(actionEvidence, "暂未记录足够的动作依据。"),
+    invalidation ? `- **需要重新判断的情况：** ${translateReportText(invalidation)}` : "",
+    fields.compliance ? `- **研究边界：** ${translateReportText(fields.compliance)}` : "",
     "",
     buildHoldingsAppendix(rows),
-    "",
-    "## 你还可以查看",
-    "",
-    "报告右上角可以打开对应建议卡，查看完整依据、反方观点和模拟结果。",
     "",
     "---",
     "",
@@ -524,13 +553,21 @@ function markdownPercent(value: unknown): string {
 }
 
 function parseAnswerFields(answer: string): Record<string, string> {
-  const valueFor = (label: string) => answer.match(new RegExp(`${label}[：:]\\s*([^；\\n]+)`, "u"))?.[1]?.trim() ?? "";
+  const valueFor = (label: string) => answer
+    .split("\n")
+    .map((line) => line.match(new RegExp(`^${label}[：:]\\s*(.+)$`, "u"))?.[1]?.trim() ?? "")
+    .find(Boolean) ?? "";
   return {
     action: answer.match(/建议动作[：:]\s*([A-Z_]+)/u)?.[1] ?? "",
     conclusion: valueFor("核心结论"),
+    profile: valueFor("用户画像与投资目标依据") || valueFor("本次画像假设"),
     research: valueFor("数据研究"),
+    technical: valueFor("行情与技术观察"),
+    fundamental: valueFor("基本面与消息面依据"),
     portfolioImpact: valueFor("组合影响"),
+    portfolioFacts: valueFor("组合事实"),
     risk: valueFor("风险复核"),
+    counterEvidence: valueFor("反方证据"),
     compliance: valueFor("合规结论"),
   };
 }
@@ -582,6 +619,13 @@ function translateReportText(value: string): string {
   return value
     .replaceAll("Agent", "智能顾问")
     .replaceAll("PandaData", "行情数据服务")
+    .replaceAll("get_stock_rt_daily", "实时日行情接口")
+    .replaceAll("get_stock_daily", "股票日行情接口")
+    .replaceAll("get_fund_daily", "基金日行情接口")
+    .replaceAll("get_index_daily", "指数日行情接口")
+    .replaceAll("get_us_daily", "美股日行情接口")
+    .replaceAll("get_hk_daily", "港股日行情接口")
+    .replaceAll(" via ", "，来源于")
     .replaceAll("LATEST_TRADING_DAY", "最近交易日收盘数据")
     .replaceAll("LIVE_FRESH", "最新实时行情")
     .replaceAll("STALE", "较旧行情")
@@ -597,6 +641,12 @@ function translateReportText(value: string): string {
     .replaceAll("WATCH", "观察")
     .replaceAll("HOLD", "继续持有")
     .replaceAll("EXIT", "清仓退出")
+    .replaceAll("BALANCED", "平衡型")
+    .replaceAll("CONSERVATIVE", "保守型")
+    .replaceAll("AGGRESSIVE", "进取型")
+    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF")
+    .replaceAll("FACTOR_RESEARCH", "因子研究")
+    .replaceAll("STRATEGY_BACKTEST", "策略回测")
     .replaceAll("HHI", "集中度指标");
 }
 
