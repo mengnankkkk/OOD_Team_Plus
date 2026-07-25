@@ -1526,6 +1526,7 @@ async function searchFundamentalAndNews(
     query,
     adapters: ["WEB", "MCP", "RSS"],
     maximumResults: 5,
+    timeoutMs: 1_500,
   });
   persistSseEvent({
     analysisId: input.analysisId,

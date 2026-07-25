@@ -1,6 +1,7 @@
 export interface SearchFilters {
   limit?: number;
   dateFrom?: string;
+  timeoutMs?: number;
 }
 
 export interface SearchResult {
@@ -33,7 +34,7 @@ export function isSSRFBlocked(url: string): boolean {
 
 export async function searchWeb(query: string, filters: SearchFilters = {}): Promise<SearchResult[]> {
   const limit = Math.min(Math.max(filters.limit ?? 5, 1), 20);
-  const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers: { Accept: "text/html", "User-Agent": "MoneyWhisperer/1.0" }, signal: AbortSignal.timeout(8_000) });
+  const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers: { Accept: "text/html", "User-Agent": "MoneyWhisperer/1.0" }, signal: AbortSignal.timeout(filters.timeoutMs ?? 8_000) });
   if (!response.ok) return [];
   const html = await response.text();
   const results: SearchResult[] = [];
