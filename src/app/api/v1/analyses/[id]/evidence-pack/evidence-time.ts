@@ -18,6 +18,7 @@ export function resolveEvidenceTime(input: {
   skillRuns: Row[];
   portfolioSnapshot?: Row;
   riskAssessment?: Row;
+  profileSnapshot?: Row;
 }): EvidenceTime {
   const stance = String(input.evidence.stance ?? "").toLowerCase();
   if (stance === "missing") return createdEvidenceTime(input.evidence);
@@ -58,9 +59,12 @@ export function resolveEvidenceTime(input: {
       timeBasis: "PORTFOLIO_SNAPSHOT",
     };
   }
-  if (agent === "profile_context" && input.riskAssessment?.created_at) {
+  const profileTime = input.riskAssessment?.created_at
+    ?? input.profileSnapshot?.updated_at
+    ?? input.profileSnapshot?.created_at;
+  if (agent === "profile_context" && profileTime) {
     return {
-      dataAsOf: String(input.evidence.observed_at ?? input.riskAssessment.created_at),
+      dataAsOf: String(input.evidence.observed_at ?? profileTime),
       timeBasis: "PROFILE_SNAPSHOT",
     };
   }
@@ -69,7 +73,7 @@ export function resolveEvidenceTime(input: {
 
 export function formatEvidenceSource(item: Row, fallback: EvidenceTime) {
   const marketDataAsOf = item.snapshot_as_of ?? item.linked_skill_data_as_of;
-  const verifiedAt = item.linked_skill_completed_at;
+  const verifiedAt = item.linked_skill_completed_at ?? item.linked_skill_started_at ?? item.linked_skill_created_at;
   return {
     type: String(item.source_code ?? "UNKNOWN").toUpperCase(),
     name: item.source_name,
@@ -84,6 +88,15 @@ export function formatEvidenceSource(item: Row, fallback: EvidenceTime) {
       value: item.linked_value_decimal ?? item.linked_value_text,
     } : null,
     excerpt: item.excerpt ?? null,
+  };
+}
+
+export function verifiedDataTime(row: Row): EvidenceTime {
+  const marketDataAsOf = row.data_as_of ?? row.dataAsOf;
+  if (marketDataAsOf) return { dataAsOf: String(marketDataAsOf), timeBasis: "MARKET_DATA" };
+  return {
+    dataAsOf: String(row.completed_at ?? row.completedAt ?? row.started_at ?? row.startedAt ?? row.created_at ?? row.createdAt),
+    timeBasis: "SOURCE_VERIFIED",
   };
 }
 

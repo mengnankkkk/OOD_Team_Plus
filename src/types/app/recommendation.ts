@@ -87,6 +87,12 @@ export interface EvidencePack {
   };
   researchMetrics: Record<string, unknown>;
   simulationLog: Record<string, unknown>[];
+  debate?: {
+    conclusion: string;
+    bull: string[];
+    bear: string[];
+    source: string;
+  };
   riskVerdicts: { rule: string; verdict: string; target?: string; note?: string }[];
   createdAt: string;
 }

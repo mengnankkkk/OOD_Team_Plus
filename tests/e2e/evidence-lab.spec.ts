@@ -105,6 +105,7 @@ test.beforeEach(async ({ page }) => {
         analysis: { analysisId: "analysis-evidence", type: "CONVERSATION_AGENT", status: "BLOCKED", createdAt: "2026-07-25T08:00:00.000Z", completedAt: "2026-07-25T08:00:03.000Z" },
         dataFreshness: { marketDataAsOf: null, status: "UNAVAILABLE" },
         evidence: [
+          { id: "evidence-profile", category: "MODEL_INFERENCE", stance: "SUPPORT", title: "PROFILE_CONTEXT", summary: "风险承受能力与资金期限已经确认", quality: "HIGH", dataAsOf: "2026-07-25T07:50:00.000Z", timeBasis: "PROFILE_SNAPSHOT", sources: [{ type: "DERIVED_ENGINE", reference: "agent:PROFILE_CONTEXT", dataAsOf: "2026-07-25T07:50:00.000Z", timeBasis: "PROFILE_SNAPSHOT", excerpt: "风险承受能力与资金期限已经确认" }] },
           { id: "evidence-support", category: "MODEL_INFERENCE", stance: "SUPPORT", title: "集中度偏高", summary: "单一持仓占比较高", quality: "MEDIUM", dataAsOf: "2026-07-25T07:55:00.000Z", timeBasis: "PORTFOLIO_SNAPSHOT", sources: [{ type: "DERIVED_ENGINE", reference: "agent:PORTFOLIO_RISK", dataAsOf: "2026-07-25T07:55:00.000Z", timeBasis: "PORTFOLIO_SNAPSHOT", excerpt: "单一持仓占比较高" }] },
           { id: "evidence-counter", category: "MARKET_FACT", stance: "COUNTER", title: "行情不可用", summary: "PandaData 没有返回有效行情", quality: "LOW", dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", sources: [{ type: "PANDADATA", reference: "get_us_daily", freshness: "UNAVAILABLE", dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", excerpt: "行情服务不可用" }] },
           { id: "evidence-missing", category: "MISSING_DATA", stance: "MISSING", title: "缺少波动率", summary: "缺少 AAPL 最新价格与历史波动率", quality: "LOW", dataAsOf: "2026-07-25T08:00:03.000Z", timeBasis: "EVIDENCE_CREATED", sources: [] },
@@ -114,12 +115,17 @@ test.beforeEach(async ({ page }) => {
           { id: "analysis-data", parentRunId: "analysis-evidence", agent: "DATA_RESEARCH", status: "FAILED", purpose: "获取市场行情", summary: "PandaData 不可用", startedAt: "2026-07-25T08:00:01.000Z", completedAt: "2026-07-25T08:00:02.000Z" },
         ],
         toolCalls: [{ id: "tool-1", agentRunId: "analysis-data", toolName: "pandadata", toolVersion: "0.0.12", status: "FAILED", source: { code: "PANDADATA" }, error: { code: "PANDADATA_UNAVAILABLE", message: "行情服务不可用" } }],
-        skillRuns: [{ id: "skill-1", agentRunId: "analysis-data", skill: { slug: "pandadata-api", version: "0.0.12" }, method: "get_us_daily", status: "FAILED", quality: "UNAVAILABLE", dataAsOf: null, error: { code: "PANDADATA_UNAVAILABLE", message: "行情服务不可用" } }],
-        pandadataProbes: [{ id: "probe-1", method: "get_us_daily", phase: "LIVE_CALL", status: "FAILED", durationMs: 1200, error: { category: "PANDADATA_UNAVAILABLE", message: "行情服务不可用" } }],
+        skillRuns: [{ id: "skill-1", agentRunId: "analysis-data", skill: { slug: "pandadata-api", version: "0.0.12" }, method: "get_us_daily", status: "FAILED", quality: "UNAVAILABLE", dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", error: { code: "PANDADATA_UNAVAILABLE", message: "行情服务不可用" } }],
+        pandadataProbes: [{ id: "probe-1", method: "get_us_daily", phase: "LIVE_CALL", status: "FAILED", durationMs: 1200, dataAsOf: "2026-07-25T08:00:02.000Z", timeBasis: "SOURCE_VERIFIED", error: { category: "PANDADATA_UNAVAILABLE", message: "行情服务不可用" } }],
         marketSnapshots: [],
         conflicts: [],
         recommendations: [blockedRecommendation],
         compliance: { status: "BLOCKED", reasons: ["缺少有效市场行情"], disclaimer: "仅用于研究和模拟。" },
+        simulationPreview: {
+          source: "RECOMMENDATION_PREVIEW",
+          before: { concentration: 0.82, drawdown: 0.18, emergency_months: 2.1, totalAssets: 100000, dataAsOf: "2026-07-25T08:00:00.000Z" },
+          after: { concentration: 0.58, drawdown: 0.12, emergency_months: 3.4, totalAssets: 99800, dataAsOf: "2026-07-25T08:00:00.000Z" },
+        },
         result: {},
         missingEvidence: ["缺少可用市场行情。", "缺少 AAPL 最新价格与历史波动率", "风险与合规发布门已阻断该建议。"],
         retry: { allowed: false, reason: "该运行已完成或被阻断，请基于当前信息发起新的顾问分析。" },
@@ -153,16 +159,23 @@ test("C 端用户可以完成证据查看与决策回放闭环", async ({ page }
   await page.goto("/history/evidence-lab");
 
   await expect(page.getByRole("heading", { name: "每一条建议的证据实验室" })).toBeVisible();
+  await expect(page.getByText("证据实验室", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("已阻断", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("行情不可用", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("get_us_daily", { exact: true })).toBeVisible();
+  await expect(page.getByText("美股日线行情", { exact: true })).toBeVisible();
   await expect(page.getByText("缺少可用市场行情。", { exact: true })).toBeVisible();
   await expect(page.getByLabel("风险与合规发布门").getByText("风险与合规发布门已阻断该建议。", { exact: true })).toBeVisible();
-  const evidenceBoard = page.getByRole("region", { name: "证据天平" });
+  const evidenceBoard = page.getByRole("region", { name: "多空辩论" });
+  await expect(evidenceBoard.getByText("多方观点", { exact: true })).toBeVisible();
+  await expect(evidenceBoard.getByText("空方观点", { exact: true })).toBeVisible();
+  await expect(evidenceBoard.getByText("画像顾问", { exact: true }).first()).toBeVisible();
   await expect(evidenceBoard.getByText(/组合快照截至/u).first()).toBeVisible();
   await expect(evidenceBoard.getByText(/行情核验时间/u).first()).toBeVisible();
   await expect(evidenceBoard.getByText(/缺口识别时间/u).first()).toBeVisible();
   await expect(evidenceBoard.getByText("未提供数据时间", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("DERIVED_ENGINE", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("PROFILE_CONTEXT", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("agent:", { exact: false })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "查看关联建议" })).toBeVisible();
   await expect(page.getByRole("button", { name: "去顾问补充信息" })).toBeVisible();
 
@@ -174,6 +187,10 @@ test("C 端用户可以完成证据查看与决策回放闭环", async ({ page }
   await page.getByRole("button", { name: "查看关联建议" }).click();
   await expect(page.getByRole("heading", { name: blockedRecommendation.summary })).toBeVisible();
   await expect(page.getByText("这条建议已被风险与合规节点拦截")).toBeVisible();
+  await page.getByRole("tab", { name: "模拟结果" }).click();
+  await expect(page.getByText("模拟数据缺失", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("82.0%", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("-18.0%", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: /模拟采纳/u })).toHaveCount(0);
   await page.getByRole("button", { name: "查看完整证据链" }).click();
   await expect(page).toHaveURL(/history\/evidence-lab\?analysisId=analysis-evidence/u);

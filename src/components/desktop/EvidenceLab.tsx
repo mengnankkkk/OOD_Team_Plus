@@ -48,7 +48,7 @@ const EvidenceLab = ({ evidence }: EvidenceLabProps) => {
         <dl className="mt-5 grid grid-cols-2 gap-px border border-border bg-border text-sm md:grid-cols-4">
           <SummaryCell label="运行状态" value={statusLabel(evidence.status)} />
           <SummaryCell label="数据新鲜度" value={freshnessLabel(freshness)} />
-          <SummaryCell label="正 / 反证据" value={`${support.length} / ${counter.length}`} />
+          <SummaryCell label="多 / 空观点" value={`${support.length} / ${counter.length}`} />
           <SummaryCell label="待补信息" value={String(Math.max(missing.length, evidence.missingEvidence.length))} />
         </dl>
       </section>
@@ -68,10 +68,10 @@ const EvidenceLab = ({ evidence }: EvidenceLabProps) => {
       ) : null}
 
       <section aria-labelledby="evidence-board-title">
-        <SectionHeading icon={FileSearch} title="证据天平" subtitle="支持、反方和缺失信息分开展示" id="evidence-board-title" />
+        <SectionHeading icon={FileSearch} title="多空辩论" subtitle="多方、空方和缺失信息分开展示" id="evidence-board-title" />
         <div className="mt-4 grid gap-6 xl:grid-cols-2">
-          <EvidenceColumn title="支持当前判断" tone="support" rows={support} empty="本次没有形成支持证据。" />
-          <EvidenceColumn title="反方观点与风险" tone="counter" rows={counter} empty="本次没有形成反方证据，需要重新分析。" />
+          <EvidenceColumn title="多方观点" tone="support" rows={support} empty="本次没有形成多方观点。" />
+          <EvidenceColumn title="空方观点" tone="counter" rows={counter} empty="本次没有形成空方观点，需要重新分析。" />
         </div>
         {missing.length ? (
           <div className="mt-6">
@@ -162,7 +162,7 @@ function EvidenceColumn({ title, tone, rows, empty }: { title: string; tone: "su
             <article key={text(item.id, String(index))} className={`border-l-2 py-4 pl-4 ${accent}`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-medium">{text(item.title, "未命名证据")}</p>
+                  <p className="text-sm font-medium">{evidenceTitle(item.title)}</p>
                   <p className="mt-1 text-sm leading-6 text-muted-foreground">{text(item.summary, "未提供摘要")}</p>
                 </div>
                 <span className="border border-border px-2 py-1 text-[10px] text-muted-foreground">{qualityLabel(item.quality)}</span>
@@ -188,8 +188,8 @@ function SourceList({ sources }: { sources: Row[] }) {
         <li key={`${text(source.reference, "source")}-${index}`} className="border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <Link2 className="size-3.5 text-primary" />
-            <span className="font-medium">{text(source.type, "UNKNOWN")}</span>
-            <span className="font-mono">{text(source.reference, "未提供来源定位")}</span>
+            <span className="font-medium">{sourceLabel(source.type)}</span>
+            <span>{referenceLabel(source.reference)}</span>
             {source.freshness ? <StatusBadge value={source.freshness} /> : null}
           </div>
           <p className="mt-1 text-muted-foreground">{timeLabel(source.timeBasis)}：{dateLabel(source.dataAsOf)}</p>
@@ -211,22 +211,22 @@ function TraceGroup({ title, rows, render, empty }: { title: string; rows: Row[]
 
 function renderSkillRun(row: Row) {
   const skill = asRow(row.skill);
-  return <TraceRow icon={TerminalSquare} title={`${text(skill.slug, "internal-skill")} · ${text(row.method, "未记录方法")}`} status={row.status} detail={`${qualityLabel(row.quality)} · 数据时间 ${dateLabel(row.dataAsOf)}`} error={failureMessage(row)} />;
+  return <TraceRow icon={TerminalSquare} title={`${skillLabel(skill.slug)} · ${methodLabel(row.method)}`} status={row.status} detail={`${qualityLabel(row.quality)} · ${timeLabel(row.timeBasis)} ${dateLabel(row.dataAsOf)}`} error={failureMessage(row)} />;
 }
 
 function renderProbe(row: Row) {
-  return <TraceRow icon={Database} title={`${text(row.method, "PandaData")} · ${text(row.phase, "UNKNOWN")}`} status={row.status} detail={`耗时 ${text(row.durationMs, "—")} ms · 数据时间 ${dateLabel(row.dataAsOf)}`} error={failureMessage(row)} />;
+  return <TraceRow icon={Database} title={`${methodLabel(row.method)} · ${phaseLabel(row.phase)}`} status={row.status} detail={`耗时 ${text(row.durationMs, "-")} ms · ${timeLabel(row.timeBasis)} ${dateLabel(row.dataAsOf)}`} error={failureMessage(row)} />;
 }
 
 function renderToolCall(row: Row) {
   const source = asRow(row.source);
-  return <TraceRow icon={TerminalSquare} title={text(row.toolName, "未命名工具")} status={row.status} detail={`${text(source.code, "内部来源")} · ${text(row.outputSummary, "未生成输出摘要")}`} error={failureMessage(row)} />;
+  return <TraceRow icon={TerminalSquare} title={toolLabel(row.toolName)} status={row.status} detail={`${sourceLabel(source.code)} · ${text(row.outputSummary, "未生成输出摘要")}`} error={failureMessage(row)} />;
 }
 
 function renderSnapshot(row: Row) {
   const instrument = asRow(row.instrument);
   const source = asRow(row.source);
-  return <TraceRow icon={Database} title={`${text(instrument.name, text(instrument.symbol, "市场快照"))}`} status={row.freshness} detail={`${text(source.code, "UNKNOWN")} / ${text(source.method, "未记录方法")} · ${dateLabel(row.asOf)}`} />;
+  return <TraceRow icon={Database} title={`${text(instrument.name, text(instrument.symbol, "市场快照"))}`} status={row.freshness} detail={`${sourceLabel(source.code)} / ${methodLabel(source.method)} · ${dateLabel(row.asOf)}`} />;
 }
 
 function TraceRow({ icon: Icon, title, status, detail, error }: { icon: typeof Bot; title: string; status: unknown; detail: string; error?: string }) {
@@ -330,13 +330,101 @@ function qualityLabel(value: unknown) {
 }
 
 function agentLabel(value: unknown) {
-  return text(value, "AGENT").replaceAll("_", " ");
+  const labels: Record<string, string> = {
+    CHIEF_ADVISOR: "总顾问",
+    PROFILE_CONTEXT: "画像顾问",
+    DATA_RESEARCH: "市场研究",
+    PORTFOLIO_RISK: "组合风险",
+    RECOMMENDATION: "建议生成",
+    COMPLIANCE_REVIEWER: "风险与合规",
+    EXPLANATION_REPORT: "解释报告",
+    BRANCH_SCENARIO_CHIEF_ADVISOR: "分支情景总顾问",
+  };
+  const normalized = upper(value);
+  return labels[normalized] ?? text(value, "Agent").replaceAll("_", " ");
+}
+
+function evidenceTitle(value: unknown) {
+  const normalized = upper(value);
+  if ([
+    "CHIEF_ADVISOR",
+    "PROFILE_CONTEXT",
+    "DATA_RESEARCH",
+    "PORTFOLIO_RISK",
+    "RECOMMENDATION",
+    "COMPLIANCE_REVIEWER",
+    "EXPLANATION_REPORT",
+  ].includes(normalized)) return agentLabel(normalized);
+  if (["DERIVED_ENGINE", "PANDADATA", "PANDADATA_API"].includes(normalized)) return sourceLabel(normalized);
+  return text(value, "未命名证据");
 }
 
 function dateLabel(value: unknown) {
-  if (!value) return "时间未记录";
+  if (!value) return "时间待补";
   const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN");
+}
+
+function sourceLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    DERIVED_ENGINE: "组合计算引擎",
+    PANDADATA: "PandaData 行情数据",
+    PANDADATA_API: "PandaData 行情数据",
+    SOURCE_PANDADATA_API: "PandaData 行情数据",
+    SOURCE_DERIVED_ENGINE: "组合计算引擎",
+    INTERNAL: "内部数据",
+    UNKNOWN: "未知来源",
+  };
+  const normalized = upper(value).replaceAll("-", "_");
+  return labels[normalized] ?? labels[normalized.replace(/^SOURCE_/u, "")] ?? text(value, "未知来源");
+}
+
+function skillLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    "pandadata-api": "PandaData 数据技能",
+    "pandadata_api": "PandaData 数据技能",
+  };
+  const normalized = String(value ?? "").toLowerCase();
+  return labels[normalized] ?? "数据技能";
+}
+
+function methodLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    get_us_daily: "美股日线行情",
+    get_stock_daily: "A 股日线行情",
+    get_cn_daily: "A 股日线行情",
+    get_hk_daily: "港股日线行情",
+    get_index_daily: "指数日线行情",
+    get_etf_daily: "ETF 日线行情",
+    pandadata: "PandaData 行情查询",
+    "pandadata-unavailable": "PandaData 行情查询",
+  };
+  const normalized = String(value ?? "").toLowerCase();
+  return labels[normalized] ?? text(value, "未记录方法").replaceAll("_", " ");
+}
+
+function referenceLabel(value: unknown) {
+  const raw = text(value, "未提供来源定位");
+  if (raw.startsWith("agent:")) return agentLabel(raw.slice("agent:".length));
+  return methodLabel(raw);
+}
+
+function phaseLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    LIVE_CALL: "实时调用",
+    DRY_RUN: "参数校验",
+  };
+  const normalized = upper(value);
+  return labels[normalized] ?? statusLabel(normalized);
+}
+
+function toolLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    pandadata: "PandaData 数据工具",
+    panda_data: "PandaData 数据工具",
+  };
+  const normalized = String(value ?? "").toLowerCase();
+  return labels[normalized] ?? text(value, "未命名工具").replaceAll("_", " ");
 }
 
 function timeLabel(basis: unknown, stance?: unknown) {

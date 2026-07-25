@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from "@/features/frontend-migration/api";
+import { mapEvidencePack } from "@/services/recommendationEvidenceMapper";
 import { sendAdvisorMessageStream } from "@/services/advisorService";
 import type { AgentRun, EvidencePack, EvidenceRow, Recommendation, RecommendationAction } from "@/types/app/recommendation";
 
@@ -125,77 +126,6 @@ export async function getEvidenceForAnalysis(analysisId: string): Promise<Eviden
   return mapEvidencePack(pack, analysisId);
 }
 
-function mapEvidencePack(pack: Record<string, unknown>, fallbackAnalysisId: string, forcedRecommendationId?: string): EvidencePack {
-  const analysis = asRecord(pack.analysis);
-  const recommendations = asRecords(pack.recommendations);
-  const agentTrace = asRecords(pack.agentTrace);
-  const toolCalls = asRecords(pack.toolCalls);
-  const skillRuns = asRecords(pack.skillRuns);
-  const pandadataProbes = asRecords(pack.pandadataProbes);
-  const marketSnapshots = asRecords(pack.marketSnapshots);
-  const evidence = asRecords(pack.evidence);
-  const conflicts = asRecords(pack.conflicts);
-  const compliance = asRecord(pack.compliance);
-  const retry = asRecord(pack.retry);
-  const analysisId = String(pack.analysisId ?? analysis.analysisId ?? fallbackAnalysisId);
-  const status = String(analysis.status ?? pack.status ?? "UNKNOWN").toUpperCase();
-  const workflowNodes = agentTrace.map((item) => ({
-    id: String(item.id),
-    label: String(item.agent ?? "AGENT"),
-    status: workflowStatus(item.status),
-    durationMs: durationMs(item.startedAt, item.completedAt),
-    summary: String(item.summary ?? item.purpose ?? ""),
-  }));
-  const workflowEdges = agentTrace.flatMap((item) => item.parentRunId
-    ? [{ from: String(item.parentRunId), to: String(item.id) }]
-    : []);
-  return {
-    id: `evidence-${analysisId}`,
-    analysisId,
-    analysisType: String(analysis.type ?? pack.type ?? "ANALYSIS"),
-    status,
-    recommendationId: forcedRecommendationId
-      ?? (recommendations[0]?.id == null ? null : String(recommendations[0].id)),
-    agentRunId: analysisId,
-    dataFreshness: asRecord(pack.dataFreshness),
-    evidence,
-    agentTrace,
-    toolCalls,
-    skillRuns,
-    pandadataProbes,
-    marketSnapshots,
-    conflicts,
-    recommendations,
-    compliance,
-    missingEvidence: Array.isArray(pack.missingEvidence) ? pack.missingEvidence.map(String) : [],
-    retry: {
-      allowed: Boolean(retry.allowed),
-      reason: retry.reason == null ? null : String(retry.reason),
-    },
-    disclaimer: String(pack.disclaimer ?? ""),
-    dataSnapshots: marketSnapshots,
-    workflowDag: { nodes: workflowNodes, edges: workflowEdges },
-    researchMetrics: asRecord(pack.result),
-    simulationLog: [],
-    riskVerdicts: Object.keys(compliance).length
-      ? [{
-          rule: "风险与合规发布门",
-          verdict: String(compliance.status ?? status).toLowerCase() === "blocked" ? "blocked" : "approved",
-          note: Array.isArray(compliance.reasons) ? compliance.reasons.map(String).join("；") : undefined,
-        }]
-      : [],
-    createdAt: String(analysis.createdAt ?? new Date(0).toISOString()),
-  };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function asRecords(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
-}
-
 function mapRunStatus(value: unknown): AgentRun["status"] {
   const status = String(value ?? "").toUpperCase();
   if (status === "RUNNING" || status === "QUEUED" || status === "PENDING") return "running";
@@ -203,20 +133,6 @@ function mapRunStatus(value: unknown): AgentRun["status"] {
   if (status === "BLOCKED" || status === "WAITING_FOR_USER") return "blocked";
   if (status === "CANCELLED") return "cancelled";
   return "succeeded";
-}
-
-function workflowStatus(value: unknown): string {
-  const status = String(value ?? "").toUpperCase();
-  if (status === "RUNNING" || status === "QUEUED") return "running";
-  if (status === "FAILED" || status === "BLOCKED" || status === "INTERRUPTED") return "blocked";
-  if (status === "SKIPPED" || status === "CANCELLED") return "skipped";
-  return "done";
-}
-
-function durationMs(startedAt: unknown, completedAt: unknown): number {
-  const start = Date.parse(String(startedAt ?? ""));
-  const end = Date.parse(String(completedAt ?? ""));
-  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
 }
 
 type AgentWorkflowObserver = {

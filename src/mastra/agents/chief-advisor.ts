@@ -66,6 +66,7 @@ export function createChiefAdvisorAgent() {
       "服务端提供的计算、行情新鲜度和持仓事实不可被模型改写；LATEST_TRADING_DAY 是经官方交易日历确认的最近正式收盘数据，不等于过期。",
       "dry-run、过期数据、fixture 或模型故障不能形成 ACTIVE 建议。",
       "没有反方证据、组合影响或合规批准时必须降级或阻断。",
+      "supportEvidence 要写成可展示的多方支持观点，counterEvidence 要写成可展示的空方质疑观点；两边都必须基于服务端事实和上游 Agent 发现。",
       "任何结果仅用于模拟，不连接券商，不创建真实订单。",
     ].join("\n"),
   });
@@ -330,7 +331,7 @@ function specialist(id: string, name: string, agent: AgentFinding["agent"]) {
     instructions: [
       `你的角色是 ${agent}，只处理 Chief Advisor 委派的专业任务。`,
       "输出单个 JSON 对象，字段为 agent,conclusion,supportEvidence,counterEvidence,missingInformation,risks,confidence,needsAnotherAgent,suggestedNextAgent。",
-      "counterEvidence 至少一条，supportEvidence 和 risks 最多三条，不输出隐藏推理。",
+      "supportEvidence 是多方支持观点，counterEvidence 是空方质疑观点；两边都要基于可展示事实，counterEvidence 至少一条，supportEvidence 和 risks 最多三条，不输出隐藏推理。",
       "证据不足时明确列入 missingInformation，降低 confidence。",
     ].join("\n"),
   });

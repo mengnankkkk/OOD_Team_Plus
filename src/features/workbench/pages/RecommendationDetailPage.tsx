@@ -99,6 +99,15 @@ const RecommendationDetailPage = () => {
 
   const before = useMemo(() => (evidence?.simulationLog?.[0] as any) ?? null, [evidence]);
   const after = useMemo(() => (evidence?.simulationLog?.[1] as any) ?? null, [evidence]);
+  const debate = useMemo(() => {
+    const bull = evidence?.debate?.bull?.length ? evidence.debate.bull : rec?.evidence.map((item) => item.value) ?? [];
+    const bear = evidence?.debate?.bear?.length ? evidence.debate.bear : rec?.counterEvidence.map((item) => item.value) ?? [];
+    return {
+      conclusion: evidence?.debate?.conclusion ?? rec?.headline ?? "本轮多空观点待补充",
+      bull,
+      bear,
+    };
+  }, [evidence, rec]);
   const blocked = rec ? rec.status === "blocked" || rec.complianceStatus === "blocked" : false;
   const canSimulate = Boolean(rec && !blocked && (rec.status === "active" || rec.status === "degraded") && rec.complianceStatus === "approved");
 
@@ -125,9 +134,9 @@ const RecommendationDetailPage = () => {
           <Tabs defaultValue={initialTab} className="mt-8">
             <TabsList>
               <TabsTrigger value="overview">概览</TabsTrigger>
-              <TabsTrigger value="evidence">证据与反方</TabsTrigger>
+              <TabsTrigger value="evidence">多空辩论</TabsTrigger>
               <TabsTrigger value="simulate">模拟结果</TabsTrigger>
-              <TabsTrigger value="lab">Evidence Lab</TabsTrigger>
+              <TabsTrigger value="lab">证据实验室</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="pt-4">
@@ -143,19 +152,23 @@ const RecommendationDetailPage = () => {
             </TabsContent>
 
             <TabsContent value="evidence" className="space-y-4 pt-4">
+              <section className="rounded-md border border-border bg-muted/30 px-4 py-3 text-sm">
+                <p className="eyebrow">综合判断</p>
+                <p className="mt-2 leading-6 text-muted-foreground">{debate.conclusion}</p>
+              </section>
               <section>
-                <p className="eyebrow">支持证据</p>
+                <p className="eyebrow">多方观点</p>
                 <ul className="mt-3 space-y-2 text-sm">
-                  {rec.evidence.map((e, i) => (
-                    <li key={i} className="flex items-center justify-between border-b border-border pb-2"><span>{e.label}<span className="ml-2 text-xs text-muted-foreground">来源 {e.source}</span></span><span className="font-mono text-foreground">{e.value}</span></li>
+                  {debate.bull.map((item, i) => (
+                    <li key={i} className="border-b border-border pb-2 text-foreground">{item}</li>
                   ))}
                 </ul>
               </section>
               <section>
-                <p className="eyebrow text-[hsl(var(--status-watch))]">反方观点</p>
+                <p className="eyebrow text-[hsl(var(--status-watch))]">空方观点</p>
                 <ul className="mt-3 space-y-2 text-sm">
-                  {rec.counterEvidence.map((e, i) => (
-                    <li key={i} className="flex items-center justify-between border-b border-border pb-2"><span>{e.label}<span className="ml-2 text-xs text-muted-foreground">来源 {e.source}</span></span><span className="text-muted-foreground">{e.value}</span></li>
+                  {debate.bear.map((item, i) => (
+                    <li key={i} className="border-b border-border pb-2 text-muted-foreground">{item}</li>
                   ))}
                 </ul>
               </section>
