@@ -45,6 +45,13 @@ test.beforeEach(async ({ page }) => {
     contentType: "application/json",
     body: JSON.stringify({ data: { items: [] } }),
   }));
+  await page.route("**/api/v1/conversations?**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ data: { items: [] } }),
+    });
+  });
   await page.route("**/api/v1/analyses?**", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({
@@ -133,6 +140,11 @@ test("C 端用户可以完成证据查看与决策回放闭环", async ({ page }
   await expect(page.getByLabel("风险与合规发布门").getByText("风险与合规发布门已阻断该建议。", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "查看关联建议" })).toBeVisible();
   await expect(page.getByRole("button", { name: "去顾问补充信息" })).toBeVisible();
+
+  await page.getByRole("button", { name: "去顾问补充信息" }).click();
+  await page.waitForTimeout(700);
+  await expect(page.getByPlaceholder("发消息…")).toHaveValue(/请基于分析 analysis-evidence 继续补齐信息并重新分析/u);
+  await page.goto("/history/evidence-lab?analysisId=analysis-evidence");
 
   await page.getByRole("button", { name: "查看关联建议" }).click();
   await expect(page.getByRole("heading", { name: blockedRecommendation.summary })).toBeVisible();
