@@ -39,20 +39,7 @@ export async function runBranchScenarioAgent(
     callbacks.onAgentStarted?.("SCENARIO_PLANNER", "提出互斥的 A/B/C 分支方案");
     callbacks.onAgentStarted?.("COMPLIANCE_REVIEWER", "检查模拟边界、证据和失效条件");
     const agent = createBranchScenarioAgent();
-    const stream = await agent.stream(buildPrompt(input), {
-      maxSteps: 10,
-      modelSettings: { maxOutputTokens: 2_400, temperature: 0.1 },
-      structuredOutput: {
-        schema: BranchScenarioModelPlanSchema,
-        instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。",
-      },
-    });
-    let latestPartial: Partial<BranchScenarioModelPlan> = {};
-    for await (const partial of stream.objectStream) {
-      if (partial && typeof partial === "object") latestPartial = deepMergePartial(latestPartial, partial) as Partial<BranchScenarioModelPlan>;
-    }
-    const streamedObject = await stream.object.catch(() => undefined);
-    const modelPlan = parseModelPlan(streamedObject, latestPartial);
+    const modelPlan = await generateModelPlan(agent, buildPrompt(input));
     const plan = BranchScenarioPlanSchema.parse({
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
@@ -75,6 +62,31 @@ export async function runBranchScenarioAgent(
     const plan = deterministicFallback(input);
     return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"] };
   }
+}
+
+async function generateModelPlan(agent: Agent, prompt: string): Promise<BranchScenarioModelPlan> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请完整输出全部候选方案。" : "上一轮结构化输出不完整。请重新完整输出 options 数组，不要省略任何字段。"}`, {
+        maxSteps: 10,
+        modelSettings: { maxOutputTokens: 3_600, temperature: 0.1 },
+        structuredOutput: {
+          schema: BranchScenarioModelPlanSchema,
+          instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。必须完整输出 options 数组及每个方案的全部字段。",
+        },
+      });
+      let latestPartial: Partial<BranchScenarioModelPlan> = {};
+      for await (const partial of stream.objectStream) {
+        if (partial && typeof partial === "object") latestPartial = deepMergePartial(latestPartial, partial) as Partial<BranchScenarioModelPlan>;
+      }
+      const streamedObject = await stream.object.catch(() => undefined);
+      return parseModelPlan(streamedObject, latestPartial);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 export function createBranchScenarioAgent() {
