@@ -32,6 +32,8 @@ export interface Holding {
   costBasis: number;
   currentPrice: number;
   marketValue: number;
+  priceAsOf: string | null;
+  priceStatus: "market" | "fallback";
   createdAt: string;
   updatedAt: string;
 }
@@ -42,8 +44,7 @@ export interface HoldingInput {
   assetClass: AssetClass;
   industry?: string | null;
   quantity: number;
-  costBasis?: number;
-  currentPrice: number;
+  costBasis: number;
   goalId?: string | null;
   accountId?: string | null;
 }

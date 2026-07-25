@@ -32,6 +32,7 @@ interface SourceStatus {
   source: string;
   status: "SUCCEEDED" | "FAILED" | "FALLBACK";
   resultCount?: number;
+  symbols?: string[];
   error?: { code: string; message: string; retryable: boolean };
 }
 
@@ -288,7 +289,7 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
     });
     const missingSymbols = values.filter((value) => value.usedFallback).map((value) => value.symbol);
     const sourceStatuses = [...marketData.statuses];
-    if (missingSymbols.length) sourceStatuses.push({ source: "PREVIOUS_SNAPSHOT", status: "FALLBACK", resultCount: missingSymbols.length });
+    if (missingSymbols.length) sourceStatuses.push({ source: "PREVIOUS_SNAPSHOT", status: "FALLBACK", resultCount: missingSymbols.length, symbols: missingSymbols });
     const dataQuality = missingSymbols.length || sourceStatuses.some((source) => source.status === "FAILED") ? "partial" : "complete";
     const totalMarketValue = values.reduce((sum, value) => sum.plus(value.marketValue), new Decimal(0));
     const snapshotId = createId("portfolio_snapshot");
@@ -382,10 +383,14 @@ async function fetchLatestPrices(holdings: RefreshHolding[], analysisId: string)
   const db = getDatabase();
   for (const [method, symbols] of grouped.entries()) {
     try {
+      const symbolList = Array.from(symbols);
+      const parameters = method === "get_stock_rt_daily"
+        ? { symbol: symbolList, fields: ["symbol", "date", "close"] }
+        : { symbol: symbolList, start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] };
       const source: PandaQuerySource = {
         dataset: datasetForMethod(method),
         method,
-        parameters: { symbol: Array.from(symbols), start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] },
+        parameters,
         columns: ["symbol", "date", "close"],
         joinKeys: ["symbol", "date"],
         assetType: assetTypeForMethod(method),
@@ -430,7 +435,7 @@ function marketMethod(holding: RefreshHolding): PandaDataMethod {
   if (holding.symbol.toUpperCase().endsWith(".SH") || holding.symbol.toUpperCase().endsWith(".SZ") || market === "SH" || market === "SZ") {
     if (assetType === "fund" || assetType === "etf") return "get_fund_daily";
     if (assetType === "index") return "get_index_daily";
-    return "get_stock_daily";
+    return "get_stock_rt_daily";
   }
   return "get_us_daily";
 }

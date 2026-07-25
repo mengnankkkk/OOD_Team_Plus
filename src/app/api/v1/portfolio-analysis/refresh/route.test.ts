@@ -12,7 +12,8 @@ vi.mock("@/server/extensions/pandadata/adapter", async (importOriginal) => ({
   callPandaData,
 }));
 
-import { TEST_PORTFOLIO_ID, authenticatedRequest } from "@tests/helpers/auth";
+import { TEST_PORTFOLIO_ID, TEST_USER_ID, authenticatedRequest } from "@tests/helpers/auth";
+import { getDatabase } from "@/server/http/context";
 import { POST } from "./route";
 
 const url = "http://localhost/api/v1/portfolio-analysis/refresh";
@@ -80,5 +81,48 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
     expect(data.data.analysis.status).toBe("COMPLETED");
     expect(data.data.dataQuality).toBe("COMPLETE");
     expect(data.data.portfolioSnapshotId).toMatch(/^portfolio_snapshot_/u);
+  });
+
+  it("uses the A-share realtime daily source for the latest stock price", async () => {
+    const db = getDatabase();
+    db.prepare("INSERT INTO instruments (id,symbol,name,market,asset_type,sector,tradable) VALUES (?,?,?,?,?,?,1)")
+      .run("000001.SZ", "000001.SZ", "平安银行", "SZ", "stock", "银行");
+    db.prepare("INSERT INTO holdings (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?)")
+      .run("holding-pingan-rt", TEST_USER_ID, TEST_PORTFOLIO_ID, "000001.SZ", "100", "10.00", "2026-07-25T01:00:00.000Z", "2026-07-25T01:00:00.000Z");
+    db.close();
+    callPandaData.mockImplementation(async (method: string) => ({
+      method,
+      callDurationMs: 1,
+      data: method === "get_stock_rt_daily"
+        ? [{ symbol: "000001.SZ", date: "20260725", close: 12.34 }]
+        : [
+            { symbol: "AAPL", date: "2026-07-24", close: 155 },
+            { symbol: "MSFT", date: "2026-07-24", close: 225 },
+            { symbol: "SPY", date: "2026-07-24", close: 285 },
+          ],
+    }));
+
+    const response = await POST(authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "a-share-realtime-price" },
+    }));
+
+    expect(response.status).toBe(202);
+    expect(callPandaData).toHaveBeenCalledWith(
+      "get_stock_rt_daily",
+      expect.objectContaining({ symbol: ["000001.SZ"], fields: ["symbol", "date", "close"] }),
+    );
+    const checkDb = getDatabase();
+    const latestPrice = checkDb.prepare(`
+      SELECT hs.price_decimal
+      FROM holding_snapshots hs
+      JOIN portfolio_snapshots ps ON ps.id = hs.portfolio_snapshot_id
+      WHERE ps.user_id=? AND hs.instrument_id='000001.SZ'
+      ORDER BY ps.created_at DESC, hs.created_at DESC
+      LIMIT 1
+    `).get(TEST_USER_ID) as { price_decimal: string };
+    checkDb.close();
+    expect(latestPrice.price_decimal).toBe("12.34");
   });
 });
