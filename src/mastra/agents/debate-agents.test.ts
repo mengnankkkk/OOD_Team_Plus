@@ -4,6 +4,7 @@ import {
   coerceAdvocateSpeech,
   coerceDebateJudgement,
   coerceDebateRoundPlan,
+  retryStructuredAttempt,
 } from "./debate-agents";
 import {
   AdvocateSpeechSchema,
@@ -44,6 +45,17 @@ describe("debate agent coercion", () => {
     expect(plan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge", "chief_advisor"]));
   });
 
+  it("preserves a narrower valid model plan", () => {
+    const plan = coerceDebateRoundPlan({
+      requiredAgents: ["bull"],
+      speakingOrder: ["bull"],
+    });
+
+    expect(DebateRoundPlanSchema.parse(plan)).toEqual(plan);
+    expect(plan.requiredAgents).toEqual(["bull"]);
+    expect(plan.speakingOrder).toEqual(["bull"]);
+  });
+
   it("coerces advocate speech into the requested stance and keeps it contract-valid", () => {
     const speech = coerceAdvocateSpeech("bull", {
       stance: "bear",
@@ -76,14 +88,14 @@ describe("debate agent coercion", () => {
     expect(speech.arguments).toHaveLength(3);
     expect(speech.arguments.every((argument) => argument.stance === "bull")).toBe(true);
     expect(speech.arguments[0]?.claim).toBe("Demand can remain resilient.");
-    expect(speech.arguments[0]?.counterEvidenceRefs).toHaveLength(1);
+    expect(speech.arguments[0]?.counterEvidenceRefs).toEqual([]);
     expect(speech.admittedWeakness).toBe("The valuation makes disappointing execution costly.");
     expect(speech.strongestAttackOnOpponent).not.toHaveLength(0);
 
     const fallbackSpeech = coerceAdvocateSpeech("bear", { headline: "A cautious case needs testing." });
 
     expect(fallbackSpeech.admittedWeakness).not.toHaveLength(0);
-    expect(fallbackSpeech.arguments[0]?.counterEvidenceRefs).toHaveLength(1);
+    expect(fallbackSpeech.arguments[0]?.counterEvidenceRefs).toEqual([]);
   });
 
   it("returns a bounded, non-final judgement with research and simulation guidance", () => {
@@ -126,14 +138,16 @@ describe("debate agent coercion", () => {
   it("neutralizes direct trade command variants without changing analytical language or user claims", () => {
     const judgement = coerceDebateJudgement({
       userClaim: "The user quotes: Buy AAPL now.",
-      bullStrongestPoint: "Buy AAPL now.",
+      bullStrongestPoint: "Buy AAPL.",
       bearStrongestPoint: "Sell your holdings now.",
-      keyDisagreement: "Immediately buy AAPL.",
+      keyDisagreement: "Exit your position.",
       whyNotFinal: "You should sell AAPL.",
       suggestedNextPrompts: [
-        "The bull case discusses buying pressure.",
-        "Buy AAPL now.",
+        "Immediately buy AAPL.",
+        "加仓 510300",
+        "立即买入 510300",
       ],
+      complianceNote: "应该减仓",
     });
 
     expect(judgement.userClaim).toBe("The user quotes: Buy AAPL now.");
@@ -141,7 +155,46 @@ describe("debate agent coercion", () => {
     expect(judgement.bearStrongestPoint).toMatch(/evidence|research/i);
     expect(judgement.keyDisagreement).toMatch(/evidence|research/i);
     expect(judgement.whyNotFinal).toMatch(/evidence|research/i);
-    expect(judgement.suggestedNextPrompts[0]).toBe("The bull case discusses buying pressure.");
+    expect(judgement.suggestedNextPrompts[0]).toMatch(/evidence|research/i);
     expect(judgement.suggestedNextPrompts[1]).toMatch(/evidence|research/i);
+    expect(judgement.suggestedNextPrompts[2]).toMatch(/evidence|research/i);
+    expect(judgement.complianceNote).toMatch(/research and simulation/i);
+  });
+
+  it("preserves quoted and analytical judge content that is not a field-leading command", () => {
+    const judgement = coerceDebateJudgement({
+      userClaim: 'The user said "Buy AAPL now".',
+      bullStrongestPoint: "The bull case discusses buying pressure.",
+      bearStrongestPoint: 'The user said "Buy AAPL now".',
+    });
+
+    expect(judgement.userClaim).toBe('The user said "Buy AAPL now".');
+    expect(judgement.bullStrongestPoint).toBe("The bull case discusses buying pressure.");
+    expect(judgement.bearStrongestPoint).toBe('The user said "Buy AAPL now".');
+  });
+
+  it("retries one structured attempt before returning the successful result", async () => {
+    let attempts = 0;
+
+    const result = await retryStructuredAttempt(async (attempt) => {
+      attempts += 1;
+      if (attempt === 0) throw new Error("first structured output failed");
+      return "second structured output";
+    });
+
+    expect(result).toBe("second structured output");
+    expect(attempts).toBe(2);
+  });
+
+  it("propagates the second structured attempt failure", async () => {
+    const failure = new Error("second structured output failed");
+    let attempts = 0;
+
+    await expect(retryStructuredAttempt(async () => {
+      attempts += 1;
+      throw failure;
+    })).rejects.toBe(failure);
+
+    expect(attempts).toBe(2);
   });
 });
