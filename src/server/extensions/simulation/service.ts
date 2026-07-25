@@ -12,6 +12,7 @@ type ActiveOptionRun = { controller: AbortController; promise: Promise<void> };
 type SimulationPortfolioSource = "USER_PORTFOLIO" | "STARTER_PORTFOLIO";
 
 const activeOptionRuns = new Map<string, ActiveOptionRun>();
+const OPTION_GENERATION_TIMEOUT_MS = 300_000;
 
 export function createWorkspace(userId: string, input: { label: string; objectiveText: string; portfolioSnapshotId?: string; conversationSessionId?: string; recommendationId?: string }) {
   const resolvedSnapshot = resolvePortfolioSnapshot(userId, input.portfolioSnapshotId);
@@ -173,7 +174,7 @@ async function runOptionGeneration(input: {
         onAgentStarted: (role, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent: role, label } }),
         onAgentCompleted: (role, summary) => persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: role, conclusion: summary } }),
       }),
-      90_000,
+      OPTION_GENERATION_TIMEOUT_MS,
       input.controller,
     );
     const optionIds: string[] = [];
