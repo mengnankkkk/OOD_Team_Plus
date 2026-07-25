@@ -21,6 +21,7 @@ import {
   Pin,
   Plus,
   SearchCheck,
+  Search,
   Send,
   Share2,
   Sparkles,
@@ -90,6 +91,7 @@ const AdvisorPage = () => {
   const [attachment, setAttachment] = useState<File | null>(null);
   const [toolboxOpen, setToolboxOpen] = useState(false);
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
+  const [sessionSearch, setSessionSearch] = useState("");
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingUploadPrompt, setPendingUploadPrompt] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -98,7 +100,11 @@ const AdvisorPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
 
-  const visibleSessions = sessions;
+  const visibleSessions = useMemo(() => {
+    const keyword = sessionSearch.trim().toLowerCase();
+    if (!keyword) return sessions;
+    return sessions.filter((session) => session.title.toLowerCase().includes(keyword));
+  }, [sessionSearch, sessions]);
 
   const activeSession = useMemo(
     () => visibleSessions.find((s) => s.sessionId === activeSessionId) ?? null,
@@ -380,14 +386,37 @@ const AdvisorPage = () => {
             <span className="truncate">新对话</span>
           </button>
         </div>
+        <div className="px-4 pb-4">
+          <label className="flex h-11 items-center gap-2 rounded-2xl bg-neutral-200/70 px-3 text-neutral-500 transition-colors focus-within:bg-white focus-within:ring-2 focus-within:ring-neutral-300">
+            <Search className="size-4 shrink-0" />
+            <input
+              value={sessionSearch}
+              onChange={(event) => setSessionSearch(event.target.value)}
+              placeholder="搜索会话"
+              className="min-w-0 flex-1 bg-transparent text-[15px] text-neutral-950 outline-none placeholder:text-neutral-500"
+            />
+            {sessionSearch ? (
+              <button
+                type="button"
+                onClick={() => setSessionSearch("")}
+                className="grid size-6 shrink-0 place-items-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-950"
+                aria-label="清空搜索"
+              >
+                <X className="size-4" />
+              </button>
+            ) : null}
+          </label>
+        </div>
         <div className="px-4 pb-2 text-[17px] font-semibold text-neutral-950">
           最近
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3">
           {loadingSessions ? (
             <p className="px-3 py-2 text-sm text-neutral-500">加载中…</p>
-          ) : visibleSessions.length === 0 ? (
+          ) : sessions.length === 0 ? (
             <p className="px-3 py-4 text-sm leading-6 text-neutral-500">还没有历史会话。开始第一条消息，就会记入档案。</p>
+          ) : visibleSessions.length === 0 ? (
+            <p className="px-3 py-4 text-sm leading-6 text-neutral-500">没有找到匹配的会话。</p>
           ) : (
             <ul className="space-y-0.5">
               {orderedSessions.map((s) => {
@@ -501,7 +530,7 @@ const AdvisorPage = () => {
               </div>
             </div>
           ) : (
-            <ul className="mx-auto flex max-w-2xl flex-col gap-5">
+            <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
                 const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: string[] };
                 return (
@@ -511,12 +540,12 @@ const AdvisorPage = () => {
                         顾问
                       </div>
                     )}
-                    <div className={cn("min-w-0", msg.role === "user" ? "max-w-[80%]" : "flex-1")}>
+                    <div className={cn("min-w-0", msg.role === "user" ? "max-w-[78%]" : "max-w-[78%] flex-1")}>
                       <div
                         className={cn(
-                          "whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6",
+                          "inline-block whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6",
                           msg.role === "user"
-                            ? "inline-block bg-primary text-primary-foreground"
+                            ? "inline-block bg-neutral-950 text-white"
                             : "bg-muted text-foreground",
                         )}
                       >
@@ -551,9 +580,9 @@ const AdvisorPage = () => {
                 );
               })}
               {sending && !messages.some((message) => Boolean((message.metadata as { streaming?: unknown } | undefined)?.streaming)) && (
-                <li className="flex gap-3">
+                <li className="flex justify-start gap-3">
                   <div className="grid size-8 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">顾问</div>
-                  <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">思考中…</div>
+                  <div className="inline-block rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">思考中…</div>
                 </li>
               )}
             </ul>

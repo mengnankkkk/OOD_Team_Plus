@@ -88,7 +88,7 @@ export default function TopNavigation() {
                 <div className="absolute left-1/2 top-full z-50 min-w-[12rem] -translate-x-1/2 pt-1">
                   <div className="overflow-hidden rounded-md bg-popover shadow-xl">
                     <div className="flex flex-col">
-                      {historyEntries.map((entry) => <button key={entry.path} onClick={() => { setHistoryMenuOpen(false); navigate(entry.path); }} className="px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent hover:text-primary">{entry.label}</button>)}
+                      {historyEntries.map((entry) => <button key={entry.path} onClick={() => { setHistoryMenuOpen(false); navigate(entry.path); }} className="px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent hover:text-destructive">{entry.label}</button>)}
                     </div>
                   </div>
                 </div>
@@ -102,7 +102,7 @@ export default function TopNavigation() {
                 <div className="absolute left-1/2 top-full z-50 min-w-[12rem] -translate-x-1/2 pt-1">
                   <div className="overflow-hidden rounded-md bg-popover shadow-xl">
                     <div className="flex flex-col">
-                      {entries.map((entry) => <button key={entry.path} onClick={() => { setMenuOpen(false); navigate(entry.path); }} className="px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent hover:text-primary">{entry.label}</button>)}
+                      {entries.map((entry) => <button key={entry.path} onClick={() => { setMenuOpen(false); navigate(entry.path); }} className="px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent hover:text-destructive">{entry.label}</button>)}
                     </div>
                   </div>
                 </div>

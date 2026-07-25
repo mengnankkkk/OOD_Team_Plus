@@ -105,6 +105,11 @@
     letter-spacing: -0.025em;
     line-height: 0.96;
   }
+  .page-slide-shell {
+    transform-origin: center top;
+    will-change: transform, opacity, filter;
+    overflow-x: clip;
+  }
   .paper-card {
     @apply border border-foreground bg-card shadow-none transition-[transform,box-shadow,background-color] duration-200;
     border-radius: 0;
