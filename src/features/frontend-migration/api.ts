@@ -21,6 +21,6 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
 }
 
 export const apiGet = <T>(path: string) => apiRequest<T>(path);
-export const apiPost = <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+export const apiPost = <T>(path: string, body?: unknown, version?: number) => apiRequest<T>(path, { method: "POST", headers: version ? { "If-Match": String(version) } : undefined, body: body === undefined ? undefined : JSON.stringify(body) });
 export const apiPatch = <T>(path: string, body: unknown, version?: number) => apiRequest<T>(path, { method: "PATCH", headers: version ? { "If-Match": String(version) } : undefined, body: JSON.stringify(body) });
 export const apiDelete = <T>(path: string, body?: unknown, version?: number) => apiRequest<T>(path, { method: "DELETE", headers: version ? { "If-Match": String(version) } : undefined, body: body === undefined ? undefined : JSON.stringify(body) });
