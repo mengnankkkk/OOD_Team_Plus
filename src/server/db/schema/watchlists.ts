@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export {
@@ -17,10 +18,12 @@ export {
   watchlistSelectSchema,
 } from "./watchlists.zod";
 import {
+  WATCHLIST_ITEM_SOURCES,
   WATCHLIST_ITEM_STATUSES,
   WATCHLIST_STATUSES,
 } from "./watchlists.zod";
 import { NOTIFICATION_MODES, NOTIFICATION_SEVERITIES, RSS_FEED_STATUSES } from "./enums";
+import { goals, instruments } from "./core";
 
 export const watchlists = sqliteTable(
   "watchlists",
@@ -35,7 +38,10 @@ export const watchlists = sqliteTable(
     deletedAt: text("deleted_at"),
     rowVersion: integer("row_version").notNull().default(1),
   },
-  (t) => [index("idx_watchlists_user_created").on(t.userId, t.createdAt), uniqueIndex("idx_watchlists_user_name").on(t.userId, t.name)],
+  (t) => [
+    index("idx_watchlists_user_created").on(t.userId, t.createdAt),
+    uniqueIndex("idx_watchlists_user_name").on(t.userId, t.name).where(sql`${t.status} != 'deleted'`),
+  ],
 );
 
 export const watchlistItems = sqliteTable(
@@ -44,6 +50,8 @@ export const watchlistItems = sqliteTable(
     id: text("id").primaryKey(),
     watchlistId: text("watchlist_id").notNull(),
     instrumentId: text("instrument_id").notNull(),
+    goalId: text("goal_id").references(() => goals.id, { onDelete: "set null" }),
+    sourceType: text("source_type", { enum: WATCHLIST_ITEM_SOURCES }).notNull().default("user"),
     reason: text("reason"),
     plannedHorizon: text("planned_horizon"),
     drawdownThresholdBps: integer("drawdown_threshold_bps"),
@@ -54,7 +62,11 @@ export const watchlistItems = sqliteTable(
     updatedAt: text("updated_at").notNull(),
     rowVersion: integer("row_version").notNull().default(1),
   },
-  (t) => [index("idx_watchlist_items_watchlist_added").on(t.watchlistId, t.addedAt), index("idx_watchlist_items_instrument_status").on(t.instrumentId, t.status)],
+  (t) => [
+    index("idx_watchlist_items_watchlist_added").on(t.watchlistId, t.addedAt),
+    index("idx_watchlist_items_instrument_status").on(t.instrumentId, t.status),
+    uniqueIndex("idx_watchlist_items_active_instrument").on(t.watchlistId, t.instrumentId).where(sql`${t.status} = 'active'`),
+  ],
 );
 
 export const notifications = sqliteTable(
@@ -159,6 +171,22 @@ export const rssItems = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [uniqueIndex("idx_rss_items_feed_guid").on(t.feedId, t.guid), index("idx_rss_items_feed_created").on(t.feedId, t.createdAt)],
+);
+
+export const rssItemInstruments = sqliteTable(
+  "rss_item_instruments",
+  {
+    id: text("id").primaryKey(),
+    rssItemId: text("rss_item_id").notNull().references(() => rssItems.id, { onDelete: "cascade" }),
+    instrumentId: text("instrument_id").notNull().references(() => instruments.id, { onDelete: "cascade" }),
+    matchBasis: text("match_basis", { enum: ["symbol_exact", "name_exact", "research_link"] }).notNull(),
+    matchedText: text("matched_text").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("idx_rss_item_instruments_rss_instrument").on(t.rssItemId, t.instrumentId),
+    index("idx_rss_item_instruments_instrument_created").on(t.instrumentId, t.createdAt),
+  ],
 );
 
 export const portfolioScoreSnapshots = sqliteTable(

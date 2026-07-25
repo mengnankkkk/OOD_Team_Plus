@@ -10,9 +10,32 @@ describe("database migration guard", () => {
   it("executes and records every migration", () => {
     const db = new Database(":memory:");
     prepareDatabase(db as never, ":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(15);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(17);
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
+    db.close();
+  });
+
+  it("migrates complete watchlist observation contracts", () => {
+    const db = new Database(":memory:");
+    prepareDatabase(db as never, ":memory:");
+
+    const columnNames = (table: string) =>
+      (db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((column) => column.name);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
+    expect(columnNames("watchlist_items")).toEqual(expect.arrayContaining(["goal_id", "source_type"]));
+    expect(columnNames("observation_conditions")).toEqual(expect.arrayContaining([
+      "watchlist_item_id",
+      "severity",
+      "threshold_date",
+      "window_days",
+      "config_json",
+      "last_triggered_at",
+    ]));
+    expect((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rss_item_instruments'").get() as { name: string } | undefined)?.name)
+      .toBe("rss_item_instruments");
     db.close();
   });
 
