@@ -83,6 +83,12 @@ def main():
         page.get_by_text("辩论模式", exact=True).click()
         expect(page.get_by_text("正在进入辩论模式")).to_be_visible()
         expect(page.locator(".debate-stage")).to_be_visible(timeout=5_000)
+        desktop_history = page.locator(".advisor-workbench-debate > .debate-history-rail").first
+        expect(desktop_history).to_be_visible()
+        assert page.evaluate(
+            "() => document.documentElement.scrollHeight <= window.innerHeight + 1"
+            " && document.body.scrollHeight <= window.innerHeight + 1",
+        )
 
         expect(page.locator(".debate-character")).to_have_count(4)
         page.wait_for_function(
@@ -126,6 +132,10 @@ def main():
             expect(history_rail.locator(".debate-history-entry-judge p").first).to_contain_text("模型服务")
             report["checks"].append("Battle history shows an explicit blocked-agent status")
         page.screenshot(path=ARTIFACT_DIR / "desktop-debate.png", full_page=True)
+        assert page.evaluate(
+            "() => document.documentElement.scrollHeight <= window.innerHeight + 1"
+            " && document.body.scrollHeight <= window.innerHeight + 1",
+        )
 
         if bull_entry.count():
             expect(history_rail.locator(".debate-history-entry-judge p").first).not_to_have_text("")
@@ -143,7 +153,10 @@ def main():
         report["checks"].append("mobile characters stay inside the stage")
 
         report["body_scroll_width"] = page.evaluate("document.body.scrollWidth")
+        report["body_scroll_height"] = page.evaluate("document.body.scrollHeight")
         report["viewport_width"] = page.evaluate("window.innerWidth")
+        report["viewport_height"] = page.evaluate("window.innerHeight")
+        assert report["body_scroll_height"] <= report["viewport_height"] + 1
         browser.close()
 
     report_path = ARTIFACT_DIR / "verification.json"

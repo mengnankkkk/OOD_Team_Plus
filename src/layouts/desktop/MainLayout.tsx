@@ -19,7 +19,7 @@ const MainLayout = ({ children }: { children: ReactNode }) => {
   const isSettings = location.pathname.startsWith("/settings");
   const enableSlide = !isAdvisor && !isSettings && !reduceMotion;
   const mainClassName = isAdvisor
-    ? "min-w-0 flex-1 pb-16 md:min-h-0 md:overflow-hidden"
+    ? "min-w-0 flex-1 pb-16 md:min-h-0 md:overflow-hidden md:pb-0"
     : "mx-auto w-full max-w-[1440px] flex-1 px-5 pb-16 pt-8 md:px-10 xl:px-16";
 
   if (loading) return <div className="grid min-h-screen place-items-center text-muted-foreground">正在唤醒工作台…</div>;

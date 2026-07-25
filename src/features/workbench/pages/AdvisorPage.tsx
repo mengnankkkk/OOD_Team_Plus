@@ -705,8 +705,10 @@ const AdvisorPage = () => {
 
   return (
     <div className={cn(
-      "advisor-workbench relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden",
-      advisorMode === "debate" ? "advisor-workbench-debate" : "advisor-workbench-normal",
+      "advisor-workbench relative flex w-full gap-0 border-y border-border bg-card",
+      advisorMode === "debate"
+        ? "advisor-workbench-debate h-full min-h-0 overflow-hidden"
+        : "advisor-workbench-normal h-auto min-h-[calc(100dvh-8rem)] overflow-visible md:h-full md:min-h-[640px] md:overflow-hidden",
       debateTransitioning && "advisor-workbench-transitioning",
     )}>
       {debateTransitioning ? (
@@ -852,7 +854,10 @@ const AdvisorPage = () => {
       </aside>
       )}
 
-      <section className={cn("flex min-w-0 flex-1 flex-col md:min-h-0", advisorMode === "debate" && "advisor-debate-panel")}>
+      <section className={cn(
+        "flex min-w-0 flex-1 flex-col md:min-h-0",
+        advisorMode === "debate" && "advisor-debate-panel",
+      )}>
         <header className="flex flex-col items-start justify-between gap-2 border-b border-border px-3 py-3 sm:flex-row sm:items-center sm:px-6">
           <div className="min-w-0">
             <p className="line-clamp-1 text-sm font-medium">
@@ -862,10 +867,12 @@ const AdvisorPage = () => {
           {advisorMode === "debate" ? <span className="debate-header-status">{stageStatus || "用户可随时加入辩论"}</span> : null}
         </header>
 
-        <div ref={listRef} className={cn(
-          "flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto",
-          advisorMode === "debate" && "advisor-debate-viewport",
-        )}>
+        <div
+          ref={listRef}
+          className={advisorMode === "debate"
+            ? "advisor-debate-viewport"
+            : "flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto"}
+        >
           {loadingHistory ? (
             <div className="grid min-h-[360px] place-items-center text-sm text-muted-foreground md:h-full md:min-h-0">加载对话…</div>
           ) : emptyChatState ? (
@@ -996,8 +1003,14 @@ const AdvisorPage = () => {
           )}
         </div>
 
-        <div className="px-3 sm:px-6">
-          <div ref={composerRef} className="mx-auto mb-16 max-w-[1100px] md:mb-6">
+        <div className={cn("px-3 sm:px-6", advisorMode === "debate" && "advisor-debate-composer-shell")}>
+          <div
+            ref={composerRef}
+            className={cn(
+              "mx-auto mb-16 max-w-[1100px] md:mb-6",
+              advisorMode === "debate" && "advisor-debate-composer",
+            )}
+          >
             <div
               className="relative rounded-[28px] border bg-white p-3 shadow-[0_18px_48px_rgba(37,99,235,0.12)] transition-all hover:border-transparent hover:shadow-[0_18px_54px_rgba(37,99,235,0.22)]"
               style={{ borderColor: "rgba(96, 165, 250, 0.35)" }}
