@@ -14,8 +14,10 @@ const ChiefAgentFindingSchema = z.object({
   risks: AgentFindingSchema.shape.risks,
   confidence: AgentFindingSchema.shape.confidence,
   needsAnotherAgent: z.boolean(),
-  suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent,
+  suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent.nullable().optional(),
 });
+
+type ChiefAgentFinding = z.infer<typeof ChiefAgentFindingSchema>;
 
 const ChiefAdvisorDecisionSchema = z.object({
   action: AdvisorDecisionSchema.shape.action,
@@ -72,7 +74,6 @@ export function createChiefAdvisorAgent() {
 export async function runChiefAdvisor(input: {
   prompt: string;
   requiredAgents: AgentFinding["agent"][];
-  fallbackFindings?: AgentFinding[];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
   onAgentFailed?: (agent: AgentFinding["agent"], error: unknown) => void;
@@ -82,6 +83,7 @@ export async function runChiefAdvisor(input: {
   const findings: AgentFinding[] = [];
   const delegated = new Set<AgentFinding["agent"]>();
   const specialists = createSpecialistAgents();
+  const failures: Array<{ role: AgentFinding["agent"]; error: unknown }> = [];
 
   for (const role of [...new Set(input.requiredAgents)]) {
     const specialistAgent = specialists[role];
@@ -91,7 +93,7 @@ export async function runChiefAdvisor(input: {
     let finding: AgentFinding;
     let completedByModel = false;
     try {
-      const stream = await specialistAgent.stream<AgentFinding>(prompt, {
+      const stream = await specialistAgent.stream<ChiefAgentFinding>(prompt, {
         maxSteps: 1,
         modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
         structuredOutput: {
@@ -101,19 +103,21 @@ export async function runChiefAdvisor(input: {
         },
       });
       const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
-      const consumeObject = consumeObjectStream<AgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial }));
+      const consumeObject = consumeObjectStream<ChiefAgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) }));
       const [objectResult] = await Promise.allSettled([stream.object, consumeText, consumeObject]);
       if (objectResult.status === "rejected") throw objectResult.reason;
-      finding = AgentFindingSchema.parse({ ...objectResult.value, agent: role });
+      finding = AgentFindingSchema.parse({ ...normalizeChiefFinding(objectResult.value), agent: role });
       completedByModel = true;
     } catch (error) {
-      const fallback = input.fallbackFindings?.find((item) => item.agent === role);
-      if (!fallback) throw error;
-      finding = fallback;
       input.onAgentFailed?.(role, error);
+      failures.push({ role, error });
+      continue;
     }
     findings.push(finding);
     if (completedByModel) input.onAgentCompleted?.(finding);
+  }
+  if (failures.length) {
+    throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
   }
 
   const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
@@ -158,6 +162,14 @@ async function consumeObjectStream<T extends object>(stream: NodeReadableStream<
   } finally {
     reader.releaseLock();
   }
+}
+
+function normalizeChiefFinding(value: Partial<ChiefAgentFinding>): Partial<AgentFinding> {
+  const { suggestedNextAgent, ...rest } = value;
+  return {
+    ...rest,
+    ...(suggestedNextAgent ? { suggestedNextAgent } : {}),
+  };
 }
 
 function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {

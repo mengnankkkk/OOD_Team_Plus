@@ -136,41 +136,49 @@ export async function runProfessionalAdvisor(input: {
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
     let modelFallback = true;
     let unresolvedConflict = false;
-    if (process.env.DEEPSEEK_API_KEY?.trim()) {
-      try {
-        const model = await runChiefAdvisor({
-          prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
-          requiredAgents: requiredRoles,
-          fallbackFindings: findings,
-          onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } }),
-          onAgentCompleted: (finding) => {
-            persistModelFinding(db, roleRunIds.get(finding.agent), finding);
-            persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
-          },
-          onAgentFailed: (agent, error) => persistSseEvent({
+    const streamSnippets = new Map<string, string>();
+    if (!process.env.DEEPSEEK_API_KEY?.trim()) {
+      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_REQUIRED", retryable: true } });
+      db.prepare("UPDATE agent_runs SET model_provider='missing',failure_code=?,failure_message=? WHERE id=?")
+        .run("MODEL_REQUIRED", "DeepSeek model service is required; deterministic fallback is disabled.", input.analysisId);
+      throw new Error("DeepSeek model service is required; deterministic fallback is disabled.");
+    }
+    try {
+      const model = await runChiefAdvisor({
+        prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
+        requiredAgents: requiredRoles,
+        onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } }),
+        onAgentCompleted: (finding) => {
+          persistModelFinding(db, roleRunIds.get(finding.agent), finding);
+          persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
+        },
+        onAgentFailed: (agent, error) => {
+          persistSseEvent({
             analysisId: input.analysisId,
             type: "agent.failed",
             payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
-          }),
-          onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event),
-        });
-        findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
-        const preserved = preserveDirection(model.decision, deterministicDecision);
-        unresolvedConflict = preserved.conflict;
-        candidate = preserved.decision;
-        if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
-        provider = "CHIEF_ADVISOR";
-        modelFallback = false;
-      } catch (error) {
-        persistSseEvent({
-          analysisId: input.analysisId,
-          type: "advisor.thinking",
-          payload: { phase: "model_fallback", title: "模型编排未完成", content: "已保留服务端事实节点和合规门控，等待模型配置或输出恢复后可重试。" },
-        });
-        persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true } });
-        db.prepare("UPDATE agent_runs SET model_provider='deterministic',failure_code=?,failure_message=? WHERE id=?")
-          .run("MODEL_UNAVAILABLE", safeMessage(error), input.analysisId);
-      }
+          });
+          persistModelAttemptFailure(db, roleRunIds.get(agent), findings.find((finding) => finding.agent === agent), error);
+        },
+        onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
+      });
+      findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
+      const preserved = preserveDirection(model.decision, deterministicDecision);
+      unresolvedConflict = preserved.conflict;
+      candidate = preserved.decision;
+      if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
+      provider = "CHIEF_ADVISOR";
+      modelFallback = false;
+    } catch (error) {
+      persistSseEvent({
+        analysisId: input.analysisId,
+        type: "advisor.thinking",
+        payload: { phase: "model_failed", title: "真实模型服务未完成", content: "本次不会使用确定性/mock 结果补成成功，请修复模型输出或重试。" },
+      });
+      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true, message: safeMessage(error) } });
+      db.prepare("UPDATE agent_runs SET model_provider='deepseek',failure_code=?,failure_message=? WHERE id=?")
+        .run("MODEL_UNAVAILABLE", safeMessage(error), input.analysisId);
+      throw error;
     }
 
     const status = enforcePublicationStatus({
@@ -243,10 +251,19 @@ function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: str
     WHERE id=?`).run(isoNow(), process.env.DEEPSEEK_MODEL ?? null, finding.conclusion, json(finding), childRunId);
 }
 
-function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEvent): void {
+function persistModelAttemptFailure(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, fallback: AgentFinding | undefined, error: unknown): void {
+  if (!childRunId) return;
+  db.prepare(`UPDATE agent_runs
+    SET status='completed',completed_at=?,model_provider='deepseek',model_name=?,
+        output_summary=COALESCE(?,output_summary),result_json=COALESCE(?,result_json),
+        failure_code='MODEL_OUTPUT_INVALID',failure_message=?
+    WHERE id=?`).run(isoNow(), process.env.DEEPSEEK_MODEL ?? null, fallback?.conclusion ?? null, fallback ? json(fallback) : null, safeMessage(error), childRunId);
+}
+
+function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEvent, snippets: Map<string, string>): void {
   if (event.type === "agent.object") {
     const conclusion = typeof event.partial.conclusion === "string" ? event.partial.conclusion.trim() : "";
-    if (!conclusion) return;
+    if (!shouldEmitStreamSnippet(`agent:${event.agent}`, conclusion, snippets)) return;
     persistSseEvent({
       analysisId,
       type: "advisor.thinking",
@@ -261,7 +278,7 @@ function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEv
   }
   if (event.type === "decision.object") {
     const summary = typeof event.partial.summary === "string" ? event.partial.summary.trim() : "";
-    if (!summary) return;
+    if (!shouldEmitStreamSnippet("decision", summary, snippets)) return;
     persistSseEvent({
       analysisId,
       type: "advisor.thinking",
@@ -272,6 +289,17 @@ function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEv
       },
     });
   }
+}
+
+function shouldEmitStreamSnippet(key: string, content: string, snippets: Map<string, string>): boolean {
+  if (!content) return false;
+  const previous = snippets.get(key) ?? "";
+  if (previous === content) return false;
+  const grewMeaningfully = content.startsWith(previous) && content.length - previous.length >= 16;
+  const changedMeaningfully = !content.startsWith(previous);
+  if (!grewMeaningfully && !changedMeaningfully && content.length < 48) return false;
+  snippets.set(key, content);
+  return true;
 }
 
 function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding[]): AgentFinding[] {

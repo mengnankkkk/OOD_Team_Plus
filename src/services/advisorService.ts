@@ -150,7 +150,7 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
     const timeout = window.setTimeout(() => {
       source.close();
       reject(new Error("顾问事件流超时，正在读取最终结果"));
-    }, 180_000);
+    }, 600_000);
     const finish = () => {
       window.clearTimeout(timeout);
       source.close();
@@ -213,11 +213,11 @@ function streamThinkingLabel(payload: Record<string, unknown>): string {
 }
 
 async function waitForAssistantMessage(sessionId: string, analysisId: string): Promise<OnboardingMessage | null> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
     const row = [...result.items].reverse().find((item) => item.role === "assistant" && item.agent_run_id === analysisId);
     if (row) return mapMessage(row);
-    await delay(600);
+    await delay(1_000);
   }
   return null;
 }
@@ -229,12 +229,17 @@ function delay(ms: number): Promise<void> {
 async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
   const pack = await apiGet<{
     analysis: { createdAt: string; completedAt?: string | null };
-    agentTrace: Array<{ id: string; agent: string; status: string; purpose?: string | null; summary?: string | null; modelProvider?: string | null; modelName?: string | null; startedAt: string; completedAt?: string | null; failure?: { message?: string } | null }>;
+    agentTrace: Array<{ id: string; parentRunId?: string | null; agent: string; status: string; purpose?: string | null; summary?: string | null; modelProvider?: string | null; modelName?: string | null; startedAt: string; completedAt?: string | null; failure?: { message?: string } | null }>;
     toolCalls: Array<{ id: string; toolName: string; status: string; outputSummary?: string | null; startedAt?: string | null; completedAt?: string | null; error?: { message?: string } | null }>;
     skillRuns: Array<{ id: string; method: string; status: string; quality: string; outputSummary?: string | null; dataAsOf?: string | null }>;
     missingEvidence: string[];
     disclaimer: string;
   }>(`/api/v1/analyses/${analysisId}/evidence-pack`);
+  const traceEnd = latestTimestamp([
+    pack.analysis.completedAt,
+    ...pack.agentTrace.map((item) => item.completedAt),
+    ...pack.toolCalls.map((item) => item.completedAt),
+  ]) ?? pack.analysis.completedAt ?? null;
   const spans: TraceSpan[] = [
     ...pack.agentTrace.map((item): TraceSpan => ({
       id: item.id,
@@ -245,7 +250,7 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
       input: item.purpose ?? null,
       output: item.summary ?? item.failure?.message ?? null,
       startedAt: item.startedAt,
-      durationMs: elapsed(item.startedAt, item.completedAt),
+      durationMs: elapsed(item.startedAt, item.completedAt ?? (item.parentRunId ? null : traceEnd)),
       status: item.status === "FAILED" ? "error" : "ok",
       note: item.purpose ?? undefined,
     })),
@@ -277,11 +282,19 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
   return {
     id: analysisId,
     startedAt: pack.analysis.createdAt,
-    totalMs: elapsed(pack.analysis.createdAt, pack.analysis.completedAt),
+    totalMs: elapsed(pack.analysis.createdAt, traceEnd),
     model: pack.agentTrace.find((item) => item.modelName)?.modelName ?? "Professional Advisor",
     spans,
     finalReply: [...pack.missingEvidence, pack.disclaimer].join("\n"),
   };
+}
+
+function latestTimestamp(values: Array<string | null | undefined>): string | null {
+  const times = values
+    .map((value) => value ? new Date(value).getTime() : Number.NaN)
+    .filter((value) => Number.isFinite(value));
+  if (!times.length) return null;
+  return new Date(Math.max(...times)).toISOString();
 }
 
 function elapsed(start?: string | null, end?: string | null): number {

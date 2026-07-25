@@ -283,7 +283,11 @@ const AdvisorPage = () => {
               if (item.id !== streamMessageId) return item;
               const metadata = item.metadata as { thinkingSteps?: unknown };
               const existing = Array.isArray(metadata.thinkingSteps) ? metadata.thinkingSteps.filter((value): value is string => typeof value === "string") : [];
-              const next = existing.at(-1) === step ? existing : [...existing, step].slice(-12);
+              const title = step.split("：")[0];
+              const last = existing.at(-1);
+              const next = last && last.split("：")[0] === title
+                ? [...existing.slice(0, -1), step]
+                : [...existing, step].slice(-8);
               return {
                 ...item,
                 content: item.content || "顾问正在形成公开过程摘要…",
@@ -519,13 +523,14 @@ const AdvisorPage = () => {
                               <span>{meta.streamStatus ?? "顾问 Agent 正在处理"}</span>
                             </div>
                             {Array.isArray(meta.thinkingSteps) && meta.thinkingSteps.length > 0 ? (
-                              <ol className="mt-2 space-y-1 text-blue-800/90">
+                              <ul className="mt-2 space-y-1 text-blue-800/90">
                                 {meta.thinkingSteps.map((step, index) => (
-                                  <li key={`${index}-${step}`} className="line-clamp-2">
-                                    {index + 1}. {step}
+                                  <li key={`${index}-${step}`} className="line-clamp-2 flex gap-1.5">
+                                    <span className="mt-[0.55em] size-1 shrink-0 rounded-full bg-blue-500/70" />
+                                    <span>{step}</span>
                                   </li>
                                 ))}
-                              </ol>
+                              </ul>
                             ) : null}
                           </div>
                         ) : null}
