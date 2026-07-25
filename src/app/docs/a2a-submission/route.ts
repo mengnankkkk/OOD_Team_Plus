@@ -9,7 +9,7 @@ const DOCUMENT = `# A2A Remote Agent Submission
 ## Endpoints
 
 - Agent Card URL: https://<your-host>/.well-known/agent-card.json
-- Service endpoint: POST https://<your-host>/message:send
+- Service endpoint: POST https://<your-host>/api/a2a/message-send
 - Auth: Authorization: Bearer <A2A_BEARER_TOKEN>
 
 ## Example Request

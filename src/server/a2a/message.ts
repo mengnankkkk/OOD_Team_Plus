@@ -30,7 +30,7 @@ export async function handleSendMessage(request: NextRequest): Promise<Response>
   const rpc = jsonRpcContext(rawBody);
   const authFailure = authenticate(request);
   if (authFailure) return a2aError(authFailure.status, authFailure.code, authFailure.message, rpc);
-  if (rawBody && rawBody.jsonrpc && rawBody.method !== "message/send" && rawBody.method !== "message:send") {
+  if (rawBody && rawBody.jsonrpc && rawBody.method !== "message/send") {
     return a2aError(400, "METHOD_NOT_FOUND", "Unsupported A2A JSON-RPC method.", rpc);
   }
   const body = rawBody?.jsonrpc ? rawBody.params ?? null : rawBody;

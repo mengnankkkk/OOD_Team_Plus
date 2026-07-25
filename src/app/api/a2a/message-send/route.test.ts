@@ -11,7 +11,7 @@ vi.mock("@/server/extensions/advisor/service", () => ({
 
 import { POST } from "./route";
 
-describe("A2A message:send", () => {
+describe("A2A message send", () => {
   it("rejects requests without bearer auth", async () => {
     vi.stubEnv("A2A_BEARER_TOKEN", "secret");
     const response = await POST(jsonRequest({ message: { parts: [{ kind: "text", text: "分析 AAPL" }] } }));
@@ -106,7 +106,7 @@ describe("A2A message:send", () => {
 function jsonRequest(body: unknown, bearer?: string): NextRequest {
   const headers = new Headers({ "content-type": "application/json" });
   if (bearer) headers.set("authorization", `Bearer ${bearer}`);
-  return new NextRequest("http://localhost/message:send", {
+  return new NextRequest("http://localhost/api/a2a/message-send", {
     method: "POST",
     headers,
     body: JSON.stringify(body),

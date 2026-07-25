@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 const AGENT_NAME = "Factor Research Agent";
 const TEAM_NAME = "OOD Team Plus";
+const MESSAGE_SEND_PATH = "/api/a2a/message-send";
 
 export function buildAgentCard(request?: NextRequest) {
   const baseUrl = publicBaseUrl(request);
@@ -17,7 +18,7 @@ export function buildAgentCard(request?: NextRequest) {
     preferredTransport: "JSONRPC",
     protocolVersion: "1.0",
     supportedInterfaces: [
-      { transport: "JSONRPC", url: `${baseUrl}/message:send` },
+      { transport: "JSONRPC", url: `${baseUrl}${MESSAGE_SEND_PATH}` },
     ],
     capabilities: {
       streaming: false,
@@ -64,7 +65,7 @@ export function buildAgentCard(request?: NextRequest) {
     documentationUrl: `${baseUrl}/docs/a2a-submission`,
     metadata: {
       team: TEAM_NAME,
-      serviceEndpoint: `${baseUrl}/message:send`,
+      serviceEndpoint: `${baseUrl}${MESSAGE_SEND_PATH}`,
       auth: "Bearer token",
       dataSkills: ["semantic_catalog", "pandadata_research", "portfolio_snapshot", "market_observability"],
       researchSkills: ["factor_analysis", "strategy_backtest", "portfolio_risk_review", "compliance_review"],
