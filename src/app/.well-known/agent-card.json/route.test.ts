@@ -19,6 +19,7 @@ describe("A2A agent card route", () => {
     }));
     const body = await response.json();
     const serviceEndpoint = "https://agents.example.com/api/a2a/message-send";
+    const httpServiceEndpoint = "https://agents.example.com/api/a2a/message:send";
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
@@ -36,11 +37,28 @@ describe("A2A agent card route", () => {
           protocolBinding: "JSONRPC",
           protocolVersion: "1.0",
         },
+        {
+          url: httpServiceEndpoint,
+          protocolBinding: "HTTP+JSON",
+          protocolVersion: "1.0",
+        },
       ],
       metadata: {
         agentCardUrl: "https://agents.example.com/.well-known/agent-card.json",
         serviceEndpoint,
+        httpServiceEndpoint,
       },
+    });
+    expect(body.skills.map((skill: { id: string }) => skill.id)).toEqual([
+      "chief_advisor_conversation",
+      "debate_mode",
+      "scenario_simulation",
+      "research_search",
+    ]);
+    expect(body.capabilities).toMatchObject({
+      streaming: false,
+      pushNotifications: false,
+      stateTransitionHistory: true,
     });
     expect(body.securityRequirements).toEqual([{ bearerAuth: [] }]);
     expect(body.security).toEqual([{ bearerAuth: [] }]);

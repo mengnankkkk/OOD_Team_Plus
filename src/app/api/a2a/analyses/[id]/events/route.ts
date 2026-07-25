@@ -27,18 +27,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     throw error;
   }
-  if (authentication.principal.clientId !== "a2a-legacy-client") {
-    return a2aError({
-      status: 404,
-      code: "RESOURCE_NOT_FOUND",
-      message: "A2A analysis not found",
-    });
-  }
   const { id } = await params;
   const db = getDatabase();
-  const run = db.prepare("SELECT id,status FROM agent_runs WHERE id=? AND user_id=?").get(id, A2A_SERVICE_USER_ID) as { id: string; status: string } | undefined;
+  const run = authentication.principal.clientId === "a2a-legacy-client"
+    ? db.prepare("SELECT id,status,user_id FROM agent_runs WHERE id=? AND user_id=?")
+        .get(id, A2A_SERVICE_USER_ID)
+    : db.prepare(`SELECT r.id,r.status,r.user_id
+        FROM agent_runs r
+        JOIN a2a_contexts c ON c.execution_user_id=r.user_id
+        WHERE r.id=? AND c.external_client_id=? AND c.deleted_at IS NULL
+        LIMIT 1`).get(id, authentication.principal.clientId);
   db.close();
-  if (!run) {
+  if (!run || typeof run !== "object") {
     return a2aError({
       status: 404,
       code: "RESOURCE_NOT_FOUND",
@@ -69,7 +69,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
             lastEventId = event.id;
           }
           const statusDb = getDatabase();
-          const current = statusDb.prepare("SELECT status FROM agent_runs WHERE id=? AND user_id=?").get(id, A2A_SERVICE_USER_ID) as { status?: string } | undefined;
+          const current = statusDb.prepare("SELECT status FROM agent_runs WHERE id=? AND user_id=?").get(
+            id,
+            (run as { user_id: string }).user_id,
+          ) as { status?: string } | undefined;
           statusDb.close();
           const status = current?.status?.toLowerCase();
           if (!current || ["completed", "failed", "cancelled", "blocked", "waiting_for_user", "interrupted"].includes(status ?? "")) {

@@ -20,8 +20,8 @@ export type DebateRunners = {
 
 type EvidenceCall = typeof buildDebateEvidenceBoard;
 type StartInput = { userId: string; conversationId: string; message: string; targetSymbol?: string | null; initialUserRole?: DebateUserRole; runners?: DebateRunners; evidenceCall?: EvidenceCall };
-type ContinueInput = { userId: string; debateSessionId: string; content: string; userRole?: DebateUserRole; runners?: DebateRunners; evidenceCall?: EvidenceCall };
-type RoundInput = { userId: string; conversationId: string; debateSessionId: string; analysisId: string; content: string; userRole: DebateUserRole; targetSymbol: string | null; roundIndex: number; runners: DebateRunners; evidenceCall: EvidenceCall; userMessagePersisted: boolean };
+type ContinueInput = { userId: string; debateSessionId: string; content: string; userRole?: DebateUserRole; preferredFirstSpeaker?: "bull" | "bear"; runners?: DebateRunners; evidenceCall?: EvidenceCall };
+type RoundInput = { userId: string; conversationId: string; debateSessionId: string; analysisId: string; content: string; userRole: DebateUserRole; preferredFirstSpeaker?: "bull" | "bear"; targetSymbol: string | null; roundIndex: number; runners: DebateRunners; evidenceCall: EvidenceCall; userMessagePersisted: boolean };
 type DebateResult = { debateSessionId: string; roundId: string; roundIndex: number; analysis: { analysisId: string; type: "DEBATE"; status: "COMPLETED"; streamUrl: string }; judgement: DebateJudgement; publication: AdvisorPublicationResult | null };
 type DebateStarted = { debateSessionId: string; roundIndex: number; analysis: { analysisId: string; type: "DEBATE"; status: "RUNNING"; streamUrl: string } };
 export type DebateBackgroundScheduler = (task: () => Promise<DebateResult>) => void;
@@ -137,6 +137,7 @@ function prepareDebateContinuation(input: ContinueInput): { round: RoundInput; s
   const round: RoundInput = {
     userId: input.userId, conversationId: String(session.conversation_id), debateSessionId: input.debateSessionId, analysisId: String(session.root_agent_run_id), content: input.content,
     userRole: input.userRole ?? roleFrom(session.user_debate_role), targetSymbol: typeof session.target_symbol === "string" ? session.target_symbol : null,
+    preferredFirstSpeaker: input.preferredFirstSpeaker,
     roundIndex: Number(session.current_round_index ?? 0) + 1, runners: input.runners ?? defaultRunners,
     evidenceCall: input.evidenceCall ?? buildDebateEvidenceBoard, userMessagePersisted: true,
   };
@@ -153,6 +154,10 @@ async function runRound(input: RoundInput): Promise<DebateResult> {
     const orchestratedPlan = await input.runners.plan(roundPlanPrompt(input.content, input.userRole, initialBoard));
     const plan = DebateRoundPlanSchema.parse({
       ...orchestratedPlan,
+      speakingOrder: preferredSpeakingOrder(
+        orchestratedPlan.speakingOrder,
+        input.preferredFirstSpeaker,
+      ),
       userDebateRole: input.userRole,
       motion: debateMotion(input.content, orchestratedPlan.motion),
     });
@@ -175,6 +180,20 @@ async function runRound(input: RoundInput): Promise<DebateResult> {
     markDebateBlocked(input, roundId, error);
     throw error;
   }
+}
+
+function preferredSpeakingOrder(
+  order: DebateRoundPlan["speakingOrder"],
+  preferred: "bull" | "bear" | undefined,
+): DebateRoundPlan["speakingOrder"] {
+  if (!preferred) return order;
+  const advocates = [preferred, preferred === "bull" ? "bear" : "bull"] as const;
+  const firstAdvocate = order.findIndex((speaker) => speaker === "bull" || speaker === "bear");
+  const retained = order.filter(
+    (speaker) => speaker !== "bull" && speaker !== "bear",
+  ) as DebateRoundPlan["speakingOrder"];
+  retained.splice(firstAdvocate < 0 ? retained.length : firstAdvocate, 0, ...advocates);
+  return retained;
 }
 
 async function runSpeakingOrder(input: RoundInput, roundId: string, plan: DebateRoundPlan, board: DebateEvidenceBoard, userRole: DebateUserRole): Promise<AdvocateSpeech[]> {
@@ -353,18 +372,6 @@ function currentMotion(debateSessionId: string, fallback: string): string {
   const row = db.prepare("SELECT motion FROM debate_sessions WHERE id=?").get(debateSessionId) as { motion?: string } | undefined;
   db.close();
   return row?.motion?.trim() || fallback;
-}
-
-function debateMotion(userContent: string, plannedMotion: string): string {
-  const content = userContent.trim();
-  const motion = plannedMotion.trim();
-  if (
-    !motion
-    || /(?:^|[\s.:])x?amine\b.*(?:claim|evidence)|examine\b.*available evidence|available evidence|围绕用户提出的问题比较看多与看空证据/iu.test(motion)
-  ) {
-    return content || "本轮多空 Battle 辩题";
-  }
-  return motion;
 }
 
 function advocatePrompt(stance: "bull" | "bear", content: string, plan: DebateRoundPlan, board: DebateEvidenceBoard, speeches: AdvocateSpeech[]): string {

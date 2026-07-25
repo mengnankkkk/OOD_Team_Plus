@@ -1,19 +1,59 @@
-# A2A Remote Agent Submission
+# A2A External Capability Gateway
 
-## Agent
+Money Whisperer exposes its primary multi-agent research and simulation workflows through:
 
-- Name: Factor Research Agent
-- Team: OOD Team Plus
-- Summary: Handles natural-language investment research through an A2A Remote Agent endpoint, reusing the local advisor workflow for profiling, evidence-backed research, portfolio risk analysis, factor research, deterministic strategy backtests, recommendation drafting, and compliance-gated explanations. The product is research- and simulation-only. It does not connect to brokers or place real orders.
+```text
+GET  https://<host>/.well-known/agent-card.json
+POST https://<host>/api/a2a/message-send
+POST https://<host>/api/a2a/message:send
+GET  https://<host>/api/a2a/tasks
+GET  https://<host>/api/a2a/tasks/{id}
+POST https://<host>/api/a2a/tasks/{id}:cancel
+DELETE https://<host>/api/a2a/contexts/{id}
+```
 
-## Endpoints
+Use `Authorization: Bearer <client-specific-token>`. Administrators create tokens with
+`POST /api/v1/admin/a2a-clients`; the raw token is returned once and only its SHA-256 hash is stored.
 
-- Agent Card URL: `https://<your-host>/.well-known/agent-card.json`
-- Service endpoint: `POST https://<your-host>/api/a2a/message-send`
-- Trace endpoint: `GET https://<your-host>/api/a2a/analyses/<analysis-id>/events` (SSE)
-- Auth: `Authorization: Bearer <A2A_BEARER_TOKEN>`
+## Capability Metadata
 
-## Example Request
+Set these fields on `message.metadata`:
+
+```json
+{
+  "capabilityId": "debate_mode",
+  "operation": "start",
+  "input": {
+    "targetSymbol": "AAPL",
+    "profile": {
+      "riskLevel": "BALANCED",
+      "horizon": "MEDIUM_TERM",
+      "maxDrawdown": "0.15"
+    },
+    "goals": [],
+    "portfolio": {
+      "cash": "20000",
+      "holdings": [
+        { "symbol": "AAPL", "quantity": "10", "cost": "170" }
+      ]
+    }
+  }
+}
+```
+
+The caller never supplies an authoritative current price. The server resolves instruments and retrieves
+market prices before persisting the isolated context snapshot.
+
+## Executable Skills
+
+- `chief_advisor_conversation`: `send`, `answer_clarification`
+- `debate_mode`: `start`, `continue`, `join_bull`, `join_bear`, `summarize`, `finalize`
+- `scenario_simulation`: `start`, `generate_options`, `get_options`, `execute_option`, `get_tree`, `get_snapshot`, `switch_branch`, `undo`, `archive`
+- `research_search`: `start`, `get_results`, `refine`, `retry`, `cancel`
+
+Task reads require `tasks_read`; cancellation and early context deletion require `tasks_cancel`.
+
+## JSON-RPC Example
 
 ```json
 {
@@ -25,58 +65,46 @@
       "kind": "message",
       "role": "user",
       "messageId": "demo-message-1",
-      "contextId": "demo-context-1",
       "parts": [
-        { "kind": "text", "text": "分析 AAPL 当前是否适合加仓，并说明主要风险。" }
-      ]
+        { "kind": "text", "text": "Search independent sources for current AAPL supply-chain risks." }
+      ],
+      "metadata": {
+        "capabilityId": "research_search",
+        "operation": "start",
+        "input": {
+          "query": "AAPL supply-chain risks",
+          "adapters": ["WEB", "MCP", "KNOWLEDGE_BASE", "RSS"],
+          "maximumResults": 10
+        }
+      }
     }
   }
 }
 ```
 
-## Expected Output
+Aliases are supported for `message/send`/`SendMessage`, `tasks/get`/`GetTask`,
+`tasks/list`/`ListTasks`, and `tasks/cancel`/`CancelTask`.
 
-The service returns an A2A task object with `status.state`, an explainable markdown answer in `status.message.parts`, and a final artifact when the task is completed. Outputs include assumptions, missing-data questions when needed, and a risk notice; they do not constitute investment advice.
+## Isolation And Retention
 
-When `status.state` is `input-required`, send the answer as another `message/send` request with the same `contextId` and `taskId`. The gateway consumes the pending clarification, persists the profile fields, and reruns the original advisor task. The response metadata contains a Bearer-authenticated `streamUrl` for the same A2A caller.
+Each external context receives a temporary non-login execution principal. All profile, goals, portfolio
+snapshots, conversations, debates, simulations, research searches, and artifacts are scoped to that
+principal plus the external client ID. Contexts expire after 30 days and may be deleted earlier by the owner.
 
-## Skills
-
-- `advisor_chat`: main Chief Advisor conversation experience.
-- `factor_analysis`: analyze factor, signal, and market context using authorized data and research skills.
-- `portfolio_risk_review`: review holdings, risk exposure, missing information, and scenario-sensitive recommendations.
-- `factor_research`: calls PandaData `get_factor` through the Chief Advisor and returns sample statistics plus data limitations.
-- `strategy_backtest`: calls historical market data through the Chief Advisor and runs a deterministic 20-day moving-average backtest with explicit cost assumptions.
-
-- Data Skills: `semantic_catalog`, `pandadata_research`, `portfolio_snapshot`, `market_observability`
-- Research Skills: `factor_analysis`, `strategy_backtest`, `portfolio_risk_review`, `compliance_review`
-
-## Product Capability Surface
-
-Only the following capabilities are declared as A2A skills. Workbench-only APIs are intentionally not advertised as A2A skills:
-
-- `advisor_chat`: main Chief Advisor conversation experience.
-- `factor_research`: single-symbol factor sample retrieval and descriptive statistics; cross-sectional IC requires an explicit universe and is not fabricated.
-- `strategy_backtest`: historical close-based deterministic backtest with sample, fee, drawdown, and limitation disclosure.
-
-## Internal Agent Architecture
+## Internal Chain
 
 ```text
-A2A Agent Card
-  -> POST /api/a2a/message-send
-  -> handleSendMessage
-  -> runConversationAgent
-  -> runProfessionalAdvisor
-  -> Chief Advisor
-       -> Profile Context
-       -> Data Research
-       -> Portfolio Risk
-       -> Recommendation
-       -> Compliance Reviewer
-       -> Explanation Report
-  -> server-side publication gate
-  -> A2A task: completed / input-required / failed
-  -> Bearer-authenticated SSE trace URL
+Agent Card
+  -> JSON-RPC or HTTP+JSON adapter
+  -> client token, scope, rate limit
+  -> context and task ownership
+  -> capability adapter
+       -> Chief Advisor and specialist agents
+       -> Evidence/Bull/Bear/Judge debate agents
+       -> deterministic branch simulation services
+       -> independent research adapters
+  -> persisted A2A task and artifacts
 ```
 
-The publication gate can produce `ACTIVE`, `DEGRADED`, or `BLOCKED` outcomes. The A2A gateway exposes only the conversational advisor, factor research, and strategy backtest capabilities; other product workflows remain workbench-only.
+The product is research- and simulation-only. It does not connect to brokers, place orders, guarantee
+returns, or provide individualized investment advice.

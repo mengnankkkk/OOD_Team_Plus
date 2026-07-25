@@ -114,6 +114,7 @@ export function authenticateExternalToken(rawToken: string): ExternalClientPrinc
 
   const legacyToken = process.env.A2A_BEARER_TOKEN?.trim() ?? "";
   if (!legacyToken || !secureEqual(legacyToken, supplied)) return null;
+  ensureLegacyExternalClient();
   const principal = {
     clientId: "a2a-legacy-client",
     name: "Legacy A2A client",
@@ -122,6 +123,39 @@ export function authenticateExternalToken(rawToken: string): ExternalClientPrinc
   } satisfies ExternalClientPrincipal;
   enforceRateLimit(principal.clientId, principal.rateLimitPerMinute);
   return principal;
+}
+
+function ensureLegacyExternalClient(): void {
+  const now = isoNow();
+  const db = getDatabase();
+  try {
+    db.transaction(() => {
+      const username = A2A_SERVICE_USER_ID.replaceAll(/[^a-z0-9_]/giu, "_").toLowerCase();
+      db.prepare(`INSERT OR IGNORE INTO users
+        (id,username,username_normalized,display_name,role,status,force_password_change,created_at,updated_at,row_version)
+        VALUES (?,?,?,'A2A Remote Agent','USER','ACTIVE',0,?,?,1)`).run(
+        A2A_SERVICE_USER_ID,
+        username,
+        username,
+        now,
+        now,
+      );
+      db.prepare(`INSERT INTO a2a_external_clients
+        (id,name,status,capabilities_json,rate_limit_per_minute,created_by_user_id,created_at,updated_at,row_version)
+        VALUES ('a2a-legacy-client','Legacy A2A client','ACTIVE',?,10000,?,?,?,1)
+        ON CONFLICT(id) DO UPDATE SET
+          status='ACTIVE',
+          capabilities_json=excluded.capabilities_json,
+          updated_at=excluded.updated_at`).run(
+        JSON.stringify(A2A_CAPABILITIES),
+        A2A_SERVICE_USER_ID,
+        now,
+        now,
+      );
+    })();
+  } finally {
+    db.close();
+  }
 }
 
 export function authenticateExternalRequest(request: NextRequest): ExternalClientPrincipal {

@@ -6,8 +6,8 @@ import { createA2ARequestHandlers } from "@/server/a2a/gateway";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const { handleJsonRpcA2ARequest } = createA2ARequestHandlers(capabilityAdapters);
+const { handleHttpSendMessage } = createA2ARequestHandlers(capabilityAdapters);
 
 export async function POST(request: NextRequest) {
-  return handleJsonRpcA2ARequest(request);
+  return handleHttpSendMessage(request);
 }

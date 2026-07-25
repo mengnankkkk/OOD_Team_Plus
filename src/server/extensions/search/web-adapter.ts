@@ -2,6 +2,7 @@ export interface SearchFilters {
   limit?: number;
   dateFrom?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface SearchResult {
@@ -34,7 +35,10 @@ export function isSSRFBlocked(url: string): boolean {
 
 export async function searchWeb(query: string, filters: SearchFilters = {}): Promise<SearchResult[]> {
   const limit = Math.min(Math.max(filters.limit ?? 5, 1), 20);
-  const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers: { Accept: "text/html", "User-Agent": "MoneyWhisperer/1.0" }, signal: AbortSignal.timeout(filters.timeoutMs ?? 8_000) });
+  const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+    headers: { Accept: "text/html", "User-Agent": "MoneyWhisperer/1.0" },
+    signal: searchAbortSignal(filters),
+  });
   if (!response.ok) throw new Error(`WEB_HTTP_${response.status}`);
   const html = await response.text();
   const results: SearchResult[] = [];
@@ -46,6 +50,11 @@ export async function searchWeb(query: string, filters: SearchFilters = {}): Pro
     if (results.length >= limit) break;
   }
   return results;
+}
+
+export function searchAbortSignal(filters: SearchFilters): AbortSignal {
+  const timeout = AbortSignal.timeout(filters.timeoutMs ?? 8_000);
+  return filters.signal ? AbortSignal.any([filters.signal, timeout]) : timeout;
 }
 
 function stripHtml(value: string): string { return value.replace(/<[^>]*>/gu, "").replace(/\s+/gu, " ").trim(); }

@@ -158,6 +158,39 @@ export function generateOptions(userId: string, workspaceId: string, objective: 
   return { batchId, analysisId, status: "queued" as const };
 }
 
+export function cancelOptionGeneration(userId: string, batchId: string): void {
+  const db = getDatabase();
+  const batch = db.prepare(`SELECT b.workspace_id,b.agent_run_id,b.status
+    FROM simulation_option_batches b
+    JOIN simulation_workspaces w ON w.id=b.workspace_id
+    WHERE b.id=? AND w.user_id=?`).get(batchId, userId) as {
+    workspace_id: string;
+    agent_run_id: string;
+    status: string;
+  } | undefined;
+  if (!batch) {
+    db.close();
+    throw new Error("OPTION_BATCH_NOT_FOUND");
+  }
+  if (!["queued", "running"].includes(batch.status)) {
+    db.close();
+    throw new Error("OPTION_BATCH_NOT_CANCELLABLE");
+  }
+  activeOptionRuns.get(batch.workspace_id)?.controller.abort();
+  const completedAt = isoNow();
+  db.transaction(() => {
+    db.prepare(`UPDATE simulation_option_batches SET status='cancelled'
+      WHERE id=? AND status IN ('queued','running')`).run(batchId);
+    db.prepare(`UPDATE agent_runs SET status='canceled',completed_at=?,failure_code='CANCELED'
+      WHERE id=? AND user_id=? AND status IN ('queued','running')`).run(
+      completedAt,
+      batch.agent_run_id,
+      userId,
+    );
+  })();
+  db.close();
+}
+
 async function runOptionGeneration(input: {
   userId: string;
   workspaceId: string;
@@ -183,6 +216,7 @@ async function runOptionGeneration(input: {
       OPTION_GENERATION_TIMEOUT_MS,
       input.controller,
     );
+    input.controller.signal.throwIfAborted();
     const optionIds: string[] = [];
     const completedAt = isoNow();
     const db = getDatabase();
@@ -219,19 +253,51 @@ async function runOptionGeneration(input: {
   } catch (error) {
     const message = safeMessage(error);
     const failedAt = isoNow();
-    const code = message === "SIMULATION_TIMEOUT" ? "SIMULATION_TIMEOUT" : "BRANCH_OPTION_GENERATION_FAILED";
+    const canceled = input.controller.signal.aborted;
+    const code = canceled
+      ? "CANCELED"
+      : message === "SIMULATION_TIMEOUT"
+        ? "SIMULATION_TIMEOUT"
+        : "BRANCH_OPTION_GENERATION_FAILED";
     const db = getDatabase();
     let published = false;
     db.transaction(() => {
-      const batchUpdate = db.prepare("UPDATE simulation_option_batches SET status='failed' WHERE id=? AND workspace_id=? AND status IN ('queued','running')").run(input.batchId, input.workspaceId);
+      const batchUpdate = db.prepare(
+        "UPDATE simulation_option_batches SET status=? WHERE id=? AND workspace_id=? AND status IN ('queued','running')",
+      ).run(canceled ? "cancelled" : "failed", input.batchId, input.workspaceId);
       if (!batchUpdate.changes) return;
       published = true;
-      db.prepare("UPDATE agent_runs SET status='failed', completed_at=?, failure_code=?, failure_message=? WHERE id=? AND user_id=? AND status IN ('queued','running')").run(failedAt, code, message, input.analysisId, input.userId);
+      db.prepare(`UPDATE agent_runs SET status=?, completed_at=?, failure_code=?, failure_message=?
+        WHERE id=? AND user_id=? AND status IN ('queued','running')`).run(
+        canceled ? "canceled" : "failed",
+        failedAt,
+        code,
+        canceled ? null : message,
+        input.analysisId,
+        input.userId,
+      );
     })();
     db.close();
     if (!published) return;
-    persistSseEvent({ analysisId: input.analysisId, type: "branch.options.failed", payload: { workspaceId: input.workspaceId, batchId: input.batchId, code } });
-    persistSseEvent({ analysisId: input.analysisId, type: "run.failed", payload: { workspaceId: input.workspaceId, batchId: input.batchId, status: "FAILED", code } });
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "branch.options.failed",
+      payload: {
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        code,
+      },
+    });
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "run.failed",
+      payload: {
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        status: canceled ? "CANCELED" : "FAILED",
+        code,
+      },
+    });
   }
 }
 
@@ -373,6 +439,25 @@ export function getBranchSnapshot(userId: string, workspaceId: string, branchId:
   };
 }
 
+export function archiveWorkspace(userId: string, workspaceId: string, expectedVersion: number) {
+  const workspace = getWorkspace(userId, workspaceId);
+  if (!workspace) throw new Error("WORKSPACE_NOT_FOUND");
+  if (workspace.version !== expectedVersion) throw new Error("VERSION_CONFLICT");
+  const db = getDatabase();
+  const now = isoNow();
+  const result = db.prepare(`UPDATE simulation_workspaces
+    SET status='archived',row_version=row_version+1,updated_at=?
+    WHERE id=? AND user_id=? AND row_version=?`).run(
+    now,
+    workspaceId,
+    userId,
+    expectedVersion,
+  );
+  db.close();
+  if (result.changes !== 1) throw new Error("VERSION_CONFLICT");
+  return getWorkspace(userId, workspaceId);
+}
+
 function assertManifest(manifest: PriceManifest, persistedSha256: string): PriceManifest {
   if (!manifest || typeof manifest !== "object" || manifest.sha256 !== persistedSha256) throw new Error("PRICE_MANIFEST_HASH_MISMATCH");
   return manifest;
@@ -385,6 +470,7 @@ function nullableCost(value: unknown): string | null {
 
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number, controller: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
@@ -394,9 +480,14 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, control
           reject(new Error("SIMULATION_TIMEOUT"));
         }, milliseconds);
       }),
+      new Promise<T>((_, reject) => {
+        abortHandler = () => reject(new Error("SIMULATION_CANCELED"));
+        controller.signal.addEventListener("abort", abortHandler, { once: true });
+      }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (abortHandler) controller.signal.removeEventListener("abort", abortHandler);
   }
 }
 
