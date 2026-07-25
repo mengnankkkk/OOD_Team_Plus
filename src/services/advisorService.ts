@@ -94,7 +94,9 @@ export async function sendAdvisorMessage(message: string, sessionId: string | nu
     outputMode,
   });
   const analysis = result.analysis as { analysisId?: string } | undefined;
-  const trace = analysis?.analysisId ? await loadAdvisorTrace(analysis.analysisId).catch(() => null) : null;
+  const trace = analysis?.analysisId && result.conversationKind !== "GUIDED_INTAKE"
+    ? await loadAdvisorTrace(analysis.analysisId).catch(() => null)
+    : null;
   return {
     reply: String(result.answer ?? "分析已完成。"),
     profileUpdate: null,
