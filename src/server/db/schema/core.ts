@@ -168,6 +168,108 @@ export const agentRunEvents = sqliteTable(
   ],
 );
 
+export const debateSessions = sqliteTable(
+  "debate_sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    rootAgentRunId: text("root_agent_run_id").notNull(),
+    motion: text("motion").notNull(),
+    targetInstrumentId: text("target_instrument_id"),
+    targetSymbol: text("target_symbol"),
+    userDebateRole: text("user_debate_role").notNull().default("neutral"),
+    status: text("status").notNull().default("active"),
+    currentRoundIndex: integer("current_round_index").notNull().default(0),
+    evidenceBoardId: text("evidence_board_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    index("idx_debate_sessions_user_updated").on(t.userId, t.updatedAt),
+    index("idx_debate_sessions_conversation").on(t.conversationId, t.updatedAt),
+    index("idx_debate_sessions_root_run").on(t.rootAgentRunId),
+  ],
+);
+
+export const debateRounds = sqliteTable(
+  "debate_rounds",
+  {
+    id: text("id").primaryKey(),
+    debateSessionId: text("debate_session_id").notNull(),
+    roundIndex: integer("round_index").notNull(),
+    roundFocus: text("round_focus").notNull(),
+    userIntent: text("user_intent").notNull(),
+    status: text("status").notNull().default("running"),
+    judgeSummaryJson: text("judge_summary_json"),
+    createdAt: text("created_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("idx_debate_rounds_session_index").on(t.debateSessionId, t.roundIndex),
+    index("idx_debate_rounds_session_created").on(t.debateSessionId, t.createdAt),
+  ],
+);
+
+export const debateTurns = sqliteTable(
+  "debate_turns",
+  {
+    id: text("id").primaryKey(),
+    debateSessionId: text("debate_session_id").notNull(),
+    debateRoundId: text("debate_round_id").notNull(),
+    speaker: text("speaker").notNull(),
+    stance: text("stance").notNull(),
+    turnType: text("turn_type").notNull(),
+    content: text("content").notNull(),
+    publicSummary: text("public_summary").notNull(),
+    structuredPayloadJson: text("structured_payload_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_debate_turns_round_created").on(t.debateRoundId, t.createdAt, t.id),
+    index("idx_debate_turns_session_created").on(t.debateSessionId, t.createdAt, t.id),
+  ],
+);
+
+export const debateArguments = sqliteTable(
+  "debate_arguments",
+  {
+    id: text("id").primaryKey(),
+    debateTurnId: text("debate_turn_id").notNull(),
+    stance: text("stance").notNull(),
+    claim: text("claim").notNull(),
+    plainLanguage: text("plain_language").notNull(),
+    evidenceRefsJson: text("evidence_refs_json").notNull().default("[]"),
+    counterEvidenceRefsJson: text("counter_evidence_refs_json").notNull().default("[]"),
+    assumption: text("assumption").notNull(),
+    confidenceDecimal: text("confidence_decimal").notNull(),
+    vulnerability: text("vulnerability").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("idx_debate_arguments_turn").on(t.debateTurnId, t.createdAt)],
+);
+
+export const debateJudgements = sqliteTable(
+  "debate_judgements",
+  {
+    id: text("id").primaryKey(),
+    debateSessionId: text("debate_session_id").notNull(),
+    debateRoundId: text("debate_round_id").notNull(),
+    userClaim: text("user_claim").notNull(),
+    bullStrongestPoint: text("bull_strongest_point").notNull(),
+    bearStrongestPoint: text("bear_strongest_point").notNull(),
+    keyDisagreement: text("key_disagreement").notNull(),
+    responseQualityJson: text("response_quality_json").notNull(),
+    evidenceTilt: text("evidence_tilt").notNull(),
+    confidenceDecimal: text("confidence_decimal").notNull(),
+    whyNotFinal: text("why_not_final").notNull(),
+    suggestedNextPromptsJson: text("suggested_next_prompts_json").notNull(),
+    complianceNote: text("compliance_note").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("idx_debate_judgements_round").on(t.debateRoundId)],
+);
+
 export const instruments = sqliteTable("instruments", {
   id: text("id").primaryKey(),
   symbol: text("symbol").notNull(),
