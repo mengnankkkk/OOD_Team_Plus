@@ -97,14 +97,20 @@ export async function runChiefAdvisor(input: {
     delegated.add(role);
     input.onAgentStarted?.(role, prompt.slice(0, 160));
     try {
-      let streamedText = "";
-      const stream = await specialistAgent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens: 900, temperature: 0.1 } });
-      const consumeText = consumeFullTextStream(stream.fullStream, (text) => {
-        streamedText += text;
-        input.onStreamEvent?.({ type: "agent.chunk", agent: role, text });
-      });
-      await consumeText;
-      const finding = coerceModelFinding(role, parseModelJson(streamedText));
+      let finding: AgentFinding | undefined;
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2 && !finding; attempt += 1) {
+        try {
+          const retryPrompt = attempt === 0
+            ? prompt
+            : `${prompt}\n\n这是一次真实模型重试。请忽略此前任何非 JSON 输出，只返回一个完整、可解析的 JSON 对象，不要 Markdown，不要解释文字。`;
+          const modelText = await streamModelText(specialistAgent, retryPrompt, 1_400, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
+          finding = coerceModelFinding(role, parseModelJson(modelText));
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!finding) throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
       findings.push(finding);
       input.onAgentCompleted?.(finding);
     } catch (error) {
@@ -114,16 +120,35 @@ export async function runChiefAdvisor(input: {
   }
   if (failures.length) throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
 
-  let streamedDecisionText = "";
-  const decisionStream = await chief.stream(chiefDecisionPrompt(input.prompt, findings), { maxSteps: 1, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } });
-  const consumeDecisionText = consumeFullTextStream(decisionStream.fullStream, (text) => {
-    streamedDecisionText += text;
-    input.onStreamEvent?.({ type: "decision.chunk", text });
-  });
-  await consumeDecisionText;
+  let modelDecision: AdvisorDecision | undefined;
+  let lastDecisionError: unknown;
+  for (let attempt = 0; attempt < 2 && !modelDecision; attempt += 1) {
+    try {
+      const decisionPrompt = chiefDecisionPrompt(input.prompt, findings) + (attempt === 0
+        ? ""
+        : "\n\n这是一次真实模型重试。只返回一个完整、可解析的 AdvisorDecision JSON 对象，不要 Markdown，不要解释文字。");
+      const modelText = await streamModelText(chief, decisionPrompt, 2_200, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
+      modelDecision = coerceModelDecision(parseModelJson(modelText));
+    } catch (error) {
+      lastDecisionError = error;
+    }
+  }
+  if (!modelDecision) throw lastDecisionError ?? new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR");
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: coerceModelDecision(parseModelJson(streamedDecisionText)), findings, delegatedAgents: [...delegated] };
+  return { decision: modelDecision, findings, delegatedAgents: [...delegated] };
+}
+
+async function streamModelText(agent: Agent, prompt: string, maxOutputTokens: number, onText: (text: string) => void): Promise<string> {
+  const stream = await agent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens, temperature: 0.1 } });
+  let streamedText = "";
+  await consumeFullTextStream(stream.fullStream, (text) => {
+    streamedText += text;
+    onText(text);
+  });
+  if (streamedText.trim()) return streamedText;
+  const completedText = await stream.text.catch(() => "");
+  return typeof completedText === "string" ? completedText : "";
 }
 
 async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
