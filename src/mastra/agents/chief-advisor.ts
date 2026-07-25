@@ -96,60 +96,51 @@ export async function runChiefAdvisor(input: {
     const prompt = specialistPrompt(input.prompt, role, findings);
     delegated.add(role);
     input.onAgentStarted?.(role, prompt.slice(0, 160));
-    let finding: AgentFinding;
-    let completedByModel = false;
     try {
-      let latestObjectPartial: Partial<ChiefAgentFinding> = {};
-      const stream = await specialistAgent.stream<ChiefAgentFinding>(prompt, {
-        maxSteps: 1,
-        modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
-        structuredOutput: {
-          schema: ChiefAgentFindingSchema,
-          instructions: `只输出符合 AgentFinding schema 的 JSON，agent 字段必须是 ${role}，不得输出 Markdown 或隐藏推理。`,
-          jsonPromptInjection: "system",
-        },
+      let streamedText = "";
+      const stream = await specialistAgent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens: 900, temperature: 0.1 } });
+      const consumeText = consumeTextStream(stream.textStream, (text) => {
+        streamedText += text;
+        input.onStreamEvent?.({ type: "agent.chunk", agent: role, text });
       });
-      const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
-      const consumeObject = consumeObjectStream<ChiefAgentFinding>(stream.objectStream, (partial) => {
-        latestObjectPartial = { ...latestObjectPartial, ...partial };
-        input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) });
-      });
-      const [objectResult] = await Promise.allSettled([stream.object, consumeText, consumeObject]);
-      if (objectResult.status === "rejected") throw objectResult.reason;
-      finding = coerceModelFinding(role, objectResult.value, latestObjectPartial);
-      completedByModel = true;
+      const [textResult] = await Promise.allSettled([stream.text, consumeText]);
+      if (textResult.status === "rejected") throw textResult.reason;
+      const modelText = typeof textResult.value === "string" && textResult.value.trim() ? textResult.value : streamedText;
+      const finding = coerceModelFinding(role, parseModelJson(modelText));
+      findings.push(finding);
+      input.onAgentCompleted?.(finding);
     } catch (error) {
       input.onAgentFailed?.(role, error);
       failures.push({ role, error });
-      continue;
     }
-    findings.push(finding);
-    if (completedByModel) input.onAgentCompleted?.(finding);
   }
-  if (failures.length) {
-    throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
-  }
+  if (failures.length) throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
 
-  let latestDecisionPartial: Partial<AdvisorDecision> = {};
-  const decisionStream = await chief.stream<ChiefAdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
-    maxSteps: 1,
-    modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 },
-    structuredOutput: {
-      schema: ChiefAdvisorDecisionSchema,
-      instructions: "只输出符合 AdvisorDecision schema 的候选建议 JSON，不要 Markdown 或隐藏推理。",
-      jsonPromptInjection: "system",
-    },
+  let streamedDecisionText = "";
+  const decisionStream = await chief.stream(chiefDecisionPrompt(input.prompt, findings), { maxSteps: 1, modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 } });
+  const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => {
+    streamedDecisionText += text;
+    input.onStreamEvent?.({ type: "decision.chunk", text });
   });
-  const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
-  const consumeDecisionObject = consumeObjectStream<ChiefAdvisorDecision>(decisionStream.objectStream, (partial) => {
-    latestDecisionPartial = { ...latestDecisionPartial, ...partial } as Partial<AdvisorDecision>;
-    input.onStreamEvent?.({ type: "decision.object", partial: partial as Partial<AdvisorDecision> });
-  });
-  const [decisionResult] = await Promise.allSettled([decisionStream.object, consumeDecisionText, consumeDecisionObject]);
+  const [decisionResult] = await Promise.allSettled([decisionStream.text, consumeDecisionText]);
   if (decisionResult.status === "rejected") throw decisionResult.reason;
+  const modelDecisionText = typeof decisionResult.value === "string" && decisionResult.value.trim() ? decisionResult.value : streamedDecisionText;
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: coerceModelDecision(decisionResult.value, latestDecisionPartial), findings, delegatedAgents: [...delegated] };
+  return { decision: coerceModelDecision(parseModelJson(modelDecisionText)), findings, delegatedAgents: [...delegated] };
+}
+
+function parseModelJson(value: string): unknown {
+  const text = value.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+  if (!text) throw new Error("MODEL_OUTPUT_EMPTY");
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1)) as unknown;
+    throw new Error("MODEL_OUTPUT_INVALID_JSON");
+  }
 }
 
 async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
@@ -191,7 +182,7 @@ function normalizeChiefFinding(value: unknown): Partial<AgentFinding> {
 function coerceModelFinding(
   role: AgentFinding["agent"],
   value: unknown,
-  streamedPartial: Partial<ChiefAgentFinding>,
+  streamedPartial: Partial<ChiefAgentFinding> = {},
 ): AgentFinding {
   const merged = {
     ...normalizeChiefFinding(streamedPartial),
@@ -218,7 +209,7 @@ function coerceModelFinding(
   });
 }
 
-function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDecision>): AdvisorDecision {
+function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDecision> = {}): AdvisorDecision {
   const merged = {
     ...normalizeRecord(streamedPartial),
     ...normalizeRecord(value),
