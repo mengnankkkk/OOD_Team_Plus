@@ -92,12 +92,16 @@ def run() -> None:
 
         context.add_init_script("""
           window.ethereum = {
-            request: async ({ method }) => {
+            request: async ({ method, params }) => {
               if (method === 'eth_requestAccounts' || method === 'eth_accounts') return ['0x1111111111111111111111111111111111111111'];
               if (method === 'eth_chainId') return '0x59f';
               if (method === 'eth_getBalance') return '0xde0b6b3a7640000';
-              if (method === 'eth_sendTransaction') return '0x' + 'ab'.repeat(32);
-              if (method === 'eth_getTransactionReceipt') return { status: '0x1', blockNumber: '0x2a' };
+              if (method === 'eth_sendTransaction') {
+                if ('to' in params[0]) throw new Error('Proof deployment must not include a to address');
+                if (!params[0].data.startsWith('0x6025600c60003960256000f3004d575031')) throw new Error('Invalid proof deployment init code');
+                return '0x' + 'ab'.repeat(32);
+              }
+              if (method === 'eth_getTransactionReceipt') return { status: '0x1', blockNumber: '0x2a', contractAddress: '0x2222222222222222222222222222222222222222' };
               if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') return null;
               throw new Error('Unexpected wallet method: ' + method);
             }

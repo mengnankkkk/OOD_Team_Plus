@@ -52,6 +52,7 @@ type Props = {
   wallet: string;
   transactionHash: string;
   confirmedBlock: number | null;
+  proofContract: string;
   error: string;
   copied: "hash" | "transaction" | null;
   busy: boolean;
@@ -63,7 +64,7 @@ type Props = {
 };
 
 export function InjectiveProofView(props: Props) {
-  const { report, source, proofHash, hashing, network, phase, wallet, transactionHash, confirmedBlock, error, copied, busy } = props;
+  const { report, source, proofHash, hashing, network, phase, wallet, transactionHash, confirmedBlock, proofContract, error, copied, busy } = props;
   return (
     <div className="mx-auto max-w-6xl">
       <ProofHero network={network} />
@@ -101,7 +102,7 @@ export function InjectiveProofView(props: Props) {
             </div>
           </div>
         </section>
-        <ProofSidebar {...{ phase, busy, wallet, proofHash, confirmedBlock, transactionHash, copied }} onCopy={props.onCopy} />
+        <ProofSidebar {...{ phase, busy, wallet, proofHash, confirmedBlock, proofContract, transactionHash, copied }} onCopy={props.onCopy} />
       </div>
     </div>
   );
@@ -129,22 +130,22 @@ function ProofHero({ network }: { network: NetworkStatus | null }) {
   );
 }
 
-type SidebarProps = Pick<Props, "phase" | "busy" | "wallet" | "proofHash" | "confirmedBlock" | "transactionHash" | "copied" | "onCopy">;
+type SidebarProps = Pick<Props, "phase" | "busy" | "wallet" | "proofHash" | "confirmedBlock" | "proofContract" | "transactionHash" | "copied" | "onCopy">;
 
-function ProofSidebar({ phase, busy, wallet, proofHash, confirmedBlock, transactionHash, copied, onCopy }: SidebarProps) {
+function ProofSidebar({ phase, busy, wallet, proofHash, confirmedBlock, proofContract, transactionHash, copied, onCopy }: SidebarProps) {
   return (
     <aside className="space-y-6">
       <section className="border border-neutral-800 bg-neutral-950 p-5 text-neutral-100 shadow-[8px_8px_0_rgba(8,145,139,0.12)] md:p-6">
         <div className="flex items-center justify-between gap-3"><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">Proof receipt</p><span className={`size-2 rounded-full ${phase === "confirmed" ? "bg-emerald-400 shadow-[0_0_14px_#34d399]" : busy ? "animate-pulse bg-cyan-300" : "bg-neutral-600"}`} /></div>
         <h2 className="mt-3 text-xl font-semibold">{PHASE_LABELS[phase]}</h2>
         <div className="mt-6 space-y-5 border-t border-neutral-800 pt-5 font-mono text-[11px] leading-5">
-          <ReceiptRow label="WALLET" value={wallet || "—"} /><ReceiptRow label="PAYLOAD" value={proofHash ? `MWP1 · ${proofHash.slice(0, 12)}…${proofHash.slice(-8)}` : "—"} /><ReceiptRow label="VALUE" value="0 INJ" /><ReceiptRow label="BLOCK" value={confirmedBlock?.toLocaleString() ?? "—"} />
+          <ReceiptRow label="WALLET" value={wallet || "—"} /><ReceiptRow label="PAYLOAD" value={proofHash ? `MWP1 · ${proofHash.slice(0, 12)}…${proofHash.slice(-8)}` : "—"} /><ReceiptRow label="VALUE" value="0 INJ" /><ReceiptRow label="CONTRACT" value={proofContract || "—"} /><ReceiptRow label="BLOCK" value={confirmedBlock?.toLocaleString() ?? "—"} />
         </div>
         {transactionHash ? <div className="mt-6 border-t border-neutral-800 pt-5"><div className="flex items-start justify-between gap-3"><p className="break-all font-mono text-[11px] leading-5 text-neutral-400">{transactionHash}</p><button type="button" onClick={() => onCopy(transactionHash, "transaction")} className="shrink-0 text-neutral-400 hover:text-cyan-300" aria-label="复制交易哈希">{copied === "transaction" ? <Check className="size-4" /> : <Copy className="size-4" />}</button></div><a href={`${INJECTIVE_EXPLORER_URL}/tx/${transactionHash}`} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-cyan-300 hover:text-cyan-200">在 Blockscout 核验 <ExternalLink className="size-3.5" /></a></div> : null}
       </section>
       <section className="paper-card p-5 md:p-6">
         <div className="flex items-center gap-2"><ShieldCheck className="size-4 text-cyan-800" /><p className="eyebrow">隐私边界</p></div>
-        <ol className="mt-5 space-y-4 text-sm leading-6"><Step number="01" title="本地生成指纹" detail="原文不离开浏览器" /><Step number="02" title="钱包签名" detail="确认网络与 0 INJ 交易" /><Step number="03" title="公开核验" detail="Blockscout 留下时间与哈希" /></ol>
+        <ol className="mt-5 space-y-4 text-sm leading-6"><Step number="01" title="本地生成指纹" detail="原文不离开浏览器" /><Step number="02" title="部署证明胶囊" detail="确认网络与 0 INJ 合约创建" /><Step number="03" title="公开核验" detail="Blockscout 留下合约与哈希" /></ol>
         <div className="mt-5 flex items-start gap-2 border-t border-border pt-4 text-xs leading-5 text-muted-foreground"><Radio className="mt-0.5 size-3.5 shrink-0 text-cyan-800" /><span>区块链交易不可撤销。仅使用测试网，正文、持仓和身份信息不会写入链上。</span></div>
       </section>
     </aside>
