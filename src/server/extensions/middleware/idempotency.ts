@@ -61,7 +61,7 @@ export function runIdempotentMutation<T>(
         ownerKey,
         routeCode,
         idempotencyKey,
-        safeResponseResource(responseJson),
+        responseResourceId(responseJson),
         responseJson,
         requestHash,
         isoNow(),
@@ -93,7 +93,7 @@ export async function checkIdempotency(ownerKey: string, routeCode: string, idem
 
 export async function saveIdempotency(record: IdempotencyRecord): Promise<void> {
   const db = getDatabase();
-  db.prepare("INSERT INTO idempotency_records (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, operation, idempotency_key) DO NOTHING").run(createId("idem"), record.ownerKey, record.routeCode, record.idempotencyKey, safeResponseResource(record.responseJson), record.responseJson, record.requestHash ?? hashIdempotencyRequest(record.responseJson), record.createdAt);
+  db.prepare("INSERT INTO idempotency_records (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, operation, idempotency_key) DO NOTHING").run(createId("idem"), record.ownerKey, record.routeCode, record.idempotencyKey, responseResourceId(record.responseJson), record.responseJson, record.requestHash ?? hashIdempotencyRequest(record.responseJson), record.createdAt);
   db.close();
 }
 
@@ -129,7 +129,7 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function safeResponseResource(responseJson: string): string {
+export function responseResourceId(responseJson: string): string {
   try {
     const value = JSON.parse(responseJson) as { data?: { resourceId?: string; id?: string; searchId?: string; portfolioSnapshotId?: string } };
     return value.data?.resourceId ?? value.data?.id ?? value.data?.searchId ?? value.data?.portfolioSnapshotId ?? "response";

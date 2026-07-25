@@ -5,6 +5,25 @@ import { seedAuthenticatedUser } from "@tests/helpers/auth";
 
 import { getNotificationSyncState, syncUserNotifications } from "./proactive-service";
 
+const dependencyMocks = vi.hoisted(() => ({
+  checkWatchlistTargets: vi.fn(),
+  refreshPortfolio: vi.fn(),
+}));
+
+vi.mock("@/server/extensions/analysis/service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/extensions/analysis/service")>();
+  return { ...actual, refreshPortfolio: dependencyMocks.refreshPortfolio };
+});
+
+vi.mock("@/server/extensions/watchlists/check-service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/extensions/watchlists/check-service")>();
+  return {
+    ...actual,
+    checkWatchlistTargets: (...args: Parameters<typeof actual.checkWatchlistTargets>) =>
+      dependencyMocks.checkWatchlistTargets(actual.checkWatchlistTargets, ...args),
+  };
+});
+
 describe("proactive notification sync", () => {
   const userId = "notification-sync-user";
 
@@ -16,11 +35,18 @@ describe("proactive notification sync", () => {
     vi.stubEnv("DEFAULT_USERNAME", "your_value_here");
     vi.stubEnv("DEFAULT_PASSWORD", "your_value_here");
     vi.stubEnv("JAVA_SERVICE_BASE_URL", "your_value_here");
+    dependencyMocks.refreshPortfolio.mockReset().mockResolvedValue(undefined);
+    dependencyMocks.checkWatchlistTargets.mockReset().mockImplementation(
+      (actual: (...args: unknown[]) => unknown, ...args: unknown[]) => actual(...args),
+    );
     seedAuthenticatedUser({ userId, role: "USER" });
     const db = getDatabase();
     db.prepare("DELETE FROM notifications WHERE user_id=?").run(userId);
     db.prepare("DELETE FROM notification_sync_states WHERE user_id=?").run(userId);
     db.prepare("DELETE FROM observation_conditions WHERE user_id=? AND id LIKE 'notification-%'").run(userId);
+    db.prepare("DELETE FROM rss_item_instruments WHERE id LIKE 'notification-%'").run();
+    db.prepare("DELETE FROM rss_items WHERE id LIKE 'notification-%'").run();
+    db.prepare("DELETE FROM rss_feeds WHERE id LIKE 'notification-%'").run();
     db.prepare("DELETE FROM watchlist_items WHERE id LIKE 'notification-%'").run();
     db.prepare("DELETE FROM watchlists WHERE user_id=? AND id LIKE 'notification-%'").run(userId);
     db.prepare("DELETE FROM market_snapshots WHERE id LIKE 'notification-%'").run();
@@ -53,6 +79,43 @@ describe("proactive notification sync", () => {
     expect(state.errorCode).toBe("PANDADATA_NOT_CONFIGURED");
     expect(state.errorMessage).toContain("最近一次有效快照");
     expect(JSON.stringify(state)).not.toContain("your_value_here");
+  });
+
+  it("does not advance the global market refresh time when a watchlist group partially fails", async () => {
+    vi.stubEnv("DEFAULT_USERNAME", "configured");
+    vi.stubEnv("DEFAULT_PASSWORD", "configured");
+    vi.stubEnv("JAVA_SERVICE_BASE_URL", "https://pandadata.example");
+    const db = getDatabase();
+    const now = "2026-07-25T00:00:00.000Z";
+    db.prepare(`INSERT INTO watchlists
+      (id,user_id,name,status,created_at,updated_at)
+      VALUES ('notification-partial-list',?,'部分失败','active',?,?)`).run(userId, now, now);
+    db.prepare(`INSERT INTO watchlist_items
+      (id,watchlist_id,instrument_id,status,added_at,created_at,updated_at)
+      VALUES ('notification-partial-item','notification-partial-list','AAPL','active',?,?,?)`)
+      .run(now, now, now);
+    db.close();
+    dependencyMocks.checkWatchlistTargets.mockResolvedValue({
+      status: "PARTIAL",
+      checkedItemCount: 1,
+      itemIds: ["notification-partial-item"],
+      evaluatedConditionCount: 0,
+      createdNotificationCount: 0,
+      marketRefreshAttempted: true,
+      marketRefreshSucceeded: false,
+      dataAsOf: null,
+      errorCode: "PANDADATA_NETWORK_FAILED",
+      errorMessage: "部分观察标的行情刷新失败，已继续使用最近一次有效数据。",
+    });
+
+    const result = await syncUserNotifications(userId, {
+      forceMarketRefresh: true,
+      reason: "partial-refresh-test",
+    });
+
+    expect(dependencyMocks.refreshPortfolio).toHaveBeenCalledOnce();
+    expect(result.marketRefreshSucceeded).toBe(false);
+    expect(getNotificationSyncState(userId).lastMarketRefreshAt).toBeNull();
   });
 
   it("uses the structured drawdown rule instead of a stale legacy threshold", async () => {
@@ -128,4 +191,52 @@ describe("proactive notification sync", () => {
     resultDb.close();
     expect(alert).toBeUndefined();
   });
+
+  it("creates one watchlist event notification per item and RSS item", async () => {
+    const db = getDatabase();
+    const now = "2026-07-25T00:00:00.000Z";
+    db.prepare(`INSERT INTO watchlists
+      (id,user_id,name,status,created_at,updated_at)
+      VALUES ('notification-event-list',?,'事件观察','active',?,?)`).run(userId, now, now);
+    db.prepare(`INSERT INTO watchlist_items
+      (id,watchlist_id,instrument_id,status,added_at,created_at,updated_at)
+      VALUES ('notification-event-item','notification-event-list','AAPL','active',?,?,?)`)
+      .run(now, now, now);
+    db.prepare(`INSERT INTO rss_feeds
+      (id,url,title,status,created_by,created_at,updated_at)
+      VALUES ('notification-event-feed','https://example.com/event-feed','Event Feed','active',?,?,?)`)
+      .run(userId, now, now);
+    db.prepare(`INSERT INTO rss_items
+      (id,feed_id,guid,title,link,summary,published_at,created_at)
+      VALUES ('notification-event-rss','notification-event-feed','event-guid',
+        'Apple 发布重大经营更新','https://example.com/apple-event','AAPL 相关事件',?,?)`)
+      .run(now, now);
+    db.prepare(`INSERT INTO rss_item_instruments
+      (id,rss_item_id,instrument_id,match_basis,matched_text,created_at)
+      VALUES ('notification-event-link','notification-event-rss','AAPL','symbol_exact','AAPL',?)`)
+      .run(now);
+    db.close();
+
+    await syncUserNotifications(userId, { forceMarketRefresh: false, reason: "event-test" });
+    await syncUserNotifications(userId, { forceMarketRefresh: false, reason: "event-test" });
+
+    const resultDb = getDatabase();
+    const rows = resultDb.prepare(`SELECT source_type,source_id,dedupe_key,metadata_json
+      FROM notifications
+      WHERE user_id=? AND source_type='WATCHLIST_EVENT'`).all(userId) as Array<Record<string, unknown>>;
+    resultDb.close();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source_type: "WATCHLIST_EVENT",
+      source_id: "notification-event-item",
+      dedupe_key: `${userId}:watchlist-event:notification-event-item:notification-event-rss`,
+    });
+    expect(JSON.parse(String(rows[0].metadata_json))).toMatchObject({
+      watchlistItemId: "notification-event-item",
+      rssItemId: "notification-event-rss",
+      matchBasis: "symbol_exact",
+    });
+  });
+
 });

@@ -39,7 +39,7 @@ export function readValuationAggregate(
   return unavailableValuation();
 }
 
-export function readRecentEvent(db: Db, instrumentId: string): EventAggregate | null {
+export function readRecentEvent(db: Db, userId: string, instrumentId: string): EventAggregate | null {
   const publishedAfter = new Date(Date.now() - 30 * 86_400_000).toISOString();
   const row = db.prepare(`SELECT ri.id,ri.title,ri.link,ri.published_at,rf.title AS source,rii.match_basis
     FROM rss_item_instruments rii
@@ -47,8 +47,16 @@ export function readRecentEvent(db: Db, instrumentId: string): EventAggregate | 
     JOIN rss_feeds rf ON rf.id = ri.feed_id
     WHERE rii.instrument_id = ? AND COALESCE(ri.published_at,ri.created_at) >= ?
       AND rf.status = 'active' AND rf.deleted_at IS NULL
+      AND (rii.match_basis != 'research_link' OR EXISTS (
+        SELECT 1 FROM evidence_items e
+        JOIN recommendations r ON r.id = e.recommendation_id
+        WHERE e.user_id = ? AND r.user_id = ?
+          AND e.source_url = rii.matched_text
+          AND r.instrument_id = rii.instrument_id
+          AND lower(r.status) != 'deleted'
+      ))
     ORDER BY COALESCE(ri.published_at,ri.created_at) DESC,ri.id DESC LIMIT 1`)
-    .get(instrumentId, publishedAfter) as Record<string, unknown> | undefined;
+    .get(instrumentId, publishedAfter, userId, userId) as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
     id: String(row.id),

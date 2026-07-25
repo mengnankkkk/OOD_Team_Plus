@@ -171,12 +171,23 @@ function snapshotDate(row: Record<string, unknown>, result: PandaDataResult): st
 }
 
 function ensureInstrument(db: SqliteDb, symbol: string, assetType: string): string {
-  const existing = db.prepare("SELECT id FROM instruments WHERE UPPER(symbol)=? LIMIT 1").get(symbol) as { id?: string } | undefined;
+  const [baseSymbol, market] = splitMarketSymbol(symbol);
+  const existing = db.prepare(`SELECT id FROM instruments
+    WHERE UPPER(symbol)=?
+      OR UPPER(id)=?
+      OR (UPPER(symbol)=? AND UPPER(market)=?)
+    ORDER BY tradable DESC,id
+    LIMIT 1`).get(symbol, symbol, baseSymbol, market) as { id?: string } | undefined;
   if (existing?.id) return existing.id;
   const instrumentId = `instrument_${digest(symbol)}`;
   db.prepare("INSERT OR IGNORE INTO instruments (id,symbol,name,market,asset_type,tradable) VALUES (?,?,?,?,?,1)")
     .run(instrumentId, symbol, symbol, marketCode(symbol), assetType);
   return instrumentId;
+}
+
+function splitMarketSymbol(symbol: string): [string, string] {
+  const [base, suffix] = symbol.toUpperCase().split(".");
+  return [base, suffix ?? marketCode(symbol)];
 }
 
 function inferColumns(rows: Record<string, unknown>[]): Array<{ name: string; type: string }> {

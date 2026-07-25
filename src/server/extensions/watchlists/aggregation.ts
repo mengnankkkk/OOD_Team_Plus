@@ -126,7 +126,7 @@ function aggregateRow(db: Db, userId: string, row: ItemRow): WatchlistItemAggreg
     portfolioRelation: readPortfolioRelation(db, userId, row.id),
     risk: computeRiskAggregate(readMarketPoints(db, row.id)),
     valuation: readValuationAggregate(db, userId, row.id),
-    recentEvent: readRecentEvent(db, row.id),
+    recentEvent: readRecentEvent(db, userId, row.id),
     industryConcentration: readIndustryConcentration(db, userId, row.sector),
     latestAgentConclusion: readLatestAgentConclusion(db, userId, row.id),
     ...counts,

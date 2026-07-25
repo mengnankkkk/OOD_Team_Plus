@@ -1,5 +1,9 @@
 import { XMLParser } from "fast-xml-parser";
 
+import {
+  linkRecentRssItems,
+  loadActiveObservedInstrumentIds,
+} from "@/server/extensions/rss/instrument-linker";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { fetchPublicHttpUrl } from "@/server/extensions/security/public-url";
 import { sanitizeRssText } from "@/server/extensions/rss/text";
@@ -91,9 +95,24 @@ function finishSync(feedId: string, userId: string, analysisId: string, items: P
   });
   publish();
   db.close();
+  const linkedCount = linkObservedRssItems();
   persistSseEvent({ analysisId, type: "rss.synced", payload: { feedId, newCount, updatedCount, notModified } });
+  persistSseEvent({ analysisId, type: "rss.linked", payload: { feedId, linkedCount } });
   persistSseEvent({ analysisId, type: "agent.completed", payload: { type: "RSS_SYNC", feedId } });
-  return { feedId, analysisId, newCount, updatedCount, notModified, status: "COMPLETED" as const };
+  return { feedId, analysisId, newCount, updatedCount, linkedCount, notModified, status: "COMPLETED" as const };
+}
+
+function linkObservedRssItems(): number {
+  const db = getDatabase();
+  try {
+    const instrumentIds = loadActiveObservedInstrumentIds(db);
+    const publishedAfter = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    return linkRecentRssItems(db, instrumentIds, publishedAfter);
+  } catch {
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 function parseFeed(xml: string): ParsedItem[] {

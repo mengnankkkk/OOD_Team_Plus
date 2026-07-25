@@ -21,7 +21,7 @@ describe("watchlist aggregation", () => {
     db.prepare("DELETE FROM portfolio_snapshots WHERE user_id = ?").run(USER_ID);
     db.prepare("DELETE FROM rss_item_instruments WHERE id LIKE 'aggregation-%'").run();
     db.prepare("DELETE FROM rss_items WHERE id LIKE 'aggregation-%'").run();
-    db.prepare("DELETE FROM rss_feeds WHERE id = 'aggregation-feed'").run();
+    db.prepare("DELETE FROM rss_feeds WHERE id LIKE 'aggregation-%'").run();
     db.prepare("DELETE FROM market_snapshots WHERE id LIKE 'aggregation-%'").run();
     db.prepare("DELETE FROM watchlist_items WHERE watchlist_id = ?").run(WATCHLIST_ID);
     db.prepare("DELETE FROM watchlists WHERE id = ? OR user_id = ?").run(WATCHLIST_ID, USER_ID);
