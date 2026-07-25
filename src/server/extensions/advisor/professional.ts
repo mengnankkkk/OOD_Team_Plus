@@ -283,7 +283,7 @@ function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEv
         phase: "specialist",
         agent: event.agent,
         title: `${event.agent} 正在形成可公开结论`,
-        content: conclusion.slice(0, 500),
+        content: conclusion,
       },
     });
     return;
@@ -297,7 +297,7 @@ function persistModelStreamEvent(analysisId: string, event: ChiefAdvisorStreamEv
       payload: {
         phase: "decision",
         title: "Chief Advisor 正在整合最终建议",
-        content: summary.slice(0, 500),
+        content: summary,
       },
     });
   }
@@ -806,8 +806,8 @@ function pandaSymbol(symbol: string, assetType: string, market: string): string 
   if (normalized.includes(".")) return normalized;
   if (!assetType.toUpperCase().includes("STOCK")) return normalized;
   if (market.toUpperCase() === "SH" || market.toUpperCase() === "SZ" || market.toUpperCase() === "OF") return `${normalized}.${market.toUpperCase()}`;
-  if (/^(?:5|6|68)\d{4}$/u.test(normalized)) return `${normalized}.SH`;
-  if (/^(?:0|3)\d{5}$/u.test(normalized)) return `${normalized}.SZ`;
+  if (/^6\d{5}$/u.test(normalized)) return `${normalized}.SH`;
+  if (/^(?:0|2|3)\d{5}$/u.test(normalized)) return `${normalized}.SZ`;
   return normalized;
 }
 

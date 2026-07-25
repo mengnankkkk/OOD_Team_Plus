@@ -15,7 +15,7 @@ type StreamStarted = {
 type AdvisorStreamObserver = {
   onSessionId?: (sessionId: string) => void;
   onProgress?: (message: string) => void;
-  onThinking?: (message: string) => void;
+  onThinking?: (message: { key: string; title: string; content: string }) => void;
   onDelta?: (delta: string) => void;
 };
 
@@ -165,7 +165,7 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
           return;
         }
         if (type === "advisor.thinking") {
-          observer.onThinking?.(streamThinkingLabel(payload));
+          observer.onThinking?.(streamThinkingUpdate(payload));
           return;
         }
         observer.onProgress?.(streamLabel(type, payload));
@@ -205,11 +205,11 @@ function streamLabel(type: string, payload: Record<string, unknown>): string {
   return "顾问 Agent 正在处理";
 }
 
-function streamThinkingLabel(payload: Record<string, unknown>): string {
+function streamThinkingUpdate(payload: Record<string, unknown>): { key: string; title: string; content: string } {
   const title = typeof payload.title === "string" ? payload.title : "顾问正在整理过程";
   const content = typeof payload.content === "string" ? payload.content : "";
-  if (!content) return title;
-  return `${title}：${content}`;
+  const agent = typeof payload.agent === "string" ? payload.agent : "decision";
+  return { key: agent, title, content };
 }
 
 async function waitForAssistantMessage(sessionId: string, analysisId: string): Promise<OnboardingMessage | null> {

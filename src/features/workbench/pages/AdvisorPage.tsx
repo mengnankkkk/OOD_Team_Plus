@@ -272,7 +272,7 @@ const AdvisorPage = () => {
         id: streamMessageId,
         role: "advisor",
         content: "",
-        metadata: { streaming: true, streamStatus: "正在创建对话", thinkingSteps: ["正在创建对话"] },
+        metadata: { streaming: true, streamStatus: "正在创建对话", thinkingSteps: [{ key: "status", title: "顾问", content: "正在创建对话" }] },
         createdAt: new Date().toISOString(),
         sessionId: currentSessionId,
       },
@@ -298,16 +298,19 @@ const AdvisorPage = () => {
             setMessages((items) => items.map((item) => {
               if (item.id !== streamMessageId) return item;
               const metadata = item.metadata as { thinkingSteps?: unknown };
-              const existing = Array.isArray(metadata.thinkingSteps) ? metadata.thinkingSteps.filter((value): value is string => typeof value === "string") : [];
-              const title = step.split("：")[0];
-              const last = existing.at(-1);
-              const next = last && last.split("：")[0] === title
-                ? [...existing.slice(0, -1), step]
-                : [...existing, step].slice(-8);
+              const existing = Array.isArray(metadata.thinkingSteps)
+                ? metadata.thinkingSteps.filter((value): value is { key: string; title: string; content: string } => (
+                  Boolean(value) && typeof value === "object" && typeof (value as { key?: unknown }).key === "string"
+                  && typeof (value as { title?: unknown }).title === "string" && typeof (value as { content?: unknown }).content === "string"
+                ))
+                : [];
+              const next = existing.some((value) => value.key === step.key)
+                ? existing.map((value) => value.key === step.key ? step : value)
+                : [...existing, step];
               return {
                 ...item,
                 content: item.content || "顾问正在形成公开过程摘要…",
-                metadata: { ...item.metadata, streaming: true, thinkingSteps: next, streamStatus: step },
+                metadata: { ...item.metadata, streaming: true, thinkingSteps: next, streamStatus: `${step.title}${step.content ? `：${step.content}` : ""}` },
               };
             }));
           },
@@ -532,7 +535,7 @@ const AdvisorPage = () => {
           ) : (
             <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
-                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: string[] };
+                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: Array<{ key: string; title: string; content: string }> };
                 return (
                   <li key={msg.id} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role !== "user" && (
@@ -564,9 +567,9 @@ const AdvisorPage = () => {
                             {Array.isArray(meta.thinkingSteps) && meta.thinkingSteps.length > 0 ? (
                               <ul className="mt-2 space-y-1 text-blue-800/90">
                                 {meta.thinkingSteps.map((step, index) => (
-                                  <li key={`${index}-${step}`} className="line-clamp-2 flex gap-1.5">
+                                  <li key={`${step.key}-${index}`} className="flex gap-1.5">
                                     <span className="mt-[0.55em] size-1 shrink-0 rounded-full bg-blue-500/70" />
-                                    <span>{step}</span>
+                                    <span>{step.title}{step.content ? `：${step.content}` : ""}</span>
                                   </li>
                                 ))}
                               </ul>
