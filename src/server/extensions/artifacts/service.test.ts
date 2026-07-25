@@ -112,7 +112,8 @@ describe("buildFinancialReportMarkdown", () => {
     expect(markdown).toContain("### 组合事实");
     expect(markdown).toContain("### 行情与技术观察");
     expect(markdown).toContain("### 基本面与消息面");
-    expect(markdown).toContain("### 反方证据");
+    expect(markdown).toContain("### 多方证据");
+    expect(markdown).toContain("### 空方证据");
     expect(markdown).toContain("### 为什么对应这个动作");
     expect(markdown).toContain("本次资产报告流程未执行基本面和消息面检索");
     expect(markdown).toContain("| 证券代码 | 持仓名称 | 当前市值（元） | 浮动盈亏（元） | 组合占比 |");

@@ -111,6 +111,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           dataAsOf: String(item.created_at),
           timeBasis: "EVIDENCE_CREATED" as const,
         };
+        const linkedSources = (linksByEvidence.get(String(item.id)) ?? []).map((source) => formatEvidenceSource(source, time));
+        const publicResearchSource = String(item.source_url ?? "").match(/^https?:\/\//iu)
+          ? [{
+              type: "PUBLIC_RESEARCH",
+              name: item.source ?? "公开检索来源",
+              reference: item.source_url,
+              toolCallId: null,
+              marketSnapshotId: null,
+              dataAsOf: time.dataAsOf,
+              timeBasis: time.timeBasis,
+              freshness: null,
+              metric: null,
+              excerpt: item.summary ?? item.statement ?? null,
+            }]
+          : [];
         return {
           id: item.id,
           category: String(item.kind).toUpperCase(),
@@ -121,7 +136,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           dataAsOf: time.dataAsOf,
           timeBasis: time.timeBasis,
           confidenceBps: item.confidence_bps ?? null,
-          sources: (linksByEvidence.get(String(item.id)) ?? []).map((source) => formatEvidenceSource(source, time)),
+          sources: [...linkedSources, ...publicResearchSource],
         };
       }),
       agentTrace: agentRuns.map((item) => ({

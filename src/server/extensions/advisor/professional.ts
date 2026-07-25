@@ -87,6 +87,7 @@ type ResearchState = {
   fundamentalSearch?: {
     query: string;
     searchId: string;
+    searchIds?: string[];
     results: ResearchSearchResult[];
     sourceStatuses: Array<{ adapter: string; status: string; resultCount: number; error?: { code: string; message: string; retryable: boolean } | null }>;
   };
@@ -617,6 +618,7 @@ function buildChiefAdvisorContext(input: {
       quotes: input.research.quotes,
       riskMetrics: input.research.riskMetrics,
       correlations: input.research.correlations,
+      fundamentalSearch: input.research.fundamentalSearch ?? null,
       study: input.research.study ?? null,
     },
     semanticTools: summarizeAdvisorSemanticToolsContext(input.semanticContext),
@@ -1542,20 +1544,117 @@ function formatAnswer(
   ].filter(Boolean);
   const marketEvidence = formatMarketEvidence(researchState);
   const fundamentalEvidence = formatFundamentalEvidence(researchState.fundamentalSearch);
+  const researchEvidence = researchState.fundamentalSearch?.results.slice(0, 3).map((result) => {
+    const snippet = result.snippet.replace(/\s+/gu, " ").trim().slice(0, 160);
+    return `基本面/消息面公开线索：${result.title}${snippet ? `，${snippet}` : ""}（来源：${translateSearchAdapter(result.adapter)}）`;
+  }) ?? [];
+  const supportEvidence = uniqueEvidence([
+    ...researchEvidence,
+    ...decision.rationales,
+    ...(profileFinding?.supportEvidence ?? []),
+    ...marketEvidence,
+    risk?.conclusion ?? "",
+  ]).slice(0, 5);
+  const counterEvidence = uniqueEvidence([
+    ...decision.counterEvidence,
+    ...findings.flatMap((finding) => finding.counterEvidence),
+  ]).slice(0, 5);
   return [
-    `建议状态：${status}；建议动作：${decision.action}`,
-    `核心结论：${decision.summary}`,
+    `建议状态：${translateAdvisorStatus(status)}；建议动作：${translateAdvisorAction(decision.action)}`,
+    `核心结论：${translateReportText(decision.summary)}`,
     `用户画像与投资目标依据：${profileEvidence.join("；") || "本次未获得可用的用户画像和投资目标证据"}`,
     `行情与技术观察：${marketEvidence.join("；") || "本次未获得可用的行情或技术面证据"}`,
     `基本面与消息面依据：${fundamentalEvidence}`,
     `组合影响：${decision.portfolioImpact}`,
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
-    `反方证据：${decision.counterEvidence.join("；")}`,
+    `多方证据：${supportEvidence.join("；") || "本次未形成明确的多方证据"}`,
+    `空方证据：${counterEvidence.join("；") || "本次未形成明确的空方证据"}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
     ...(publicationReasons.length ? [`发布门保留原因：${publicationReasons.join("；")}`] : []),
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
+}
+
+function translateAdvisorStatus(status: PublicationStatus): string {
+  if (status === "ACTIVE") return "可以继续执行";
+  if (status === "BLOCKED") return "暂不执行";
+  return "谨慎参考";
+}
+
+function translateAdvisorAction(action: AdvisorDecision["action"]): string {
+  return {
+    WATCH: "先观察，不急着买卖",
+    TRIAL_BUY: "小额试仓，先验证判断",
+    SCALE_IN: "分批加仓，不一次性投入",
+    HOLD: "继续持有，暂不调整",
+    STOP_ADDING: "停止加仓，先控制集中度",
+    SCALE_OUT: "分批减仓，逐步降低风险",
+    EXIT: "清仓退出，停止继续承担该风险",
+  }[action];
+}
+
+function uniqueEvidence(items: string[]): string[] {
+  return [...new Set(items.map((item) => translateReportText(item).trim()).filter(Boolean))];
+}
+
+function formatMarketPrice(value: string | null): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "暂无";
+}
+
+function formatRatioAsPercent(value: string | null): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(2)}%` : "暂无法计算";
+}
+
+function formatMarketDate(value: string | null): string {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/u);
+  return match ? `${match[1]}年${Number(match[2])}月${Number(match[3])}日` : value ?? "未知日期";
+}
+
+function translateSearchAdapter(adapter: string): string {
+  return {
+    WEB: "公开网页",
+    MCP: "研究搜索服务",
+    RSS: "资讯订阅",
+    KNOWLEDGE_BASE: "内部知识库",
+  }[adapter.toUpperCase()] ?? "外部研究来源";
+}
+
+function translateReportText(value: string): string {
+  return value
+    .replaceAll("Agent", "智能顾问")
+    .replaceAll("PandaData", "行情数据服务")
+    .replaceAll("LATEST_TRADING_DAY", "最近交易日收盘数据")
+    .replaceAll("LIVE_FRESH", "最新实时行情")
+    .replaceAll("STALE", "较旧行情")
+    .replaceAll("UNAVAILABLE", "暂无可用行情")
+    .replaceAll("NOT_REQUIRED", "本次不需要外部行情")
+    .replaceAll("DEGRADED", "谨慎参考")
+    .replaceAll("ACTIVE", "可以继续执行")
+    .replaceAll("BLOCKED", "暂不执行")
+    .replaceAll("STOP_ADDING", "停止加仓")
+    .replaceAll("SCALE_IN", "分批加仓")
+    .replaceAll("SCALE_OUT", "分批减仓")
+    .replaceAll("TRIAL_BUY", "小额试仓")
+    .replaceAll("WATCH", "观察")
+    .replaceAll("HOLD", "继续持有")
+    .replaceAll("EXIT", "清仓退出")
+    .replaceAll("HHI", "集中度指标")
+    .replaceAll("R1", "保守型")
+    .replaceAll("R2", "谨慎型")
+    .replaceAll("R3", "稳健型")
+    .replaceAll("R4", "成长型")
+    .replaceAll("R5", "进取型")
+    .replaceAll("BALANCED", "平衡型")
+    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF")
+    .replaceAll("INDEX", "指数基金")
+    .replaceAll("SECTOR_ETF", "行业 ETF")
+    .replaceAll("STOCK", "个股")
+    .replaceAll("SHORT", "短线")
+    .replaceAll("MEDIUM", "中线")
+    .replaceAll("LONG", "长线");
 }
 
 function formatMarketEvidence(research: ResearchState): string[] {
@@ -1578,37 +1677,93 @@ function formatMarketEvidence(research: ResearchState): string[] {
 function formatFundamentalEvidence(search: ResearchState["fundamentalSearch"]): string {
   if (!search) return "本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。";
   if (!search.results.length) {
-    const failed = search.sourceStatuses.filter((source) => source.status === "FAILED").map((source) => source.adapter);
+    const failed = search.sourceStatuses
+      .filter((source) => source.status === "FAILED")
+      .map((source) => translateSearchAdapter(source.adapter));
     return failed.length
       ? `已执行基本面和消息面检索，但 ${failed.join("、")} 来源暂不可用，当前未返回可用结果；本报告未据此判断。`
       : "已执行基本面和消息面检索，但当前未返回可用结果；本报告未据此判断。";
   }
+  const failed = search.sourceStatuses
+    .filter((source) => source.status === "FAILED")
+    .map((source) => translateSearchAdapter(source.adapter));
   const highlights = search.results.slice(0, 4).map((result) => {
     const snippet = result.snippet.replace(/\s+/gu, " ").trim().slice(0, 180);
     return `${result.title}${snippet ? `：${snippet}` : ""}（来源：${translateSearchAdapter(result.adapter)}）`;
   });
-  return `已执行基本面和消息面检索，返回 ${search.results.length} 条公开信息。以下为可核对线索，不等同于已审计的财务结论：${highlights.join("；")}`;
-}
-
-function translateSearchAdapter(adapter: string): string {
-  return { WEB: "公开网页", MCP: "研究搜索服务", RSS: "资讯订阅", KNOWLEDGE_BASE: "内部知识库" }[adapter] ?? adapter;
+  return [
+    `已执行基本面和消息面检索，返回 ${search.results.length} 条公开信息。以下为可核对线索，不等同于已审计的财务结论：${highlights.join("；")}`,
+    failed.length ? `其中 ${failed.join("、")} 来源暂不可用，已使用其他可用来源继续分析。` : "",
+  ].filter(Boolean).join(" ");
 }
 
 async function searchFundamentalAndNews(
-  input: { userId: string; analysisId: string },
+  input: { userId: string; analysisId: string; rootAnalysisId?: string },
   target: Instrument | null,
   holdings: Holding[],
 ): Promise<NonNullable<ResearchState["fundamentalSearch"]>> {
-  const instruments = target ? [target] : holdings;
-  const names = instruments.slice(0, 8).map((instrument) => `${instrument.name}（${instrument.symbol}）`);
-  const query = `${names.join("、")} 基本面 财务 业绩 公告 新闻 行业`;
-  const result = await runResearchSearch({
-    userId: input.userId,
-    query,
-    adapters: ["WEB", "MCP", "RSS"],
-    maximumResults: 5,
-    timeoutMs: 1_500,
+  type SearchRun = Awaited<ReturnType<typeof runResearchSearch>>;
+  const instruments = (target ? [target] : holdings).slice(0, 8);
+  const queries = instruments.map((instrument) => ({
+    instrument,
+    query: `${instrument.name} ${instrument.symbol} 基本面 财务 业绩 公告 新闻 估值 行业`,
+  }));
+  const results: SearchRun[] = await Promise.all(queries.map(async ({ query }): Promise<SearchRun> => {
+    try {
+      return await runResearchSearch({
+        userId: input.userId,
+        query,
+        adapters: ["WEB", "MCP", "RSS"],
+        maximumResults: 5,
+        timeoutMs: 4_000,
+        rootRunId: input.rootAnalysisId ?? input.analysisId,
+      });
+    } catch (error) {
+      return {
+        searchId: "",
+        analysisId: "",
+        resultCount: 0,
+        status: "FAILED" as const,
+        results: [],
+        sourceStatuses: (["WEB", "MCP", "RSS"] as const).map((adapter) => ({
+          adapter,
+          status: "FAILED",
+          resultCount: 0,
+          error: {
+            code: `${adapter}_UNAVAILABLE`,
+            message: error instanceof Error ? error.message : "Search source failed",
+            retryable: true,
+          },
+        })),
+      };
+    }
+  }));
+  const searchIds = results.map((result) => result.searchId).filter(Boolean);
+  const query = queries.map(({ query: item }) => item).join("；");
+  const seen = new Set<string>();
+  const mergedResults = results.flatMap((result) => result.results).filter((result) => {
+    const key = `${result.url}|${result.title}|${result.snippet}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 24);
+  const sourceStatuses: NonNullable<ResearchState["fundamentalSearch"]>["sourceStatuses"] = (["WEB", "MCP", "RSS"] as const).map((adapter) => {
+    const groups = results.flatMap((result) => result.sourceStatuses).filter((source) => source.adapter === adapter);
+    const resultCount = groups.reduce((total, source) => total + source.resultCount, 0);
+    const failed = groups.find((source) => source.status === "FAILED" && source.error);
+    return {
+      adapter,
+      status: resultCount > 0 ? "SUCCEEDED" : failed ? "FAILED" : "SUCCEEDED",
+      resultCount,
+      error: failed?.error ?? null,
+    };
   });
+  const result = {
+    searchId: searchIds[0] ?? "",
+    searchIds,
+    results: mergedResults,
+    sourceStatuses,
+  };
   persistSseEvent({
     analysisId: input.analysisId,
     type: "advisor.thinking",
@@ -1616,30 +1771,17 @@ async function searchFundamentalAndNews(
       phase: "fundamental_news_research",
       title: "正在检索基本面与消息面",
       content: result.results.length ? `已返回 ${result.results.length} 条公开信息线索` : "检索完成，但当前没有可用公开信息",
-      searchId: result.searchId,
+      searchId: result.searchId || null,
+      searchIds: result.searchIds,
     },
   });
   return {
     query,
     searchId: result.searchId,
+    searchIds: result.searchIds,
     results: result.results,
     sourceStatuses: result.sourceStatuses,
   };
-}
-
-function formatMarketPrice(value: string | null): string {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "暂无";
-}
-
-function formatRatioAsPercent(value: string | null): string {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(2)}%` : "暂无法计算";
-}
-
-function formatMarketDate(value: string | null): string {
-  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/u);
-  return match ? `${match[1]}年${Number(match[2])}月${Number(match[3])}日` : value ?? "未知日期";
 }
 
 function formatProfileFacts(profile: Profile | undefined): string[] {

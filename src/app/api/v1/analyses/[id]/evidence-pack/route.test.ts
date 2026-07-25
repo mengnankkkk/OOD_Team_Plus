@@ -63,6 +63,13 @@ describe("GET /api/v1/analyses/:id/evidence-pack", () => {
         evidence[1], "low", evidence[2], evidence[2], evidence[2], "PANDADATA", "2026-07-25T08:00:02.000Z",
       );
     }
+    db.prepare(`INSERT INTO evidence_items
+      (id,user_id,agent_run_id,kind,stance,quality,title,summary,statement,source,source_url,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "evidence-research", userId, "analysis-evidence-data", "research_fact", "support", "medium",
+      "AAPL 业绩公告", "公司发布最新业绩公告", "公司发布最新业绩公告", "WEB", "https://example.com/aapl-earnings",
+      "2026-07-25T08:00:02.000Z",
+    );
     db.prepare(`INSERT INTO recommendations
       (id,user_id,analysis_id,action,suitability,summary,position_range_json,add_conditions_json,reasons_json,counter_evidence_json,risks_json,alternatives_json,compliance_json,provenance_json,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
@@ -108,6 +115,13 @@ describe("GET /api/v1/analyses/:id/evidence-pack", () => {
         id: "evidence-missing",
         dataAsOf: "2026-07-25T08:00:02.000Z",
         timeBasis: "EVIDENCE_CREATED",
+      }),
+      expect.objectContaining({
+        id: "evidence-research",
+        sources: [expect.objectContaining({
+          type: "PUBLIC_RESEARCH",
+          reference: "https://example.com/aapl-earnings",
+        })],
       }),
     ]));
   });

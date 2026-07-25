@@ -479,7 +479,14 @@ export function buildFinancialReportMarkdown(
   const risks = recommendation?.risks ?? [];
   const counterEvidence = recommendation?.counterEvidence?.length
     ? recommendation.counterEvidence
-    : fields.counterEvidence ? [fields.counterEvidence] : [];
+    : [fields.counterEvidence, fields.bearEvidence].filter(Boolean);
+  const supportEvidence = [
+    ...(recommendation?.reasons ?? []),
+    ...(fields.supportEvidence ? [fields.supportEvidence] : []),
+    fields.fundamental && !/未执行|未返回可用结果|没有可用/iu.test(fields.fundamental)
+      ? [translateFundamentalReportText(fields.fundamental)]
+      : [],
+  ].flat().filter(Boolean);
   const invalidation = recommendation?.invalidation ?? "";
   const portfolioEvidence = [
     rows.length ? "" : "本次未获得可用的持仓明细。",
@@ -530,8 +537,11 @@ export function buildFinancialReportMarkdown(
     "### 基本面与消息面",
     ...toBulletLines(fundamentalEvidence, "本次未获得可用的基本面或消息面证据，未据此做判断。"),
     "",
-    "### 反方证据",
-    ...toBulletLines([...counterEvidence, ...risks].filter(Boolean), "本次未记录额外的反方证据；市场变化仍可能使判断失效。"),
+    "### 多方证据",
+    ...toBulletLines(supportEvidence, "本次未形成足够的多方证据，建议先观察并补充信息。"),
+    "",
+    "### 空方证据",
+    ...toBulletLines([...counterEvidence, ...risks].filter(Boolean), "本次未记录足够的空方证据；市场变化仍可能使判断失效。"),
     "",
     "### 为什么对应这个动作",
     ...toBulletLines(actionEvidence, "暂未记录足够的动作依据。"),
@@ -561,7 +571,7 @@ function parseAnswerFields(answer: string): Record<string, string> {
     .map((line) => line.match(new RegExp(`^${label}[：:]\\s*(.+)$`, "u"))?.[1]?.trim() ?? "")
     .find(Boolean) ?? "";
   return {
-    action: answer.match(/建议动作[：:]\s*([A-Z_]+)/u)?.[1] ?? "",
+    action: answer.match(/建议动作[：:]\s*(.+)$/mu)?.[1]?.trim() ?? "",
     conclusion: valueFor("核心结论"),
     profile: valueFor("用户画像与投资目标依据") || valueFor("本次画像假设"),
     research: valueFor("数据研究"),
@@ -570,14 +580,27 @@ function parseAnswerFields(answer: string): Record<string, string> {
     portfolioImpact: valueFor("组合影响"),
     portfolioFacts: valueFor("组合事实"),
     risk: valueFor("风险复核"),
+    supportEvidence: valueFor("多方证据"),
     counterEvidence: valueFor("反方证据"),
+    bearEvidence: valueFor("空方证据"),
     compliance: valueFor("合规结论"),
   };
 }
 
 function extractAction(value: string): RecommendationDraft["action"] {
   const actions: RecommendationDraft["action"][] = ["WATCH", "TRIAL_BUY", "SCALE_IN", "HOLD", "STOP_ADDING", "SCALE_OUT", "EXIT"];
-  return actions.find((action) => value.includes(action)) ?? "WATCH";
+  const labels: Record<string, RecommendationDraft["action"]> = {
+    "观察": "WATCH",
+    "小额试仓": "TRIAL_BUY",
+    "分批加仓": "SCALE_IN",
+    "继续持有": "HOLD",
+    "停止加仓": "STOP_ADDING",
+    "分批减仓": "SCALE_OUT",
+    "清仓退出": "EXIT",
+  };
+  return actions.find((action) => value.includes(action))
+    ?? Object.entries(labels).find(([label]) => value.includes(label))?.[1]
+    ?? "WATCH";
 }
 
 function translateStatus(status: string): string {

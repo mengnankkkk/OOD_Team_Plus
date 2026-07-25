@@ -31,12 +31,16 @@ export function buildMissingEvidence(input: {
 }): string[] {
   const missing = new Set<string>();
   if (!input.evidence.length) missing.add("该分析尚未写入结构化证据。");
-  if (!input.evidence.some((item) => String(item.stance).toLowerCase() === "counter")) missing.add("缺少反方证据。");
+  if (!input.evidence.some((item) => String(item.stance).toLowerCase() === "support")) missing.add("缺少多方证据。");
+  if (!input.evidence.some((item) => ["counter", "bear"].includes(String(item.stance).toLowerCase()))) missing.add("缺少空方证据。");
   if (input.toolCalls.length && !input.skillRuns.length) missing.add("工具调用没有关联 Skill Run。");
   if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "succeeded") && !input.marketSnapshots.length) missing.add("成功的数据 Skill 没有关联市场快照。");
   if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "failed") && !input.marketSnapshots.length) missing.add("缺少可用市场行情。");
   const linkedIds = new Set(input.evidenceLinks.map((item) => String(item.evidence_id)));
-  if (input.evidence.some((item) => !linkedIds.has(String(item.id)))) missing.add("部分证据缺少可追溯的数据来源。");
+  if (input.evidence.some((item) => {
+    if (linkedIds.has(String(item.id))) return false;
+    return !/^https?:\/\//iu.test(String(item.source_url ?? ""));
+  })) missing.add("部分证据缺少可追溯的数据来源。");
   for (const item of input.evidence) {
     if (String(item.stance).toLowerCase() === "missing") {
       const statement = String(item.statement ?? item.summary ?? item.title ?? "").trim();
@@ -62,6 +66,7 @@ const PUBLIC_AGENT_PURPOSES: Record<string, string> = {
   chief_advisor: "统筹画像、数据、组合风险、建议与合规结论",
   profile_context: "核对用户画像、目标、资金约束与持仓事实",
   data_research: "核验市场数据、估值与资讯证据",
+  research_search: "检索基本面、消息面与公开来源证据",
   portfolio_risk: "评估集中度、回撤约束与压力情景",
   recommendation: "汇总证据并形成候选建议方案",
   compliance_reviewer: "检查证据完整性、适当性与发布条件",

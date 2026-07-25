@@ -16,13 +16,33 @@ const searchAdapters: Record<ResearchAdapter, (query: string, filters: SearchFil
   RSS: searchRSS,
 };
 
-export async function runResearchSearch(input: { userId: string; query: string; adapters: ResearchAdapter[]; maximumResults: number; timeoutMs?: number }) {
+export async function runResearchSearch(input: {
+  userId: string;
+  query: string;
+  adapters: ResearchAdapter[];
+  maximumResults: number;
+  timeoutMs?: number;
+  rootRunId?: string;
+  sessionId?: string;
+}) {
   const searchId = createId("search");
   const analysisId = createId("analysis");
   const now = isoNow();
   const db = getDatabase();
   db.prepare("INSERT INTO research_searches (id,user_id,query_text,adapters_json,status,created_at) VALUES (?,?,?,?,?,?)").run(searchId, input.userId, input.query, json(input.adapters), "running", now);
-  db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,result_json) VALUES (?,?,?,?,?,?)").run(analysisId, input.userId, "research_search", "running", now, json({ searchId }));
+  db.prepare(`INSERT INTO agent_runs
+    (id,user_id,type,status,session_id,root_run_id,agent_type,created_at,result_json)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    analysisId,
+    input.userId,
+    "research_search",
+    "running",
+    input.sessionId ?? null,
+    input.rootRunId ?? null,
+    "research_search",
+    now,
+    json({ searchId }),
+  );
   db.close();
   const collected = await Promise.all(input.adapters.map(async (adapter) => {
     try {
@@ -37,7 +57,22 @@ export async function runResearchSearch(input: { userId: string; query: string; 
     for (const result of group.results) {
       resultCount += 1;
       write.prepare("INSERT INTO research_results (id,search_id,adapter,title,url,snippet,citation,created_at) VALUES (?,?,?,?,?,?,?,?)").run(createId("research_result"), searchId, group.adapter.toLowerCase(), result.title, result.url, result.snippet.slice(0, 500), result.url, now);
-      write.prepare("INSERT INTO evidence_items (id,user_id,kind,title,summary,source,source_url,created_at) VALUES (?,?,?,?,?,?,?,?)").run(createId("evidence"), input.userId, "RESEARCH", result.title, result.snippet.slice(0, 500), group.adapter, result.url, now);
+      write.prepare(`INSERT INTO evidence_items
+        (id,user_id,agent_run_id,kind,stance,quality,title,summary,statement,source,source_url,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        createId("evidence"),
+        input.userId,
+        analysisId,
+        "research_fact",
+        "support",
+        "medium",
+        result.title,
+        result.snippet.slice(0, 500),
+        result.snippet.slice(0, 500),
+        group.adapter,
+        result.url,
+        now,
+      );
     }
     write.prepare("INSERT INTO research_search_sources (id,search_id,adapter,status,result_count,error_json,completed_at) VALUES (?,?,?,?,?,?,?)").run(createId("search_source"), searchId, group.adapter.toLowerCase(), group.status, group.results.length, group.error ? json(group.error) : null, isoNow());
     persistSseEvent({ analysisId, type: "search.source.completed", payload: { searchId, adapter: group.adapter, resultCount: group.results.length, status: group.status } });
