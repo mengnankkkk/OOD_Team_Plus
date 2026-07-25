@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, foreignKey, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 import { users } from "./core";
 
@@ -60,6 +60,7 @@ export const a2aContexts = sqliteTable(
     deletedAt: text("deleted_at"),
   },
   (t) => [
+    uniqueIndex("uq_a2a_contexts_id_client").on(t.id, t.externalClientId),
     uniqueIndex("uq_a2a_contexts_execution_user").on(t.executionUserId),
     check("chk_a2a_contexts_status", sql`${t.status} IN ('ACTIVE','COMPLETED','ARCHIVED','EXPIRED')`),
     index("idx_a2a_contexts_client_expiry").on(t.externalClientId, t.expiresAt),
@@ -71,7 +72,7 @@ export const a2aTasks = sqliteTable(
   {
     id: text("id").primaryKey(),
     externalClientId: text("external_client_id").notNull().references(() => a2aExternalClients.id, { onDelete: "cascade" }),
-    contextId: text("context_id").notNull().references(() => a2aContexts.id, { onDelete: "cascade" }),
+    contextId: text("context_id").notNull(),
     capabilityId: text("capability_id").notNull(),
     operation: text("operation").notNull(),
     clientMessageId: text("client_message_id").notNull(),
@@ -92,6 +93,11 @@ export const a2aTasks = sqliteTable(
   },
   (t) => [
     uniqueIndex("uq_a2a_tasks_client_message").on(t.externalClientId, t.clientMessageId),
+    foreignKey({
+      columns: [t.contextId, t.externalClientId],
+      foreignColumns: [a2aContexts.id, a2aContexts.externalClientId],
+      name: "fk_a2a_tasks_context_client",
+    }).onDelete("cascade"),
     check("chk_a2a_tasks_status", sql`${t.status} IN ('submitted','working','input-required','completed','canceled','failed')`),
     index("idx_a2a_tasks_client_created").on(t.externalClientId, sql`${t.createdAt} DESC`, sql`${t.id} DESC`),
     index("idx_a2a_tasks_context_created").on(t.contextId, t.createdAt, t.id),

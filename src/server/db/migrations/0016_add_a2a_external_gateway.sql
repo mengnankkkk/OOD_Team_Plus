@@ -39,7 +39,7 @@ CREATE TABLE a2a_contexts (
 CREATE TABLE a2a_tasks (
   id TEXT PRIMARY KEY,
   external_client_id TEXT NOT NULL REFERENCES a2a_external_clients(id) ON DELETE CASCADE,
-  context_id TEXT NOT NULL REFERENCES a2a_contexts(id) ON DELETE CASCADE,
+  context_id TEXT NOT NULL,
   capability_id TEXT NOT NULL,
   operation TEXT NOT NULL,
   client_message_id TEXT NOT NULL,
@@ -55,7 +55,11 @@ CREATE TABLE a2a_tasks (
   completed_at TEXT,
   cancelled_at TEXT,
   expires_at TEXT NOT NULL,
-  UNIQUE(external_client_id, client_message_id)
+  UNIQUE(external_client_id, client_message_id),
+  CONSTRAINT fk_a2a_tasks_context_client
+    FOREIGN KEY (context_id, external_client_id)
+    REFERENCES a2a_contexts(id, external_client_id)
+    ON DELETE CASCADE
 );
 
 CREATE TABLE a2a_task_events (
@@ -110,6 +114,8 @@ CREATE INDEX idx_a2a_tokens_client_active
   ON a2a_external_client_tokens(external_client_id, revoked_at);
 CREATE INDEX idx_a2a_contexts_client_expiry
   ON a2a_contexts(external_client_id, expires_at);
+CREATE UNIQUE INDEX uq_a2a_contexts_id_client
+  ON a2a_contexts(id, external_client_id);
 CREATE INDEX idx_a2a_tasks_client_created
   ON a2a_tasks(external_client_id, created_at DESC, id DESC);
 CREATE INDEX idx_a2a_tasks_context_created
