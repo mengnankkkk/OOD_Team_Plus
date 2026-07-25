@@ -1,6 +1,11 @@
 import { NextRequest } from "next/server";
 
-import { authenticateA2A, A2A_SERVICE_USER_ID } from "@/server/a2a/auth";
+import {
+  authenticateA2A,
+  A2A_SERVICE_USER_ID,
+  requireA2ACapability,
+} from "@/server/a2a/auth";
+import { A2APublicError } from "@/server/a2a/contracts";
 import { getDatabase } from "@/server/http/context";
 import { getSseEvents } from "@/server/extensions/sse/event-persister";
 
@@ -8,13 +13,38 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const authFailure = authenticateA2A(req);
-  if (authFailure) return Response.json({ error: authFailure }, { status: authFailure.status, headers: { "content-type": "application/a2a+json; charset=utf-8" } });
+  const authentication = authenticateA2A(req);
+  if (!authentication.ok) return a2aError(authentication.failure);
+  try {
+    requireA2ACapability(authentication.principal, "tasks_read");
+  } catch (error) {
+    if (error instanceof A2APublicError) {
+      return a2aError({
+        status: error.status,
+        code: error.code,
+        message: error.message,
+      });
+    }
+    throw error;
+  }
+  if (authentication.principal.clientId !== "a2a-legacy-client") {
+    return a2aError({
+      status: 404,
+      code: "RESOURCE_NOT_FOUND",
+      message: "A2A analysis not found",
+    });
+  }
   const { id } = await params;
   const db = getDatabase();
   const run = db.prepare("SELECT id,status FROM agent_runs WHERE id=? AND user_id=?").get(id, A2A_SERVICE_USER_ID) as { id: string; status: string } | undefined;
   db.close();
-  if (!run) return Response.json({ error: { code: "RESOURCE_NOT_FOUND", message: "A2A analysis not found" } }, { status: 404, headers: { "content-type": "application/a2a+json; charset=utf-8" } });
+  if (!run) {
+    return a2aError({
+      status: 404,
+      code: "RESOURCE_NOT_FOUND",
+      message: "A2A analysis not found",
+    });
+  }
 
   const encoder = new TextEncoder();
   const initialLastEventId = req.headers.get("Last-Event-ID");
@@ -81,4 +111,14 @@ function formatEvent(event: ReturnType<typeof getSseEvents>[number]): string {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function a2aError(error: { status: number; code: string; message: string }): Response {
+  return Response.json(
+    { error: { code: error.code, message: error.message } },
+    {
+      status: error.status,
+      headers: { "content-type": "application/a2a+json; charset=utf-8" },
+    },
+  );
 }

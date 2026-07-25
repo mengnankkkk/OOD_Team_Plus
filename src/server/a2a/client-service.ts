@@ -76,6 +76,7 @@ export function updateExternalClient(
   const db = getDatabase();
   const now = isoNow();
   try {
+    let updated: ExternalClientView | undefined;
     const transaction = db.transaction(() => {
       const current = db.prepare(
         "SELECT row_version FROM a2a_external_clients WHERE id=?",
@@ -117,9 +118,10 @@ export function updateExternalClient(
         },
         now,
       });
+      updated = requireClientRow(db, clientId);
     });
     transaction();
-    return requireClientRow(db, clientId);
+    return requireTransactionResult(updated);
   } finally {
     db.close();
   }

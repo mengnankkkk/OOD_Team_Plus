@@ -18,6 +18,10 @@ export type A2AAuthFailure = {
   message: string;
 };
 
+export type A2AAuthResult =
+  | { ok: true; principal: ExternalClientPrincipal }
+  | { ok: false; failure: A2AAuthFailure };
+
 type AuthTokenRow = {
   token_id: string;
   token_hash: string;
@@ -31,15 +35,44 @@ const rateLimitWindows = new Map<string, number[]>();
 
 export { A2APublicError as A2AAuthError };
 
-export function authenticateA2A(request: NextRequest): A2AAuthFailure | null {
+export function authenticateA2A(request: NextRequest): A2AAuthResult {
   try {
-    authenticateExternalRequest(request);
-    return null;
+    return { ok: true, principal: authenticateExternalRequest(request) };
   } catch (error) {
     if (error instanceof A2APublicError) {
-      return { status: error.status, code: error.code, message: error.message };
+      return {
+        ok: false,
+        failure: { status: error.status, code: error.code, message: error.message },
+      };
     }
-    return { status: 500, code: "A2A_AUTH_FAILED", message: "A2A authentication failed." };
+    return {
+      ok: false,
+      failure: {
+        status: 500,
+        code: "A2A_AUTH_FAILED",
+        message: "A2A authentication failed.",
+      },
+    };
+  }
+}
+
+export function authenticateA2AForCapability(
+  request: NextRequest,
+  capability: A2ACapability,
+): A2AAuthResult {
+  const authentication = authenticateA2A(request);
+  if (!authentication.ok) return authentication;
+  try {
+    requireA2ACapability(authentication.principal, capability);
+    return authentication;
+  } catch (error) {
+    if (error instanceof A2APublicError) {
+      return {
+        ok: false,
+        failure: { status: error.status, code: error.code, message: error.message },
+      };
+    }
+    throw error;
   }
 }
 
@@ -106,7 +139,7 @@ export function requireA2ACapability(
 ): void {
   if (!principal.capabilities.includes(capability)) {
     throw new A2APublicError(
-      "A2A_CAPABILITY_FORBIDDEN",
+      "CAPABILITY_NOT_ALLOWED",
       403,
       `A2A capability '${capability}' is not enabled for this client.`,
     );
@@ -123,7 +156,7 @@ function enforceRateLimit(clientId: string, limit: number): void {
   const activeHits = (rateLimitWindows.get(clientId) ?? []).filter((hitAt) => hitAt > cutoff);
   if (activeHits.length >= limit) {
     rateLimitWindows.set(clientId, activeHits);
-    throw new A2APublicError("A2A_RATE_LIMITED", 429, "A2A client rate limit exceeded.");
+    throw new A2APublicError("RATE_LIMITED", 429, "A2A client rate limit exceeded.");
   }
   activeHits.push(now);
   rateLimitWindows.set(clientId, activeHits);

@@ -31,18 +31,18 @@ export async function POST(
       { status: 400 },
     );
   }
-  const parsed = RotateSchema.safeParse(await request.json().catch(() => ({})));
+  const rawBody = await request.text();
+  let body: unknown = {};
+  if (rawBody.length > 0) {
+    try {
+      body = JSON.parse(rawBody) as unknown;
+    } catch {
+      return validationError();
+    }
+  }
+  const parsed = RotateSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "VALIDATION_ERROR",
-          message: "Invalid token rotation request",
-          details: parsed.error.format(),
-        },
-      },
-      { status: 422 },
-    );
+    return validationError(parsed.error.format());
   }
 
   const { id } = await params;
@@ -60,4 +60,17 @@ export async function POST(
   } catch (error) {
     return a2aAdminError(error);
   }
+}
+
+function validationError(details?: unknown): NextResponse {
+  return NextResponse.json(
+    {
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Invalid token rotation request",
+        ...(details === undefined ? {} : { details }),
+      },
+    },
+    { status: 422 },
+  );
 }

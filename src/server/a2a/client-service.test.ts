@@ -18,6 +18,7 @@ import {
   requireA2ACapability,
   resetA2ARateLimitsForTests,
 } from "./auth";
+import * as httpContext from "@/server/http/context";
 import { getDatabase, isoNow } from "@/server/http/context";
 
 let dbPath = "";
@@ -111,7 +112,7 @@ describe("external A2A client service", () => {
     expect(principal).not.toBeNull();
 
     expect(() => requireA2ACapability(principal!, "research_search")).toThrow(
-      expect.objectContaining({ status: 403, code: "A2A_CAPABILITY_FORBIDDEN" }),
+      expect.objectContaining({ status: 403, code: "CAPABILITY_NOT_ALLOWED" }),
     );
 
     const disabled = updateExternalClient("admin-1", created.client.id, {
@@ -133,7 +134,7 @@ describe("external A2A client service", () => {
     expect(authenticateExternalToken(created.token)?.clientId).toBe(created.client.id);
     expect(authenticateExternalToken(created.token)?.clientId).toBe(created.client.id);
     expect(() => authenticateExternalToken(created.token)).toThrow(
-      expect.objectContaining({ status: 429, code: "A2A_RATE_LIMITED" }),
+      expect.objectContaining({ status: 429, code: "RATE_LIMITED" }),
     );
 
     resetA2ARateLimitsForTests();
@@ -185,6 +186,48 @@ describe("external A2A client service", () => {
       expect.objectContaining({ status: 404, code: "RESOURCE_NOT_FOUND" }),
     );
     expect(A2AAuthError).toBeTypeOf("function");
+  });
+
+  it("returns the updated client snapshot captured inside the transaction", () => {
+    seedAdmin("admin-1");
+    const created = createExternalClient("admin-1", {
+      name: "Snapshot partner",
+      capabilities: ["tasks_read"],
+      rateLimitPerMinute: 60,
+    });
+    const realGetDatabase = httpContext.getDatabase;
+    const getDatabaseSpy = vi.spyOn(httpContext, "getDatabase").mockImplementation(() => {
+      const db = realGetDatabase();
+      let transactionCompleted = false;
+      return {
+        ...db,
+        prepare(sql: string) {
+          if (transactionCompleted && sql.includes("FROM a2a_external_clients c")) {
+            throw new Error("client view was read after transaction commit");
+          }
+          return db.prepare(sql);
+        },
+        transaction(fn: () => void) {
+          const transaction = db.transaction(fn);
+          return () => {
+            transaction();
+            transactionCompleted = true;
+          };
+        },
+      };
+    });
+
+    const updated = updateExternalClient("admin-1", created.client.id, {
+      name: "Snapshot captured",
+      expectedVersion: created.client.version,
+    });
+
+    expect(updated).toMatchObject({
+      id: created.client.id,
+      name: "Snapshot captured",
+      version: 2,
+    });
+    getDatabaseSpy.mockRestore();
   });
 });
 
