@@ -7,6 +7,7 @@ import { searchRSS } from "./rss-adapter";
 import { searchWeb, type SearchResult } from "./web-adapter";
 
 export type ResearchAdapter = "WEB" | "MCP" | "KNOWLEDGE_BASE" | "RSS";
+export type ResearchSearchResult = SearchResult & { adapter: ResearchAdapter };
 
 const searchAdapters: Record<ResearchAdapter, (query: string, filters: { limit: number }) => Promise<SearchResult[]>> = {
   WEB: searchWeb,
@@ -47,5 +48,17 @@ export async function runResearchSearch(input: { userId: string; query: string; 
   write.prepare("UPDATE agent_runs SET status=?,completed_at=?,result_json=? WHERE id=?").run(succeeded ? "completed" : "failed", completedAt, json({ searchId, resultCount }), analysisId);
   write.close();
   persistSseEvent({ analysisId, type: succeeded ? "agent.completed" : "agent.failed", payload: { type: "RESEARCH_SEARCH", searchId, resultCount } });
-  return { searchId, analysisId, resultCount, status: succeeded ? "COMPLETED" as const : "FAILED" as const, sourceStatuses: collected.map((group) => ({ adapter: group.adapter, status: group.status.toUpperCase(), error: group.error })) };
+  return {
+    searchId,
+    analysisId,
+    resultCount,
+    status: succeeded ? "COMPLETED" as const : "FAILED" as const,
+    results: collected.flatMap((group) => group.results.map((result) => ({ ...result, adapter: group.adapter }))),
+    sourceStatuses: collected.map((group) => ({
+      adapter: group.adapter,
+      status: group.status.toUpperCase(),
+      resultCount: group.results.length,
+      error: group.error,
+    })),
+  };
 }
