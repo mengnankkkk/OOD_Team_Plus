@@ -3,9 +3,13 @@ import type { NextRequest } from "next/server";
 const AGENT_NAME = "Factor Research Agent";
 const TEAM_NAME = "OOD Team Plus";
 const MESSAGE_SEND_PATH = "/api/a2a/message-send";
+const AGENT_CARD_PATH = "/.well-known/agent-card.json";
 
 export function buildAgentCard(request?: NextRequest) {
   const baseUrl = publicBaseUrl(request);
+  const serviceEndpoint = `${baseUrl}${MESSAGE_SEND_PATH}`;
+  const agentCardUrl = `${baseUrl}${AGENT_CARD_PATH}`;
+
   return {
     name: AGENT_NAME,
     description: "A remote research agent for portfolio diagnostics, factor-style analysis, strategy backtesting summaries, and compliance-aware investment research explanations.",
@@ -14,11 +18,16 @@ export function buildAgentCard(request?: NextRequest) {
       url: baseUrl,
     },
     version: "1.0.0",
-    url: baseUrl,
+    url: serviceEndpoint,
     preferredTransport: "JSONRPC",
     protocolVersion: "1.0",
     supportedInterfaces: [
-      { transport: "JSONRPC", url: `${baseUrl}${MESSAGE_SEND_PATH}` },
+      {
+        url: serviceEndpoint,
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0",
+        transport: "JSONRPC",
+      },
     ],
     capabilities: {
       streaming: false,
@@ -33,6 +42,7 @@ export function buildAgentCard(request?: NextRequest) {
         description: "Send Authorization: Bearer <A2A_BEARER_TOKEN>.",
       },
     },
+    securityRequirements: [{ bearerAuth: [] }],
     security: [{ bearerAuth: [] }],
     defaultInputModes: ["text/plain"],
     defaultOutputModes: ["text/markdown", "application/json"],
@@ -65,7 +75,8 @@ export function buildAgentCard(request?: NextRequest) {
     documentationUrl: `${baseUrl}/docs/a2a-submission`,
     metadata: {
       team: TEAM_NAME,
-      serviceEndpoint: `${baseUrl}${MESSAGE_SEND_PATH}`,
+      agentCardUrl,
+      serviceEndpoint,
       auth: "Bearer token",
       dataSkills: ["semantic_catalog", "pandadata_research", "portfolio_snapshot", "market_observability"],
       researchSkills: ["factor_analysis", "strategy_backtest", "portfolio_risk_review", "compliance_review"],

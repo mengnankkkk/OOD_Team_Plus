@@ -52,7 +52,7 @@ export async function runBranchScenarioAgent(
       if (partial && typeof partial === "object") latestPartial = { ...latestPartial, ...partial };
     }
     const streamedObject = await stream.object.catch(() => undefined);
-    const modelPlan = BranchScenarioModelPlanSchema.parse(streamedObject ?? latestPartial);
+    const modelPlan = parseModelPlan(streamedObject, latestPartial);
     const plan = BranchScenarioPlanSchema.parse({
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
@@ -203,6 +203,58 @@ function buildPrompt(input: BranchScenarioAgentInput): string {
 function scenarioLabel(strategy: BranchScenarioOption["strategy"], index: number): string {
   const title = strategy === "HOLD" ? "保持观察" : strategy === "BALANCED" ? "风险预算再平衡" : strategy === "DEFENSIVE" ? "压力约束降险" : "增长情景";
   return `${String.fromCharCode(65 + index)} · ${title}`;
+}
+
+function normalizeModelPlan(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const plan = value as Record<string, unknown>;
+  if (!Array.isArray(plan.options)) return value;
+  return {
+    ...plan,
+    options: plan.options.map((rawOption) => {
+      if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) return rawOption;
+      const option = rawOption as Record<string, unknown>;
+      const trades = Array.isArray(option.trades) ? option.trades : [];
+      return { ...option, strategy: normalizeStrategy(option.strategy, trades) };
+    }),
+  };
+}
+
+function mergeDefined(partial: Partial<BranchScenarioModelPlan>, completed: unknown): Record<string, unknown> {
+  if (!completed || typeof completed !== "object" || Array.isArray(completed)) return { ...partial };
+  const definedEntries = Object.entries(completed as Record<string, unknown>).filter(([, value]) => value !== undefined);
+  return { ...partial, ...Object.fromEntries(definedEntries) };
+}
+
+function parseModelPlan(completed: unknown, partial: Partial<BranchScenarioModelPlan>): BranchScenarioModelPlan {
+  let lastError: unknown;
+  for (const candidate of [completed, partial, mergeDefined(partial, completed)]) {
+    try {
+      return BranchScenarioModelPlanSchema.parse(normalizeModelPlan(candidate));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] | unknown {
+  const strategy = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/gu, "_");
+  if (["HOLD", "WAIT", "WATCH", "NO_CHANGE", "UNCHANGED"].includes(strategy) || /保持|观察|不变/u.test(strategy)) return "HOLD";
+  if (["BALANCED", "BALANCE", "REBALANCE", "REBALANCING"].includes(strategy) || /平衡|再配置/u.test(strategy)) return "BALANCED";
+  if (["DEFENSIVE", "DEFENSE", "DE_RISK", "RISK_REDUCTION", "REDUCE_RISK", "CASH"].includes(strategy) || /防御|降险|减险/u.test(strategy)) return "DEFENSIVE";
+  if (["GROWTH", "GROW", "AGGRESSIVE"].includes(strategy) || /增长|进取/u.test(strategy)) return "GROWTH";
+
+  const actions = trades.flatMap((trade) => {
+    if (!trade || typeof trade !== "object" || Array.isArray(trade)) return [];
+    const action = String((trade as Record<string, unknown>).action ?? "").toUpperCase();
+    return action === "BUY" || action === "SELL" ? [action] : [];
+  });
+  if (actions.length === 0) return "HOLD";
+  if (actions.includes("BUY") && actions.includes("SELL")) return "BALANCED";
+  if (actions.every((action) => action === "SELL")) return "DEFENSIVE";
+  if (actions.every((action) => action === "BUY")) return "GROWTH";
+  return value;
 }
 
 function safeMessage(error: unknown): string {
