@@ -210,7 +210,7 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
     payload: {
       phase: "final_summary",
       title: status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",
-      content: lines[0]?.slice(0, 500) ?? "",
+      content: lines[0] ?? "",
     },
   });
   for (const line of lines.slice(1, 4)) {
@@ -220,7 +220,7 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
       payload: {
         phase: "final_summary",
         title: "公开结论片段",
-        content: line.slice(0, 500),
+        content: line,
       },
     });
   }
