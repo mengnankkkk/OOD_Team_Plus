@@ -259,8 +259,8 @@ async function runRole(
 
 function markModelAttemptStarted(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, inputSummary: string): void {
   if (!childRunId) return;
-  db.prepare("UPDATE agent_runs SET status='running',model_provider='deepseek',model_name=?,objective=?,failure_code=NULL,failure_message=NULL WHERE id=?")
-    .run(process.env.DEEPSEEK_MODEL ?? null, inputSummary, childRunId);
+  db.prepare("UPDATE agent_runs SET status='running',model_provider='deepseek',model_name=?,objective=?,input_summary=?,failure_code=NULL,failure_message=NULL WHERE id=?")
+    .run(process.env.DEEPSEEK_MODEL ?? null, inputSummary, inputSummary, childRunId);
 }
 
 function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, finding: AgentFinding): void {
@@ -761,6 +761,13 @@ function chiefPrompt(
   requiredRoles: ProfessionalAgentRole[],
   semanticContext: AdvisorSemanticToolsContext,
 ): string {
+  const marketFacts = research.executions.map(({ source, result }) => ({
+    method: source.method,
+    requestedSymbol: source.parameters.symbol,
+    rowCount: result.data.length,
+    asOfDate: result.asOfDate,
+    rows: result.data.slice(-5),
+  }));
   return [
     `用户问题：${question}`,
     `必须委派：${requiredRoles.join(", ")}`,
@@ -769,6 +776,7 @@ function chiefPrompt(
     `目标标的：${json(target)}`,
     `数据状态：${research.dataState}，数据日期：${research.asOfDate ?? "未知"}`,
     `实时/行情数据摘要：${json(research.quotes)}`,
+    `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
     "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。",
