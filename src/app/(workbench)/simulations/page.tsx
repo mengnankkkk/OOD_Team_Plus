@@ -60,7 +60,9 @@ export default function SimulationsPage() {
   useEffect(() => {
     if (hasAutoSelectedWorkspaceRef.current || !list.data) return;
     hasAutoSelectedWorkspaceRef.current = true;
-    if (list.data.items[0]) selectWorkspace(list.data.items[0].id);
+    const requestedWorkspaceId = new URLSearchParams(window.location.search).get("workspace")?.trim() ?? "";
+    if (requestedWorkspaceId) selectWorkspace(requestedWorkspaceId);
+    else if (list.data.items[0]) selectWorkspace(list.data.items[0].id);
   }, [list.data, selectWorkspace]);
 
   useEffect(() => {
