@@ -3,6 +3,7 @@ import Decimal from "decimal.js";
 import {
   runChiefAdvisor,
   runChiefAdvisorConversation,
+  runChiefAdvisorScreening,
   type ChiefAdvisorDecisionIntegrity,
   type ChiefAdvisorStreamEvent,
 } from "@/mastra/agents/chief-advisor";
@@ -36,6 +37,7 @@ type AdvisorIntent =
   | "DIAGNOSIS"
   | "FACTOR_RESEARCH"
   | "STRATEGY_BACKTEST"
+  | "SCREENING"
   | "PLANNING"
   | "GENERAL";
 type PublicationStatus = "ACTIVE" | "DEGRADED" | "BLOCKED";
@@ -73,7 +75,7 @@ type Holding = {
   weight_bps: number;
 };
 
-type Instrument = { id: string; symbol: string; name: string; asset_type: string; market: string };
+type Instrument = { id: string; symbol: string; name: string; asset_type: string; market: string; sector?: string | null };
 
 type ResearchState = {
   dataState: DataState;
@@ -109,7 +111,7 @@ type ProfileCompleteness = {
 };
 
 export type ProfessionalAdvisorResult = {
-  kind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION";
+  kind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "SCREENING" | "DECISION";
   runId: string;
   status: PublicationStatus;
   direction: AdvisorDecision["requestedDirection"];
@@ -146,8 +148,11 @@ export async function runProfessionalAdvisor(input: {
       hs.quantity_decimal,hs.cost_decimal,hs.price_decimal,hs.market_value_decimal,hs.unrealized_pnl_decimal,hs.weight_bps
     FROM holding_snapshots hs JOIN instruments i ON i.id=hs.instrument_id
     WHERE hs.portfolio_snapshot_id=? ORDER BY hs.weight_bps DESC`).all(snapshot.id) as Holding[] : [];
-  const instruments = db.prepare("SELECT id,symbol,name,asset_type,market FROM instruments WHERE tradable=1 ORDER BY symbol").all() as Instrument[];
-  const intent = inferIntent(input.content);
+  const instruments = db.prepare("SELECT id,symbol,name,asset_type,market,sector FROM instruments WHERE tradable=1 ORDER BY symbol").all() as Instrument[];
+  const priorConversationMessages = conversationMessages.at(-1)?.content === input.content
+    ? conversationMessages.slice(0, -1)
+    : conversationMessages;
+  const intent = inferIntent(input.content, priorConversationMessages.map((message) => message.content));
   const requestedDirection = directionForIntent(intent);
   const target = resolveTargetInstrument({
     content: input.content,
@@ -170,6 +175,44 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
+    if (!dailyPortfolio && intent === "SCREENING") {
+      const screening = await screenInstruments({
+        db,
+        analysisId: input.analysisId,
+        content: input.content,
+        conversationMessages: priorConversationMessages.map((message) => message.content),
+        profile: decisionProfile,
+        holdings,
+        snapshot,
+        instruments,
+      });
+      db.prepare("UPDATE agent_runs SET agent_type='chief_advisor_screening',model_provider=?,model_name=?,output_summary=? WHERE id=? AND user_id=?")
+        .run(
+          screening.provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic",
+          screening.provider === "CHIEF_ADVISOR" ? process.env.DEEPSEEK_MODEL ?? null : null,
+          screening.answer.slice(0, 500),
+          input.analysisId,
+          input.userId,
+        );
+      return {
+        kind: "SCREENING",
+        runId: input.analysisId,
+        status: "DEGRADED",
+        direction: "HOLD",
+        action: "WATCH",
+        findings: [],
+        missingInformation: [],
+        recommendation: null,
+        answer: screening.answer,
+        provider: screening.provider,
+        debateSuggestion: {
+          recommended: false,
+          motion: "当前候选筛选暂不适合进入多空 Battle",
+          reason: "先从候选中选定一个标的，再进行完整分析和多空比较更有意义。",
+        },
+      };
+    }
+
     if (!dailyPortfolio && intent === "PLANNING" && !requestsFullAgentLoop(input.content)) {
       const planning = await runFinancialPlanningAdvisor({
         question: input.content,
@@ -386,9 +429,10 @@ export async function runProfessionalAdvisor(input: {
       latestTradingDayAllowed: dailyPortfolio,
       decisionIntegrity,
     });
-    const publicationReasons = publicationSafetyReasons(candidate, decisionIntegrity);
+    const publicationReasons = publicationSafetyReasons(candidate);
     candidate = {
       ...candidate,
+      action: publishedAction(candidate.action, status, Boolean(targetHolding)),
       compliance: {
         approved: status === "ACTIVE",
         decision: status === "ACTIVE" ? "APPROVED" : status === "BLOCKED" ? "BLOCKED" : "DOWNGRADED",
@@ -443,7 +487,7 @@ export async function runProfessionalAdvisor(input: {
       findings,
       missingInformation,
       recommendation,
-      answer: formatAnswer(candidate, status, findings, research, publicationReasons, profile, goals),
+      answer: formatAdvisorDecisionAnswer(candidate, status, findings, research, publicationReasons, profile, goals),
       provider,
       debateSuggestion: attachTrustedTargetSymbol(candidate.debateSuggestion, target?.symbol),
     };
@@ -666,6 +710,237 @@ function buildChiefConversationContext(input: {
       professionalAnalysisRequested: false,
     },
   };
+}
+
+async function screenInstruments(input: {
+  db: ReturnType<typeof getDatabase>;
+  analysisId: string;
+  content: string;
+  conversationMessages: string[];
+  profile: Profile | undefined;
+  holdings: Holding[];
+  snapshot: Record<string, unknown> | undefined;
+  instruments: Instrument[];
+}): Promise<{
+  answer: string;
+  provider: ProfessionalAdvisorResult["provider"];
+}> {
+  const screeningQuestion = [...input.conversationMessages.slice(-6), input.content].join("；");
+  const candidates = selectScreeningCandidates(screeningQuestion, input.instruments, input.holdings);
+  if (!candidates.length) {
+    return {
+      answer: "我可以直接帮你筛选，但需要先确定一个候选范围。请只补充一个条件：你更想看宽基或行业 ETF，还是某个明确行业的个股？",
+      provider: "DETERMINISTIC_FALLBACK",
+    };
+  }
+
+  const sources = screeningPandaSources(candidates);
+  let executions: PandaSourceExecution[] = [];
+  if (sources.length) {
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "tool.started",
+      payload: { toolName: sources.map((source) => source.method), screening: true, symbolCount: candidates.length },
+    });
+    try {
+      executions = await executePandaSources({
+        sources,
+        agentRunId: input.analysisId,
+        localRows: [],
+        db: input.db,
+      });
+      persistSseEvent({
+        analysisId: input.analysisId,
+        type: "tool.completed",
+        payload: {
+          toolName: sources.map((source) => source.method),
+          screening: true,
+          symbolCount: candidates.length,
+          rowCount: executions.reduce((count, execution) => count + execution.result.data.length, 0),
+        },
+      });
+    } catch (error) {
+      persistSseEvent({
+        analysisId: input.analysisId,
+        type: "tool.failed",
+        payload: { screening: true, code: "PANDADATA_UNAVAILABLE", message: safeMessage(error) },
+      });
+    }
+  }
+
+  const candidateFacts = buildScreeningCandidateFacts(candidates, executions, input.holdings);
+  const context = {
+    workflow: "INSTRUMENT_SCREENING",
+    profile: input.profile ?? null,
+    holdings: input.holdings,
+    portfolioSnapshot: input.snapshot ?? null,
+    conversationMemory: input.conversationMessages.slice(-8),
+    candidates: candidateFacts,
+    marketData: {
+      verifiedCandidateCount: candidateFacts.filter((candidate) => candidate.verified).length,
+      sourceMethods: [...new Set(executions.map((execution) => execution.source.method))],
+      dataAsOf: executions.map((execution) => execution.result.asOfDate).filter(Boolean).sort().at(-1) ?? null,
+    },
+    knownFacts: {
+      candidatePool: "受控可交易标的目录",
+      maximumResults: 3,
+      holdingCount: input.holdings.length,
+      screeningIsNotTradeAdvice: true,
+    },
+  };
+  const fallback = deterministicScreeningAnswer(candidateFacts);
+  if (!process.env.DEEPSEEK_API_KEY?.trim()) {
+    return { answer: fallback, provider: "DETERMINISTIC_FALLBACK" };
+  }
+  try {
+    return await runChiefAdvisorScreening({
+      question: input.content,
+      context,
+    });
+  } catch {
+    return { answer: fallback, provider: "DETERMINISTIC_FALLBACK" };
+  }
+}
+
+function selectScreeningCandidates(content: string, instruments: Instrument[], holdings: Holding[]): Instrument[] {
+  const upper = content.normalize("NFKC").toUpperCase();
+  const sectorTerms = screeningSectorTerms(upper);
+  const wantsStock = /个股|股票/u.test(content);
+  const wantsFund = /ETF|基金/u.test(upper);
+  const heldIds = new Set(holdings.map((holding) => holding.instrument_id));
+  const seeksNewPosition = /找|筛选|挑|选|推荐|建仓|布局/u.test(content);
+  return instruments
+    .filter((instrument) => {
+      const assetType = instrument.asset_type.toUpperCase();
+      if (wantsStock && !assetType.includes("STOCK")) return false;
+      if (wantsFund && !/(?:FUND|ETF|INDEX)/u.test(assetType)) return false;
+      if (seeksNewPosition && heldIds.has(instrument.id)) return false;
+      const searchable = `${instrument.name} ${instrument.sector ?? ""}`.normalize("NFKC").toUpperCase();
+      return sectorTerms.length === 0 || sectorTerms.some((term) => searchable.includes(term));
+    })
+    .sort((left, right) => {
+      const leftScore = screeningCandidateScore(left, sectorTerms);
+      const rightScore = screeningCandidateScore(right, sectorTerms);
+      return rightScore - leftScore || left.symbol.localeCompare(right.symbol);
+    })
+    .slice(0, 8);
+}
+
+function screeningSectorTerms(content: string): string[] {
+  const groups: Array<{ pattern: RegExp; terms: string[] }> = [
+    { pattern: /科技|人工智能|\bAI\b|半导体|芯片|软件|计算机|机器人/u, terms: ["TECHNOLOGY", "科技", "人工智能", "半导体", "芯片", "软件", "计算机", "电子", "机器人"] },
+    { pattern: /消费|消费电子|食品饮料/u, terms: ["CONSUMER", "消费", "食品饮料"] },
+    { pattern: /医药|医疗|生物/u, terms: ["HEALTH", "医药", "医疗", "生物"] },
+    { pattern: /金融|银行|证券|保险/u, terms: ["FINANCIAL", "金融", "银行", "证券", "保险"] },
+    { pattern: /新能源|电力|能源|光伏|锂电/u, terms: ["ENERGY", "能源", "电力", "光伏", "锂电"] },
+  ];
+  return [...new Set(groups.filter((group) => group.pattern.test(content)).flatMap((group) => group.terms))];
+}
+
+function screeningCandidateScore(instrument: Instrument, sectorTerms: string[]): number {
+  const sector = (instrument.sector ?? "").normalize("NFKC").toUpperCase();
+  const name = instrument.name.normalize("NFKC").toUpperCase();
+  return sectorTerms.reduce((score, term) =>
+    score + (sector.includes(term) ? 3 : 0) + (name.includes(term) ? 1 : 0), 0
+  );
+}
+
+function screeningPandaSources(candidates: Instrument[]): PandaQuerySource[] {
+  const endDate = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - 180);
+  const startDate = start.toISOString().slice(0, 10).replaceAll("-", "");
+  const groups = new Map<string, { dataset: PandaQuerySource["dataset"]; method: PandaQuerySource["method"]; assetType: string; symbols: string[] }>();
+  for (const candidate of candidates) {
+    const source = screeningSourceFor(candidate);
+    const key = `${source.dataset}:${source.method}:${source.assetType}`;
+    const group = groups.get(key) ?? { ...source, symbols: [] };
+    group.symbols.push(pandaSymbol(candidate.symbol, candidate.asset_type, candidate.market));
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({
+    dataset: group.dataset,
+    method: group.method,
+    parameters: {
+      symbol: [...new Set(group.symbols)],
+      start_date: startDate,
+      end_date: endDate,
+      fields: ["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
+    },
+    columns: ["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
+    joinKeys: ["symbol", "date"],
+    assetType: group.assetType,
+  }));
+}
+
+function screeningSourceFor(instrument: Instrument): {
+  dataset: PandaQuerySource["dataset"];
+  method: PandaQuerySource["method"];
+  assetType: string;
+} {
+  const assetType = instrument.asset_type.toUpperCase();
+  const market = instrument.market.toUpperCase();
+  if (/(?:FUND|ETF)/u.test(assetType)) return { dataset: "MARKET_FUND_DAILY", method: "get_fund_daily", assetType: "FUND" };
+  if (assetType.includes("INDEX")) return { dataset: "MARKET_INDEX_DAILY", method: "get_index_daily", assetType: "INDEX" };
+  if (["US", "NASDAQ", "NYSE", "AMEX"].includes(market)) return { dataset: "MARKET_US_DAILY", method: "get_us_daily", assetType: "STOCK" };
+  if (market === "HK") return { dataset: "MARKET_HK_DAILY", method: "get_hk_daily", assetType: "STOCK" };
+  return { dataset: "MARKET_STOCK_DAILY", method: "get_stock_daily", assetType: "STOCK" };
+}
+
+function buildScreeningCandidateFacts(
+  candidates: Instrument[],
+  executions: PandaSourceExecution[],
+  holdings: Holding[],
+): Array<Record<string, unknown>> {
+  const rows = executions.flatMap((execution) =>
+    execution.result.data.map((row) => ({ row, asOfDate: execution.result.asOfDate, method: execution.source.method }))
+  );
+  const heldIds = new Set(holdings.map((holding) => holding.instrument_id));
+  return candidates.map((candidate) => {
+    const candidateRows = rows
+      .filter(({ row }) => symbolBase(String(row.symbol ?? "")) === symbolBase(candidate.symbol))
+      .sort((left, right) => marketRowDate(left.row).localeCompare(marketRowDate(right.row)));
+    const closes = candidateRows.map(({ row }) => decimal(row.close)).filter((value): value is Decimal => value !== null);
+    const first = closes[0] ?? null;
+    const latest = closes.at(-1) ?? null;
+    return {
+      instrumentId: candidate.id,
+      symbol: candidate.symbol,
+      name: candidate.name,
+      market: candidate.market,
+      assetType: candidate.asset_type,
+      sector: candidate.sector ?? null,
+      alreadyHeld: heldIds.has(candidate.id),
+      verified: closes.length > 0,
+      observations: closes.length,
+      latest: latest?.toString() ?? null,
+      periodReturn: first?.gt(0) && latest ? latest.div(first).minus(1).toDecimalPlaces(6).toString() : null,
+      annualizedVolatility: annualizedVolatility(closes)?.toDecimalPlaces(6).toString() ?? null,
+      maxDrawdown: maximumDrawdown(closes)?.toDecimalPlaces(6).toString() ?? null,
+      asOfDate: candidateRows.map((item) => item.asOfDate).filter(Boolean).sort().at(-1) ?? null,
+      sourceMethod: candidateRows[0]?.method ?? null,
+    };
+  });
+}
+
+function deterministicScreeningAnswer(candidates: Array<Record<string, unknown>>): string {
+  const selected = [...candidates]
+    .sort((left, right) => Number(Boolean(right.verified)) - Number(Boolean(left.verified)))
+    .slice(0, 3);
+  if (!selected.length) return "当前受控候选池中没有匹配标的。请换一个行业或资产类型，我再继续筛选。";
+  return [
+    "我先从受控可交易标的目录中筛出以下研究候选。它们不是直接买入结论，选中后还要做基本面、估值、组合冲突和合规检查。",
+    ...selected.map((candidate, index) => {
+      const verified = candidate.verified
+        ? `已核验 ${candidate.observations} 个行情样本，数据截至 ${formatMarketDate(String(candidate.asOfDate ?? ""))}`
+        : "行情服务暂未返回有效样本，需要在下一步补充核验";
+      const volatility = candidate.annualizedVolatility
+        ? `，历史年化波动约 ${formatRatioAsPercent(String(candidate.annualizedVolatility))}`
+        : "";
+      return `${index + 1}. ${candidate.name}（${candidate.symbol}）：${verified}${volatility}。值得继续看：属于 ${candidate.sector ?? "目标方向"}；需要警惕：候选筛选尚未覆盖完整估值和财务质量。`;
+    }),
+    "你可以直接回复其中一个名称或代码，我会立即进入完整分析，不再重复询问已经知道的画像和资金信息。",
+  ].join("\n");
 }
 
 function formatAdvisorConversationFallback(question: string, profileCompleteness: ProfileCompleteness): string {
@@ -1142,15 +1417,12 @@ export function enforcePublicationStatus(input: {
   return "DEGRADED";
 }
 
-function publicationSafetyReasons(
-  candidate: AdvisorDecision,
-  decisionIntegrity: ChiefAdvisorDecisionIntegrity | undefined,
-): string[] {
-  const reasons = [...(decisionIntegrity?.reasons ?? [])];
+function publicationSafetyReasons(candidate: AdvisorDecision): string[] {
+  const reasons: string[] = [];
   if (candidate.compliance.decision !== "APPROVED") {
-    reasons.push(`Chief Advisor 合规决策为 ${candidate.compliance.decision}：${candidate.compliance.reason}`);
+    reasons.push(candidate.compliance.reason);
   } else if (!candidate.compliance.approved) {
-    reasons.push(`Chief Advisor 未批准发布：${candidate.compliance.reason}`);
+    reasons.push(candidate.compliance.reason);
   }
   return [...new Set(reasons)];
 }
@@ -1419,14 +1691,33 @@ function requestsFullAgentLoop(content: string): boolean {
   return /(?:所有|全部|完整|全量).*(?:agent|Agent|智能体|子智能体)|(?:agent|Agent|智能体|子智能体).*(?:所有|全部|完整|全量)|真实\s*Agent\s*回路/u.test(content);
 }
 
-function inferIntent(content: string): AdvisorIntent {
+function inferIntent(content: string, conversationMessages: string[] = []): AdvisorIntent {
   if (/因子|factor|ICIR|Rank\s*IC|横截面/u.test(content)) return "FACTOR_RESEARCH";
   if (/回测|backtest|策略收益|策略验证|交易规则/u.test(content)) return "STRATEGY_BACKTEST";
   if (/卖出|减仓|止盈|止损|退出|清仓/u.test(content)) return "SELL";
   if (isDiagnosisRequest(content)) return "DIAGNOSIS";
+  if (isInstrumentScreeningRequest(content) || continuesInstrumentScreening(content, conversationMessages)) return "SCREENING";
   if (/买入|入场|加仓|追高|试仓|增配/u.test(content)) return "BUY";
   if (isFinancialPlanningRequest(content)) return "PLANNING";
   return "GENERAL";
+}
+
+function isInstrumentScreeningRequest(content: string): boolean {
+  const instrumentWords = "(?:标的|股票|个股|[\\p{Script=Han}]{2,8}股|基金|ETF)";
+  const candidateRequest = new RegExp(`(?:帮我|给我|直接|请|能否|可以).*(?:找|筛选|挑|选|推荐).*${instrumentWords}|(?:找|筛选|挑|选|推荐).*(?:几个|一些|适合).*${instrumentWords}`, "u");
+  const entryRequest = new RegExp(`${instrumentWords}.*(?:适合|可以|值得).*(?:建仓|买入|布局|研究)|(?:建仓|布局).*${instrumentWords}`, "u");
+  return candidateRequest.test(content) || entryRequest.test(content);
+}
+
+function continuesInstrumentScreening(content: string, conversationMessages: string[]): boolean {
+  const isScreeningFollowUp = (message: string) =>
+    /^(?:直接开始分析|开始分析|继续|长线(?:投资)?|中线(?:投资)?|短线(?:投资)?|稳健些|激进些|保守些|个股|ETF|基金|都可以)[！!。.\s]*$/u.test(message.trim());
+  if (!isScreeningFollowUp(content)) return false;
+  for (const message of [...conversationMessages].reverse().slice(0, 6)) {
+    if (isInstrumentScreeningRequest(message)) return true;
+    if (!isScreeningFollowUp(message)) return false;
+  }
+  return false;
 }
 
 function isDiagnosisRequest(content: string): boolean {
@@ -1443,7 +1734,7 @@ function isFinancialPlanningRequest(content: string): boolean {
 function directionForIntent(intent: AdvisorIntent): AdvisorDecision["requestedDirection"] {
   if (intent === "BUY") return "BUY";
   if (intent === "SELL") return "SELL";
-  if (intent === "DIAGNOSIS" || intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return "ANALYZE";
+  if (intent === "DIAGNOSIS" || intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST" || intent === "SCREENING") return "ANALYZE";
   return "HOLD";
 }
 
@@ -1524,7 +1815,7 @@ export function chiefPrompt(
   ].join("\n");
 }
 
-function formatAnswer(
+export function formatAdvisorDecisionAnswer(
   decision: AdvisorDecision,
   status: PublicationStatus,
   findings: AgentFinding[],
@@ -1560,7 +1851,7 @@ function formatAnswer(
     ...findings.flatMap((finding) => finding.counterEvidence),
   ]).slice(0, 5);
   return [
-    `建议状态：${translateAdvisorStatus(status)}；建议动作：${translateAdvisorAction(decision.action)}`,
+    `建议状态：${advisorStatusLabel(status)}；建议动作：${advisorActionLabel(decision.action, status)}`,
     `核心结论：${translateReportText(decision.summary)}`,
     `用户画像与投资目标依据：${profileEvidence.join("；") || "本次未获得可用的用户画像和投资目标证据"}`,
     `行情与技术观察：${marketEvidence.join("；") || "本次未获得可用的行情或技术面证据"}`,
@@ -1570,28 +1861,68 @@ function formatAnswer(
     `多方证据：${supportEvidence.join("；") || "本次未形成明确的多方证据"}`,
     `空方证据：${counterEvidence.join("；") || "本次未形成明确的空方证据"}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
-    ...(publicationReasons.length ? [`发布门保留原因：${publicationReasons.join("；")}`] : []),
+    ...(status !== "ACTIVE" ? [`执行边界：${userFacingPublicationBoundary(status, decision, publicationReasons)}`] : []),
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
 }
 
-function translateAdvisorStatus(status: PublicationStatus): string {
-  if (status === "ACTIVE") return "可以继续执行";
+function advisorStatusLabel(status: PublicationStatus): string {
+  if (status === "ACTIVE") return "条件已满足，可进入模拟决策";
   if (status === "BLOCKED") return "暂不执行";
   return "谨慎参考";
 }
 
-function translateAdvisorAction(action: AdvisorDecision["action"]): string {
-  return {
-    WATCH: "先观察，不急着买卖",
-    TRIAL_BUY: "小额试仓，先验证判断",
-    SCALE_IN: "分批加仓，不一次性投入",
-    HOLD: "继续持有，暂不调整",
-    STOP_ADDING: "停止加仓，先控制集中度",
-    SCALE_OUT: "分批减仓，逐步降低风险",
-    EXIT: "清仓退出，停止继续承担该风险",
-  }[action];
+function advisorActionLabel(action: AdvisorDecision["action"], status: PublicationStatus): string {
+  if (status === "BLOCKED") {
+    if (action === "STOP_ADDING") return "停止加仓";
+    if (action === "SCALE_IN" || action === "TRIAL_BUY") return "暂缓加仓";
+    if (action === "SCALE_OUT" || action === "EXIT") return "暂缓交易，先核验风险条件";
+    return "保持现状，先完成风险核验";
+  }
+  const labels: Record<AdvisorDecision["action"], string> = {
+    WATCH: "继续观察",
+    TRIAL_BUY: "小额试仓",
+    SCALE_IN: "分批加仓",
+    HOLD: "继续持有",
+    STOP_ADDING: "停止加仓",
+    SCALE_OUT: "分批减仓",
+    EXIT: "退出持仓",
+  };
+  return labels[action];
+}
+
+function publishedAction(
+  action: AdvisorDecision["action"],
+  status: PublicationStatus,
+  hasTargetHolding: boolean,
+): AdvisorDecision["action"] {
+  if (status !== "BLOCKED") return action;
+  if (action === "SCALE_IN" || action === "TRIAL_BUY") return hasTargetHolding ? "STOP_ADDING" : "WATCH";
+  if (action === "SCALE_OUT" || action === "EXIT") return "HOLD";
+  return action;
+}
+
+function userFacingPublicationBoundary(
+  status: PublicationStatus,
+  decision: AdvisorDecision,
+  publicationReasons: string[],
+): string {
+  const modelReason = sanitizeInternalAdvisorDiagnostics(decision.compliance.reason);
+  if (modelReason) return modelReason;
+  const publicReason = publicationReasons.map(sanitizeInternalAdvisorDiagnostics).find(Boolean);
+  if (publicReason) return publicReason;
+  return status === "BLOCKED"
+    ? "当前仍有关键风险或证据缺口，先不要执行交易。"
+    : "当前结论可以用于研究，但执行前仍需核验最新行情和组合约束。";
+}
+
+function sanitizeInternalAdvisorDiagnostics(value: string): string {
+  if (/(?:schema|coercion|rationales|counterEvidence|debateSuggestion|Chief Advisor|结构化输出)/iu.test(value)) return "";
+  return value
+    .replaceAll(/\b(?:APPROVED|DOWNGRADED|BLOCKED|ACTIVE|DEGRADED)\b/gu, "")
+    .replaceAll(/\s{2,}/gu, " ")
+    .trim();
 }
 
 function uniqueEvidence(items: string[]): string[] {

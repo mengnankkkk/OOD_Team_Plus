@@ -16,6 +16,7 @@ interface RecommendationCardProps {
 const ACTION_LABEL: Record<string, string> = {
   decrease: "减配建议",
   increase: "增配建议",
+  stop_adding: "停止加仓",
   hold: "维持观察",
   observe: "重点观察",
   emergency_reserve: "补齐应急金",

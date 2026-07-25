@@ -7,6 +7,7 @@ import {
   criticalMissingInformation,
   deterministicAdvisorSummary,
   enforcePublicationStatus,
+  formatAdvisorDecisionAnswer,
   marketForHolding,
   resolveTargetInstrument,
 } from "./professional";
@@ -383,5 +384,69 @@ describe("resolveTargetInstrument", () => {
       content: "请分析 UNKNOWN.US，不是寒武纪",
       instruments,
     })).toBeNull();
+  });
+});
+
+describe("formatAdvisorDecisionAnswer", () => {
+  it("uses Chinese status and action labels without exposing internal publication diagnostics", () => {
+    const answer = formatAdvisorDecisionAnswer(
+      {
+        action: "SCALE_IN",
+        requestedDirection: "BUY",
+        summary: "当前不适合继续提高单一股票集中度",
+        suitability: "LOW",
+        confidence: 0.45,
+        rationales: ["集中度已经偏高"],
+        counterEvidence: ["长期逻辑仍可能成立"],
+        risks: ["单一股票波动会主导组合回撤"],
+        portfolioImpact: "加仓会进一步提高集中度",
+        invalidationConditions: ["组合集中度明显下降"],
+        compliance: {
+          approved: false,
+          decision: "BLOCKED",
+          reason: "加仓会使集中度继续上升，建议暂缓",
+        },
+        debateSuggestion: {
+          recommended: false,
+          motion: "当前问题暂不适合进入多空 Battle",
+          reason: "先控制组合集中度。",
+        },
+      },
+      "BLOCKED",
+      [{
+        agent: "COMPLIANCE_REVIEWER",
+        conclusion: "当前集中度风险不支持继续加仓",
+        supportEvidence: ["已检查组合集中度"],
+        counterEvidence: ["市场走势可能变化"],
+        missingInformation: [],
+        risks: ["集中度过高"],
+        confidence: 0.9,
+        needsAnotherAgent: false,
+      }],
+      {
+        dataState: "LATEST_TRADING_DAY",
+        executions: [],
+        closes: [],
+        latest: null,
+        asOfDate: "2026-07-24",
+        quotes: [],
+        riskMetrics: [],
+        correlations: [],
+      },
+      [
+        "Chief Advisor 结构化输出未通过完整 schema，coercion 补全或修正字段：rationales",
+        "Chief Advisor 合规决策为 BLOCKED：加仓会使集中度继续上升",
+      ],
+      { risk_level: "R5", horizon: "LONG" },
+      [],
+    );
+
+    expect(answer).toContain("建议状态：暂不执行");
+    expect(answer).toContain("建议动作：暂缓加仓");
+    expect(answer).not.toContain("BLOCKED");
+    expect(answer).not.toContain("SCALE_IN");
+    expect(answer).not.toContain("schema");
+    expect(answer).not.toContain("coercion");
+    expect(answer).not.toContain("发布门保留原因");
   });
 });

@@ -16,6 +16,7 @@ import { apiPost } from "@/features/frontend-migration/api";
 const ACTION_LABEL: Record<string, string> = {
   decrease: "减配",
   increase: "增配",
+  stop_adding: "停止加仓",
   hold: "持有",
   observe: "观察",
   emergency_reserve: "应急金",

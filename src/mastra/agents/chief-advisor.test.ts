@@ -22,7 +22,7 @@ vi.mock("@mastra/core/agent", () => ({
   },
 }));
 
-import { runChiefAdvisor, runChiefAdvisorConversation } from "./chief-advisor";
+import { runChiefAdvisor, runChiefAdvisorConversation, runChiefAdvisorScreening } from "./chief-advisor";
 
 describe("Chief Advisor structured decision", () => {
   beforeEach(() => {
@@ -45,6 +45,21 @@ describe("Chief Advisor structured decision", () => {
     expect(harness.prompts.at(-1)).toContain("不要输出建议状态");
     expect(harness.prompts.at(-1)).toContain("\"risk_level\":\"BALANCED\"");
     expect(harness.streamOptions.at(-1)).not.toHaveProperty("structuredOutput");
+  });
+
+  it("includes verified candidates in the screening prompt", async () => {
+    harness.conversationOutput = "候选已经完成初步核验。";
+
+    await runChiefAdvisorScreening({
+      question: "帮我找几个科技股",
+      context: {
+        candidates: [{ symbol: "AAPL", name: "Apple", verified: true }],
+      },
+    });
+
+    expect(harness.prompts.at(-1)).toContain("受控候选池筛选");
+    expect(harness.prompts.at(-1)).toContain('"symbol":"AAPL"');
+    expect(harness.prompts.at(-1)).toContain("候选标的");
   });
 
   it("returns the model-generated debate suggestion with the advisor decision", async () => {
@@ -86,7 +101,8 @@ describe("Chief Advisor structured decision", () => {
       approved: false,
       decision: "DOWNGRADED",
     });
-    expect(result.decision.compliance.reason).toContain("counterEvidence");
+    expect(result.decision.compliance.reason).not.toContain("counterEvidence");
+    expect(result.decision.compliance.reason).not.toContain("schema");
   });
 
   it("treats whitespace values replaced by coercion as incomplete", async () => {

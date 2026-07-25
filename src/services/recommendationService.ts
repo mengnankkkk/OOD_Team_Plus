@@ -8,7 +8,8 @@ type ApiRecommendation = Record<string, unknown>;
 function mapAction(value: unknown): RecommendationAction {
   const action = String(value ?? "WATCH").toUpperCase();
   if (action === "SCALE_IN" || action === "TRIAL_BUY" || action === "ADD") return "increase";
-  if (action === "SCALE_OUT" || action === "EXIT" || action === "REDUCE" || action === "STOP_ADDING") return "decrease";
+  if (action === "STOP_ADDING") return "stop_adding";
+  if (action === "SCALE_OUT" || action === "EXIT" || action === "REDUCE") return "decrease";
   if (action === "HOLD") return "hold";
   return "observe";
 }
