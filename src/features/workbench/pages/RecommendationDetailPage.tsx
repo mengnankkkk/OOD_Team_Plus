@@ -21,6 +21,11 @@ const ACTION_LABEL: Record<string, string> = {
   emergency_reserve: "应急金",
 };
 
+type AdoptSimulationResponse = {
+  workspaceId: string;
+  next: { workspaceUrl: string; optionsUrl: string };
+};
+
 const RecommendationDetailPage = () => {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
@@ -46,12 +51,14 @@ const RecommendationDetailPage = () => {
     if (!user || !rec) return;
     setBusy("adopt");
     try {
-      await apiPost(`/api/v1/recommendations/${rec.id}/simulations`, { label: rec.headline, objective: "模拟采纳建议对当前组合的影响" });
+      const simulation = await apiPost<AdoptSimulationResponse>(`/api/v1/recommendations/${rec.id}/simulations`, {
+        label: `组合建议模拟 · ${ACTION_LABEL[rec.action] ?? rec.action}`,
+        objective: `模拟采纳“${rec.headline}”对当前组合的影响`,
+      });
       await updateRecommendationStatus(user.id, rec.id, "simulated");
       toast.success("已落章 · 模拟采纳记录已写入");
       invalidate();
-      const fresh = await getRecommendation(user.id, rec.id);
-      if (fresh) setRec(fresh);
+      navigate(simulation.next.workspaceUrl);
     } catch (err: any) {
       toast.error(err?.message ?? "模拟采纳失败");
     } finally {
@@ -194,7 +201,7 @@ const RecommendationDetailPage = () => {
 };
 
 function primaryGoalName(rec: Recommendation) {
-  return rec.goalId ? "你的首要目标" : "尚未关联具体目标";
+  return rec.goalId ? "你的首要目标" : "整个投资组合";
 }
 
 export default RecommendationDetailPage;
