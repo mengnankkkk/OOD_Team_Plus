@@ -171,6 +171,7 @@ async function runOptionGeneration(input: {
   try {
     const generated = await withTimeout(
       generateCandidates(input.objective, input.workspaceId, input.branchId, input.userId, {
+        agentRunId: input.analysisId,
         onAgentStarted: (role, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent: role, label } }),
         onAgentCompleted: (role, summary) => persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: role, conclusion: summary } }),
       }),

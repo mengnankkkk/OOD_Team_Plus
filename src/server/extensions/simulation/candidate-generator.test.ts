@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PriceManifest } from "./candidate-generator";
-import { normalizeScenarioOption } from "./candidate-generator";
+import {
+  fetchScenarioInstrumentPrices,
+  normalizeScenarioOption,
+  normalizeValidScenarioOptions,
+} from "./candidate-generator";
 import type { BranchScenarioOption } from "./scenario-contracts";
 
 const manifest: PriceManifest = {
@@ -67,5 +71,53 @@ describe("candidate generator scenario normalization", () => {
       allowedInstrumentIds: new Set(["a", "b"]),
       priceManifest: manifest,
     })).toThrow("SCENARIO_INSUFFICIENT_HOLDING");
+  });
+
+  it("fetches a missing frozen fund price from the market data source", async () => {
+    const execute = vi.fn(async (options: { sources: Array<{ method: string; parameters: Record<string, unknown> }> }) => [{
+      source: options.sources[0],
+      result: {
+        data: [{ symbol: "510300.SH", date: "20260724", close: 4.12 }],
+        fresh: true,
+      },
+      toolCallId: "tool-price",
+      skillRunId: "skill-price",
+      marketSnapshotIds: ["market-price"],
+    }]);
+
+    const prices = await fetchScenarioInstrumentPrices([{
+      id: "510300.SH",
+      symbol: "510300.SH",
+      market: "SH",
+      asset_type: "fund",
+      sector: "Broad Market",
+    }], "analysis-price", execute as never);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0].sources[0]).toMatchObject({
+      method: "get_fund_daily",
+      parameters: expect.objectContaining({ symbol: ["510300.SH"] }),
+    });
+    expect(prices).toEqual({ "510300.SH": "4.12" });
+  });
+
+  it("keeps valid model options when another option cannot be normalized", () => {
+    const result = normalizeValidScenarioOptions([
+      { ...baseOption, label: "A · 保持观察", strategy: "HOLD", trades: [] },
+      { ...baseOption, label: "B · 无价格标的", trades: [{ instrumentId: "missing", action: "BUY", quantity: "1" }] },
+    ], {
+      objective: "降低集中度",
+      parentCash: "100",
+      holdings: [{ instrumentId: "a", quantity: "2", marketValue: "200" }],
+      allowedInstrumentIds: new Set(["a", "b"]),
+      priceManifest: manifest,
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.label).toBe("A · 保持观察");
+    expect(result.rejections).toEqual([expect.objectContaining({
+      sequenceNo: 1,
+      message: "SCENARIO_UNKNOWN_INSTRUMENT:missing",
+    })]);
   });
 });
