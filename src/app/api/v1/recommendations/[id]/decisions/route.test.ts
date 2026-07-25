@@ -62,7 +62,7 @@ describe("POST /api/v1/recommendations/:id/decisions", () => {
     expect(acceptedBody.data).toMatchObject({
       recommendationId: "recommendation-active",
       analysisId: "analysis-active",
-      action: "SIMULATED",
+      action: "ACCEPT",
       recommendationStatus: "SIMULATED",
     });
 
@@ -76,7 +76,7 @@ describe("POST /api/v1/recommendations/:id/decisions", () => {
     expect(listedBody.data.items[0]).toMatchObject({
       recommendationId: "recommendation-active",
       analysisId: "analysis-active",
-      action: "simulated",
+      action: "ACCEPT",
       reason: "风险预算允许，先做模拟",
     });
 
@@ -89,7 +89,7 @@ describe("POST /api/v1/recommendations/:id/decisions", () => {
       { params: Promise.resolve({ id: "recommendation-active" }) },
     );
     expect(revoked.status).toBe(201);
-    expect((await revoked.json()).data).toMatchObject({ action: "REVOKED", recommendationStatus: "ACTIVE" });
+    expect((await revoked.json()).data).toMatchObject({ action: "REVOKE", recommendationStatus: "ACTIVE" });
   });
 });
 

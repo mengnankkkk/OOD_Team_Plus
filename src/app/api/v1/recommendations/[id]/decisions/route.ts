@@ -74,10 +74,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 function decisionTransition(action: z.infer<typeof Schema>["action"], currentStatus: string) {
-  if (action === "ACCEPT") return { logAction: "SIMULATED", recommendationStatus: "SIMULATED", shouldUpdateRecommendation: true };
-  if (action === "REJECT") return { logAction: "REJECTED", recommendationStatus: "REJECTED", shouldUpdateRecommendation: true };
-  if (action === "REVOKE") return { logAction: "REVOKED", recommendationStatus: "ACTIVE", shouldUpdateRecommendation: true };
-  if (action === "DEFER") return { logAction: "LATER", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
+  if (action === "ACCEPT") return { logAction: "ACCEPT", recommendationStatus: "SIMULATED", shouldUpdateRecommendation: true };
+  if (action === "REJECT") return { logAction: "REJECT", recommendationStatus: "REJECTED", shouldUpdateRecommendation: true };
+  if (action === "REVOKE") return { logAction: "REVOKE", recommendationStatus: "ACTIVE", shouldUpdateRecommendation: true };
+  if (action === "DEFER") return { logAction: "DEFER", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
   if (action === "FOLLOW_UP") return { logAction: "FOLLOW_UP", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
   if (action === "COMMENT") return { logAction: "COMMENT", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
   return { logAction: "VIEWED", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };

@@ -649,7 +649,9 @@ export function enforcePublicationStatus(input: {
   if (input.marketDataRequired && input.dataState === "UNAVAILABLE") return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
-  if (!input.modelFallback && input.dataState === "LIVE_FRESH" && hasCounterEvidence && hasPortfolioImpact) return "ACTIVE";
+  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH"
+    || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
+  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact) return "ACTIVE";
   return "DEGRADED";
 }
 
