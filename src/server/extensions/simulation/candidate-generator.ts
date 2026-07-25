@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 
 import Decimal from "decimal.js";
 
+import type { SqliteDb } from "@/server/db/client.runtime";
 import { calculatePortfolioMetrics, runPortfolioStressTests, STRESS_PARAMETER_VERSION } from "@/server/extensions/analysis/financial-engine";
+import type { PandaDataMethod } from "@/server/extensions/pandadata/adapter";
+import { executePandaSources } from "@/server/extensions/query/panda-query-executor";
+import type { MarketDatasetKey, PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { getDatabase, parseJson } from "@/server/http/context";
 import type { BranchScenarioOption, BranchScenarioPlan } from "./scenario-contracts";
 import { runBranchScenarioAgent } from "./scenario-agent";
@@ -32,6 +36,7 @@ export interface SimulationCandidate {
 }
 
 export type CandidateGenerationHooks = {
+  agentRunId?: string;
   onAgentStarted?: (role: string, label: string) => void;
   onAgentCompleted?: (role: string, summary: string) => void;
 };
@@ -55,6 +60,23 @@ type HoldingRow = {
   sector?: string | null;
 };
 
+export type ScenarioInstrument = {
+  id: string;
+  symbol: string;
+  market?: string;
+  asset_type?: string;
+  sector?: string | null;
+};
+
+export type ScenarioNormalizationContext = {
+  objective: string;
+  parentCash: string;
+  holdings: Array<{ instrumentId: string; quantity: string; marketValue: string }>;
+  allowedInstrumentIds: Set<string>;
+  priceManifest: PriceManifest;
+  riskAssumption?: string;
+};
+
 export async function generateCandidates(
   objective: string,
   portfolioSnapshotId: string,
@@ -73,7 +95,7 @@ export async function generateCandidates(
     ? db.prepare("SELECT cash_decimal FROM simulation_asset_snapshots WHERE branch_id=?").get(activeBranchId)
     : db.prepare("SELECT cash_decimal FROM portfolio_snapshots WHERE id=?").get(portfolioSnapshotId)) as { cash_decimal?: string } | undefined;
   const profile = userId ? db.prepare("SELECT max_drawdown_decimal FROM user_profiles WHERE user_id=?").get(userId) as { max_drawdown_decimal?: string } | undefined : undefined;
-  const instruments = db.prepare(`SELECT i.id,i.symbol,i.name,i.asset_type,i.sector,ms.raw_payload_json,ms.freshness_status,ms.quality_status
+  const instruments = db.prepare(`SELECT i.id,i.symbol,i.name,i.market,i.asset_type,i.sector,ms.raw_payload_json,ms.freshness_status,ms.quality_status
     FROM instruments i LEFT JOIN market_snapshots ms ON ms.id=(SELECT id FROM market_snapshots m WHERE m.instrument_id=i.id ORDER BY m.as_of DESC LIMIT 1)
     WHERE i.tradable=1 ORDER BY i.symbol`).all() as Array<Record<string, unknown>>;
   db.close();
@@ -137,23 +159,54 @@ export async function generateCandidates(
   delegatedAgents = scenario.delegatedAgents;
 
   if (provider === "CHIEF_ADVISOR") {
-    try {
-      const allowedInstrumentIds = new Set(Object.keys(priceManifest.prices));
-      candidates = scenario.plan.options.map((option, sequenceNo) => normalizeScenarioOption(option, {
-        objective,
-        parentCash: cash,
-        holdings: sortedRows.map((row) => ({
-          instrumentId: row.instrument_id,
-          quantity: row.quantity_decimal,
-          marketValue: row.market_value_decimal,
-        })),
-        allowedInstrumentIds,
-        priceManifest,
-        sequenceNo,
-        riskAssumption: riskBudget.assumption,
-      }));
-    } catch (error) {
-      hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", `模型候选未通过交易校验，已降级：${safeMessage(error)}`);
+    const missingInstrumentIds = referencedInstrumentIds(scenario.plan.options)
+      .filter((instrumentId) => !priceManifest.prices[instrumentId]);
+    const instrumentById = new Map(instruments.map((instrument) => [String(instrument.id), instrument]));
+    const missingInstruments = missingInstrumentIds.flatMap((instrumentId) => {
+      const instrument = instrumentById.get(instrumentId);
+      return instrument ? [toScenarioInstrument(instrument)] : [];
+    });
+    if (missingInstruments.length && hooks.agentRunId) {
+      hooks.onAgentStarted?.("PRICE_RESOLVER", `为 ${missingInstruments.length} 个模型候选标的补取冻结价格`);
+      const fetchedPrices = await fetchScenarioInstrumentPrices(missingInstruments, hooks.agentRunId);
+      for (const instrument of missingInstruments) {
+        const price = fetchedPrices[instrument.id];
+        if (!price) continue;
+        priceManifest.prices[instrument.id] = price;
+        priceManifest.assets![instrument.id] = {
+          assetType: instrument.asset_type ?? "UNKNOWN",
+          sector: instrument.sector ?? null,
+        };
+      }
+      if (Object.keys(fetchedPrices).length) {
+        priceManifest.capturedAt = new Date().toISOString();
+        priceManifest.sha256 = hashPriceManifest(priceManifest);
+      }
+      hooks.onAgentCompleted?.(
+        "PRICE_RESOLVER",
+        `已补取 ${Object.keys(fetchedPrices).length}/${missingInstruments.length} 个模型候选标的价格`,
+      );
+    }
+
+    const normalized = normalizeValidScenarioOptions(scenario.plan.options, {
+      objective,
+      parentCash: cash,
+      holdings: sortedRows.map((row) => ({
+        instrumentId: row.instrument_id,
+        quantity: row.quantity_decimal,
+        marketValue: row.market_value_decimal,
+      })),
+      allowedInstrumentIds: new Set(Object.keys(priceManifest.prices)),
+      priceManifest,
+      riskAssumption: riskBudget.assumption,
+    });
+    for (const rejection of normalized.rejections) {
+      hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", `候选 ${rejection.sequenceNo + 1} 未通过交易校验，已跳过：${rejection.message}`);
+    }
+    if (normalized.candidates.length) {
+      candidates = normalized.candidates;
+    } else {
+      hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", "所有模型候选均不可执行，已降级为确定性方案");
       provider = "DETERMINISTIC_FALLBACK";
       delegatedAgents = ["DETERMINISTIC_FALLBACK"];
       candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
@@ -166,15 +219,7 @@ export async function generateCandidates(
 
 export function normalizeScenarioOption(
   option: BranchScenarioOption,
-  context: {
-    objective: string;
-    parentCash: string;
-    holdings: Array<{ instrumentId: string; quantity: string; marketValue: string }>;
-    allowedInstrumentIds: Set<string>;
-    priceManifest: PriceManifest;
-    sequenceNo?: number;
-    riskAssumption?: string;
-  },
+  context: ScenarioNormalizationContext & { sequenceNo?: number },
 ): SimulationCandidate {
   const quantities = new Map(context.holdings.map((holding) => [holding.instrumentId, decimal(holding.quantity)]));
   let cash = nonNegative(context.parentCash);
@@ -222,6 +267,66 @@ export function normalizeScenarioOption(
     context.priceManifest,
     context.riskAssumption ?? "风险预算由分支模拟上下文提供",
   );
+}
+
+export function normalizeValidScenarioOptions(
+  options: BranchScenarioOption[],
+  context: ScenarioNormalizationContext,
+): {
+  candidates: SimulationCandidate[];
+  rejections: Array<{ sequenceNo: number; message: string }>;
+} {
+  const candidates: SimulationCandidate[] = [];
+  const rejections: Array<{ sequenceNo: number; message: string }> = [];
+  for (const [sequenceNo, option] of options.entries()) {
+    try {
+      candidates.push(normalizeScenarioOption(option, { ...context, sequenceNo }));
+    } catch (error) {
+      rejections.push({ sequenceNo, message: safeMessage(error) });
+    }
+  }
+  return { candidates, rejections };
+}
+
+export async function fetchScenarioInstrumentPrices(
+  instruments: ScenarioInstrument[],
+  agentRunId: string,
+  execute: typeof executePandaSources = executePandaSources,
+): Promise<Record<string, string>> {
+  const grouped = new Map<PandaDataMethod, ScenarioInstrument[]>();
+  for (const instrument of instruments) {
+    const method = marketMethod(instrument);
+    grouped.set(method, [...(grouped.get(method) ?? []), instrument]);
+  }
+  const prices: Record<string, string> = {};
+  const db = getDatabase() as unknown as SqliteDb;
+  try {
+    for (const [preferredMethod, groupedInstruments] of grouped) {
+      let unresolved = groupedInstruments;
+      const methods: PandaDataMethod[] = preferredMethod === "get_stock_rt_daily"
+        ? ["get_stock_rt_daily", "get_stock_daily"]
+        : [preferredMethod];
+      for (const method of methods) {
+        if (!unresolved.length) break;
+        try {
+          const source = scenarioPriceSource(method, unresolved.map((instrument) => instrument.symbol));
+          const [execution] = await execute({ sources: [source], agentRunId, localRows: [], db });
+          const latestBySymbol = latestPrices(execution?.result.data ?? []);
+          unresolved = unresolved.filter((instrument) => {
+            const price = latestBySymbol.get(instrument.symbol.toUpperCase());
+            if (!price) return true;
+            prices[instrument.id] = price;
+            return false;
+          });
+        } catch {
+          // A missing quote should reject only the affected option, not the full model batch.
+        }
+      }
+    }
+  } finally {
+    db.close();
+  }
+  return prices;
 }
 
 export function hashPriceManifest(manifest: Omit<PriceManifest, "sha256"> | PriceManifest): string {
@@ -363,6 +468,85 @@ function freshPrice(instrument: Record<string, unknown>): Decimal | null {
   if (String(instrument.freshness_status).toLowerCase() !== "fresh" || String(instrument.quality_status).toLowerCase() !== "valid") return null;
   const payload = parseJson<Record<string, unknown>>(String(instrument.raw_payload_json ?? "{}"), {});
   return decimalOrNull(payload.close ?? payload.price ?? payload.nav);
+}
+
+function referencedInstrumentIds(options: BranchScenarioOption[]): string[] {
+  return [...new Set(options.flatMap((option) => option.trades.map((trade) => trade.instrumentId)))];
+}
+
+function toScenarioInstrument(instrument: Record<string, unknown>): ScenarioInstrument {
+  return {
+    id: String(instrument.id),
+    symbol: String(instrument.symbol),
+    market: instrument.market == null ? undefined : String(instrument.market),
+    asset_type: instrument.asset_type == null ? undefined : String(instrument.asset_type),
+    sector: instrument.sector == null ? null : String(instrument.sector),
+  };
+}
+
+function marketMethod(instrument: ScenarioInstrument): PandaDataMethod {
+  const market = String(instrument.market ?? "").toUpperCase();
+  const symbol = instrument.symbol.toUpperCase();
+  const assetType = String(instrument.asset_type ?? "").toLowerCase();
+  if (market.includes("HK") || symbol.endsWith(".HK")) return "get_hk_daily";
+  if (symbol.endsWith(".SH") || symbol.endsWith(".SZ") || market === "SH" || market === "SZ") {
+    if (assetType.includes("fund") || assetType.includes("etf")) return "get_fund_daily";
+    if (assetType.includes("index")) return "get_index_daily";
+    return "get_stock_rt_daily";
+  }
+  return "get_us_daily";
+}
+
+function scenarioPriceSource(method: PandaDataMethod, symbols: string[]): PandaQuerySource {
+  const fields = ["symbol", "date", "close"];
+  const parameters: Record<string, unknown> = { symbol: symbols, fields };
+  if (method !== "get_stock_rt_daily") {
+    const end = new Date();
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - 35);
+    parameters.start_date = compactDate(start);
+    parameters.end_date = compactDate(end);
+  }
+  return {
+    dataset: datasetForMethod(method),
+    method,
+    parameters,
+    columns: fields,
+    joinKeys: ["symbol", "date"],
+    assetType: assetTypeForMethod(method),
+  };
+}
+
+function datasetForMethod(method: PandaDataMethod): MarketDatasetKey {
+  if (method === "get_fund_daily") return "MARKET_FUND_DAILY";
+  if (method === "get_index_daily") return "MARKET_INDEX_DAILY";
+  if (method === "get_hk_daily") return "MARKET_HK_DAILY";
+  if (method === "get_us_daily") return "MARKET_US_DAILY";
+  if (method === "get_stock_rt_daily") return "MARKET_STOCK_RT_DAILY";
+  return "MARKET_STOCK_DAILY";
+}
+
+function assetTypeForMethod(method: PandaDataMethod): string {
+  if (method === "get_fund_daily") return "FUND";
+  if (method === "get_index_daily") return "INDEX";
+  return "STOCK";
+}
+
+function latestPrices(rows: Array<Record<string, unknown>>): Map<string, string> {
+  const latest = new Map<string, { date: string; price: string }>();
+  for (const row of rows) {
+    const symbol = String(row.symbol ?? row.ts_code ?? row.code ?? "").trim().toUpperCase();
+    const price = decimalOrNull(row.close ?? row.price ?? row.nav);
+    if (!symbol || !price?.gt(0)) continue;
+    const date = String(row.date ?? row.trade_date ?? "");
+    const current = latest.get(symbol);
+    if (!current || date >= current.date) latest.set(symbol, { date, price: clean(price) });
+  }
+  return new Map([...latest].map(([symbol, value]) => [symbol, value.price]));
+}
+
+function compactDate(value: Date): string {
+  return value.toISOString().slice(0, 10).replaceAll("-", "");
 }
 
 function normalizeRiskBudget(value: string | undefined): { value: Decimal; assumption: string } {
