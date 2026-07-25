@@ -89,4 +89,27 @@ describe("debate evidence board", () => {
     expect(board.userClaims).toEqual(["我最多能接受 5% 回撤"]);
     expect(board.missingData).toEqual(expect.arrayContaining(["profile", "holdings", "market_data"]));
   });
+
+  it("resolves a Chinese A-share name and requests closing-price evidence", async () => {
+    const dbCall = vi.fn(async () => []);
+
+    const board = await buildDebateEvidenceBoard({
+      userId: TEST_USER_ID,
+      debateSessionId: "debate_hanw",
+      rootAgentRunId: "analysis_hanw",
+      motion: "是否应该现在加仓抄底寒武纪？",
+      userClaims: ["我想根据最近收盘价判断是否分批加仓。"],
+      dbCall,
+    });
+
+    expect(board.targetSymbol).toBe("688256.SH");
+    expect(dbCall).toHaveBeenCalledWith(expect.objectContaining({
+      sources: [expect.objectContaining({
+        method: "get_stock_daily",
+        parameters: expect.objectContaining({
+          symbol: ["688256.SH"],
+        }),
+      })],
+    }));
+  });
 });

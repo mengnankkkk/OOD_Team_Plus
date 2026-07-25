@@ -1,6 +1,7 @@
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { getDatabase } from "@/server/http/context";
+import aShareStocks from "@/data/a-share-stocks.json";
 
 export interface DebateEvidenceBoard {
   debateSessionId: string;
@@ -41,12 +42,14 @@ export async function buildDebateEvidenceBoard(input: {
           WHERE hs.portfolio_snapshot_id=?
           ORDER BY hs.weight_bps DESC,hs.id`).all(snapshot.id) as Row[]
       : [];
-    const target = input.targetSymbol
+    const resolvedTargetSymbol = input.targetSymbol ?? resolveTargetSymbolFromMotion(db, input.motion);
+    const target = resolvedTargetSymbol
       ? db.prepare(`SELECT id,symbol,name,asset_type,market FROM instruments
-          WHERE UPPER(symbol)=UPPER(?) LIMIT 1`).get(input.targetSymbol) as Row | undefined
+          WHERE UPPER(symbol)=UPPER(?) LIMIT 1`).get(resolvedTargetSymbol) as Row | undefined
       : undefined;
+    const targetForResearch = target ?? aShareTarget(resolvedTargetSymbol);
 
-    const source = target ? pandaSourceFor(target) : null;
+    const source = targetForResearch ? pandaSourceFor(targetForResearch) : null;
     const pandaExecutions = source
       ? await fetchMarketEvidence(input.dbCall ?? executePandaSources, source, input.rootAgentRunId, db)
       : [];
@@ -56,7 +59,7 @@ export async function buildDebateEvidenceBoard(input: {
       debateSessionId: input.debateSessionId,
       rootAgentRunId: input.rootAgentRunId,
       motion: input.motion,
-      targetSymbol: input.targetSymbol ?? null,
+      targetSymbol: resolvedTargetSymbol,
       profileFacts: profileEvidenceFacts(profile),
       portfolioFacts: portfolioEvidenceFacts(holdings),
       marketFacts,
@@ -64,8 +67,8 @@ export async function buildDebateEvidenceBoard(input: {
       missingData: missingEvidence({
         hasProfile: Boolean(profile),
         hasHoldings: holdings.length > 0,
-        requestedTarget: Boolean(input.targetSymbol),
-        hasTarget: Boolean(target),
+        requestedTarget: Boolean(input.targetSymbol || resolvedTargetSymbol),
+        hasTarget: Boolean(targetForResearch),
         requestedMarketData: Boolean(source),
         hasMarketFacts: marketFacts.length > 0,
       }),
@@ -74,6 +77,50 @@ export async function buildDebateEvidenceBoard(input: {
   } finally {
     db.close();
   }
+}
+
+function resolveTargetSymbolFromMotion(
+  db: ReturnType<typeof getDatabase>,
+  motion: string,
+): string | null {
+  const normalizedMotion = normalizeInstrumentText(motion);
+  if (!normalizedMotion) return null;
+  const rows = db.prepare(`
+    SELECT symbol,name
+    FROM instruments
+    WHERE name IS NOT NULL AND LENGTH(name) >= 2
+  `).all() as Array<{ symbol?: unknown; name?: unknown }>;
+  return rows
+    .map((row) => ({
+      symbol: typeof row.symbol === "string" ? row.symbol.trim() : "",
+      name: typeof row.name === "string" ? row.name.trim() : "",
+    }))
+    .filter((row) => row.symbol && row.name)
+    .filter((row) => normalizedMotion.includes(normalizeInstrumentText(row.name)))
+    .sort((left, right) => right.name.length - left.name.length)[0]?.symbol
+    ?? (aShareStocks as Array<{ code: string; name: string }>)
+      .filter((stock) => normalizedMotion.includes(normalizeInstrumentText(stock.name)))
+      .sort((left, right) => right.name.length - left.name.length)
+      .map((stock) => `${stock.code}.${stock.code.startsWith("6") ? "SH" : "SZ"}`)[0]
+    ?? null;
+}
+
+function normalizeInstrumentText(value: string): string {
+  return value.replace(/[\s·（）()\-—_]/gu, "").toLowerCase();
+}
+
+function aShareTarget(symbol: string | null): Row | undefined {
+  if (!symbol) return undefined;
+  const code = symbol.match(/^\d{6}/u)?.[0];
+  if (!code) return undefined;
+  const stock = (aShareStocks as Array<{ code: string; name: string }>).find((item) => item.code === code);
+  if (!stock) return undefined;
+  return {
+    symbol: `${stock.code}.${stock.code.startsWith("6") ? "SH" : "SZ"}`,
+    name: stock.name,
+    asset_type: "STOCK",
+    market: stock.code.startsWith("6") ? "SH" : "SZ",
+  };
 }
 
 async function fetchMarketEvidence(
@@ -149,7 +196,7 @@ function pandaSourceFor(target: Row): PandaQuerySource {
         ? "get_us_daily"
         : market === "HK"
           ? "get_hk_daily"
-          : "get_stock_rt_daily";
+      : "get_stock_daily";
   const endDate = compactUtcDate(new Date());
   const startDate = new Date();
   startDate.setUTCDate(startDate.getUTCDate() - 180);
@@ -164,11 +211,9 @@ function pandaSourceFor(target: Row): PandaQuerySource {
           ? "MARKET_US_DAILY"
           : method === "get_hk_daily"
             ? "MARKET_HK_DAILY"
-            : "MARKET_STOCK_RT_DAILY",
+          : "MARKET_STOCK_DAILY",
     method,
-    parameters: method === "get_stock_rt_daily"
-      ? { symbol: [symbol], fields: columns }
-      : { symbol: [symbol], start_date: compactUtcDate(startDate), end_date: endDate, fields: columns },
+    parameters: { symbol: [symbol], start_date: compactUtcDate(startDate), end_date: endDate, fields: columns },
     columns,
     joinKeys: ["symbol", "date"],
     assetType,

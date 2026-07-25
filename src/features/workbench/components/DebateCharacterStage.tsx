@@ -41,6 +41,7 @@ const CHARACTERS: CharacterDefinition[] = [
 
 export default function DebateCharacterStage({
   activeRole,
+  activePhase,
   motion,
   status,
   userMessage,
@@ -49,6 +50,7 @@ export default function DebateCharacterStage({
   judgeMessage,
 }: {
   activeRole: DebateCharacterRole | null;
+  activePhase?: "started" | "completed" | "blocked" | null;
   motion?: string | null;
   status?: string | null;
   userMessage?: string | null;
@@ -96,7 +98,7 @@ export default function DebateCharacterStage({
                     `debate-character-${character.role}`,
                     isActive && "debate-character-active",
                   )}
-                  aria-label={`${character.label}，${character.detail}${isActive ? "，正在发言" : ""}`}
+                  aria-label={`${character.label}，${character.detail}${isActive ? `，${activePhase === "started" ? "正在思考" : "正在发言"}` : ""}`}
                 >
                   <span className="debate-character-body">
                     <span className="debate-character-portrait">
@@ -110,7 +112,7 @@ export default function DebateCharacterStage({
                     </span>
                     <span className="debate-character-caption">
                       <strong>{character.label}</strong>
-                      <small>{isActive ? "正在发言" : character.detail}</small>
+                      <small>{isActive ? characterActivityLabel(activePhase) : character.detail}</small>
                     </span>
                   </span>
                 </div>
@@ -133,6 +135,12 @@ export default function DebateCharacterStage({
       </div>
     </div>
   );
+}
+
+function characterActivityLabel(phase: "started" | "completed" | "blocked" | null | undefined): string {
+  if (phase === "started") return "正在思考";
+  if (phase === "blocked") return "暂时受阻";
+  return "正在发言";
 }
 
 function DebateBubble({

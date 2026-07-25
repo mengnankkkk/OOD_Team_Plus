@@ -138,6 +138,7 @@ function advocateInstructions(stance: "bull" | "bear"): string[] {
     "The prompt contains the user's question and the same evidence board seen by every advocate. Respond directly to the user using that context, not invented facts.",
     `Make the strongest good-faith ${stance} case while pressure-testing the opponent's strongest evidence.`,
     "State at least one real weakness in your own case. Do not hide uncertainty or present a weak opponent as a strawman.",
+    "If the evidence board contains marketFacts with close and date, acknowledge that latest market closing-price evidence is available. Do not say that no latest data exists; distinguish market price evidence from missing fundamental or company-operating data.",
     "Do not give direct trading commands, personalized investment advice, or claims of current facts not present in the evidence board.",
     "Return one concise JSON object only with stance, headline, directResponseToUser, arguments, strongestAttackOnOpponent, admittedWeakness, questionForOpponent, plainLanguageSummary, and suggestedUserFollowUp. Use one or two arguments, and keep each text field brief.",
   ];

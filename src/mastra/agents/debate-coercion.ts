@@ -21,25 +21,25 @@ import { neutralizeTradeDirective } from "./debate-judge-safety";
 
 const DEFAULT_DEBATE_AGENTS: DebateAgent[] = ["evidence", "bull", "bear", "judge"];
 const JUDGE_FALLBACKS = {
-  bull: "The bull case did not provide a complete strongest point, so the evidence should be reviewed directly.",
-  bear: "The bear case did not provide a complete strongest point, so the evidence should be reviewed directly.",
-  disagreement: "The key disagreement is whether the available evidence supports the claim strongly enough.",
-  notFinal: "The evidence and assumptions remain incomplete, so this discussion cannot settle the question.",
+  bull: "多方的完整论据暂未生成，请直接检查共同 evidence。",
+  bear: "空方的完整论据暂未生成，请直接检查共同 evidence。",
+  disagreement: "关键分歧是现有 evidence 是否足以支持用户提出的判断。",
+  notFinal: "证据或关键假设仍不完整，本轮 research discussion 暂时不能下最终结论。",
   prompt: "Ask for fresh research that could change the current conclusion.",
   compliance: "This is research and simulation for education, not individualized investment advice or an instruction to trade.",
 } as const;
 const ADVOCATE_FALLBACKS = {
-  headline: "This side's evidence still needs a balanced research review.",
-  response: "The available evidence supports analysis, not a direct trading instruction.",
-  claim: "This argument should be tested against the shared evidence.",
-  plainLanguage: "In plain language, this side still needs evidence before drawing a conclusion.",
-  assumption: "The argument depends on an assumption that should be checked with evidence.",
-  vulnerability: "Fresh evidence could weaken this argument.",
-  attack: "The opposing case should explain which evidence supports its central assumption.",
-  weakness: "This side remains vulnerable to missing or conflicting evidence.",
-  question: "Which evidence would most directly weaken your conclusion?",
-  summary: "This is one research perspective, and its assumptions still need scrutiny.",
-  followUp: "Ask which fresh evidence would change this side's view.",
+  headline: "本方观点需要结合共同 evidence 继续检验。",
+  response: "现有 evidence 可以支持 research，但不能直接变成交易指令。",
+  claim: "这条论据需要用共同 evidence 进一步验证。",
+  plainLanguage: "简单说，本方还需要 evidence 才能得出更稳妥的判断。",
+  assumption: "这条论据依赖一个需要用 research 检查的关键假设。",
+  vulnerability: "如果出现新的 evidence，本方判断可能被削弱。",
+  attack: "请对方说明哪些 evidence 支持其核心假设。",
+  weakness: "本方仍可能受到缺失或相互冲突 research evidence 的影响。",
+  question: "Which evidence could most directly weaken your conclusion?",
+  summary: "这是一个 research perspective，相关假设仍需继续核验。",
+  followUp: "Ask which fresh research evidence would change this side's view.",
 } as const;
 
 export const DebateRoundPlanOutputSchema = z.object({
@@ -107,12 +107,12 @@ export function coerceDebateRoundPlan(value: unknown): DebateRoundPlan {
   return DebateRoundPlanSchema.parse({
     userDebateRole: parseEnum(DebateUserRoleSchema, record.userDebateRole) ?? "neutral",
     userIntent: parseEnum(DebateUserIntentSchema, record.userIntent) ?? "ask_both",
-    motion: nonEmptyString(record.motion, "Examine the user's claim using the available evidence."),
-    roundFocus: nonEmptyString(record.roundFocus, "Compare the strongest evidence and unresolved assumptions on both sides."),
+    motion: nonEmptyString(record.motion, "围绕用户提出的问题比较看多与看空证据。"),
+    roundFocus: nonEmptyString(record.roundFocus, "比较双方最强证据和仍未解决的关键假设。"),
     requiredAgents,
     speakingOrder,
     needsFreshData: typeof record.needsFreshData === "boolean" ? record.needsFreshData : false,
-    reasonForFocus: nonEmptyString(record.reasonForFocus, "The available evidence needs a balanced adversarial review."),
+    reasonForFocus: nonEmptyString(record.reasonForFocus, "用户需要用共同证据理解双方分歧，而不是只看单一结论。"),
   });
 }
 

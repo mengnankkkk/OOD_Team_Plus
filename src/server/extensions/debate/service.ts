@@ -151,7 +151,11 @@ async function runRound(input: RoundInput): Promise<DebateResult> {
       motion: currentMotion(input.debateSessionId, input.content), targetSymbol: input.targetSymbol, userClaims: [input.content],
     });
     const orchestratedPlan = await input.runners.plan(roundPlanPrompt(input.content, input.userRole, initialBoard));
-    const plan = DebateRoundPlanSchema.parse({ ...orchestratedPlan, userDebateRole: input.userRole });
+    const plan = DebateRoundPlanSchema.parse({
+      ...orchestratedPlan,
+      userDebateRole: input.userRole,
+      motion: debateMotion(input.content, orchestratedPlan.motion),
+    });
     const board = plan.needsFreshData
       ? await input.evidenceCall({
           userId: input.userId, debateSessionId: input.debateSessionId, rootAgentRunId: input.analysisId,
@@ -349,6 +353,18 @@ function currentMotion(debateSessionId: string, fallback: string): string {
   const row = db.prepare("SELECT motion FROM debate_sessions WHERE id=?").get(debateSessionId) as { motion?: string } | undefined;
   db.close();
   return row?.motion?.trim() || fallback;
+}
+
+function debateMotion(userContent: string, plannedMotion: string): string {
+  const content = userContent.trim();
+  const motion = plannedMotion.trim();
+  if (
+    !motion
+    || /(?:^|[\s.:])x?amine\b.*(?:claim|evidence)|examine\b.*available evidence|available evidence|围绕用户提出的问题比较看多与看空证据/iu.test(motion)
+  ) {
+    return content || "本轮多空 Battle 辩题";
+  }
+  return motion;
 }
 
 function advocatePrompt(stance: "bull" | "bear", content: string, plan: DebateRoundPlan, board: DebateEvidenceBoard, speeches: AdvocateSpeech[]): string {

@@ -149,6 +149,11 @@ const AdvisorPage = () => {
   const [debateUserRole, setDebateUserRole] = useState<DebateRole>("neutral");
   const [activeDebateSessionId, setActiveDebateSessionId] = useState<string | null>(null);
   const [debateActivity, setDebateActivity] = useState<DebateStreamActivity | null>(null);
+  const [liveDebateSpeeches, setLiveDebateSpeeches] = useState<{
+    bull: string | null;
+    bear: string | null;
+    judge: string | null;
+  }>({ bull: null, bear: null, judge: null });
   const [pendingDebateContext, setPendingDebateContext] = useState<{ motion: string; targetSymbol: string | null } | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
@@ -220,6 +225,7 @@ const AdvisorPage = () => {
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     if (!user) return;
     const requestId = ++historyRequestRef.current;
+    setLiveDebateSpeeches({ bull: null, bear: null, judge: null });
     setLoadingHistory(true);
     try {
       const rows = await listOnboardingMessages(user.id, sessionId);
@@ -286,7 +292,22 @@ const AdvisorPage = () => {
             )));
           },
           onActivity: (activity) => {
-            if (requestId === historyRequestRef.current) setDebateActivity(activity);
+            if (requestId !== historyRequestRef.current) return;
+            setDebateActivity(activity);
+            if ((activity.role === "bull" || activity.role === "bear") && activity.phase === "started") {
+              setLiveDebateSpeeches((current) => ({ ...current, [activity.role]: null }));
+            }
+            if ((activity.role === "bull" || activity.role === "bear") && activity.phase === "completed" && activity.publicSummary) {
+              setLiveDebateSpeeches((current) => ({ ...current, [activity.role]: activity.publicSummary ?? null }));
+            }
+            if (
+              activity.role === "moderator"
+              && activity.phase === "completed"
+              && activity.publicSummary
+              && (activity.eventType === "debate.judge.completed" || activity.eventType === "debate.round.completed")
+            ) {
+              setLiveDebateSpeeches((current) => ({ ...current, judge: activity.publicSummary ?? null }));
+            }
           },
         },
       );
@@ -313,6 +334,7 @@ const AdvisorPage = () => {
     setActiveSessionId(null);
     setActiveDebateSessionId(null);
     setDebateActivity(null);
+    setLiveDebateSpeeches({ bull: null, bear: null, judge: null });
     setPendingDebateContext(null);
     setDebateUserRole("neutral");
   }, []);
@@ -460,11 +482,28 @@ const AdvisorPage = () => {
       sessionId: currentSessionId,
     }]);
     setDebateActivity({ role: "user", phase: "started", eventType: "ui.user.submitted" });
+    setLiveDebateSpeeches({ bull: null, bear: null, judge: null });
     setDraft("");
     try {
       const observer = {
         onProgress: updateDebateProgress(streamMessageId),
-        onActivity: setDebateActivity,
+        onActivity: (activity: DebateStreamActivity) => {
+          setDebateActivity(activity);
+          if (activity.role === "bull" || activity.role === "bear") {
+            if (activity.phase === "started") {
+              setLiveDebateSpeeches((current) => ({ ...current, [activity.role]: null }));
+            } else if (activity.phase === "completed" && activity.publicSummary) {
+              setLiveDebateSpeeches((current) => ({ ...current, [activity.role]: activity.publicSummary ?? null }));
+            }
+          } else if (
+            activity.role === "moderator"
+            && activity.phase === "completed"
+            && activity.publicSummary
+            && (activity.eventType === "debate.judge.completed" || activity.eventType === "debate.round.completed")
+          ) {
+            setLiveDebateSpeeches((current) => ({ ...current, judge: activity.publicSummary ?? null }));
+          }
+        },
       };
       let result;
       try {
@@ -548,13 +587,16 @@ const AdvisorPage = () => {
   const isNewBattleDraft = advisorMode === "debate" && !activeDebateSessionId && Boolean(pendingDebateContext);
   const stagePack = sending || isNewBattleDraft ? null : latestDebatePack;
   const stageJudgement = stagePack?.judgements.at(-1);
-  const stageBull = stagePack ? latestDebateTurn(stagePack, "bull")?.publicSummary ?? stageJudgement?.bullStrongestPoint ?? null : null;
-  const stageBear = stagePack ? latestDebateTurn(stagePack, "bear")?.publicSummary ?? stageJudgement?.bearStrongestPoint ?? null : null;
-  const stageJudge = stagePack ? stageJudgement?.whyNotFinal ?? null : null;
+  const stageBull = liveDebateSpeeches.bull
+    ?? (stagePack ? latestDebateTurn(stagePack, "bull")?.publicSummary ?? stageJudgement?.bullStrongestPoint ?? null : null);
+  const stageBear = liveDebateSpeeches.bear
+    ?? (stagePack ? latestDebateTurn(stagePack, "bear")?.publicSummary ?? stageJudgement?.bearStrongestPoint ?? null : null);
+  const stageJudge = liveDebateSpeeches.judge
+    ?? (stagePack ? stageJudgement?.whyNotFinal ?? null : null);
   const stageUser = isNewBattleDraft
     ? [...messages].reverse().find((message) => message.id.startsWith("local-debate-"))?.content ?? null
     : latestDebateUserMessage(messages)?.content ?? null;
-  const stageMotion = pendingDebateContext?.motion ?? stagePack?.motion ?? null;
+  const stageMotion = pendingDebateContext?.motion ?? stagePack?.motion ?? latestDebateUserMessage(messages)?.content ?? null;
   const streamingStatus = [...messages].reverse().find((message) => (
     message.role === "advisor" && Boolean((message.metadata as AdvisorMessageMeta).streaming)
   ))?.metadata.streamStatus as string | undefined;
@@ -925,6 +967,7 @@ const AdvisorPage = () => {
               </div>
               <DebateCharacterStage
                 activeRole={debateActivity?.role ?? null}
+                activePhase={debateActivity?.phase ?? null}
                 motion={stageMotion}
                 status={stageStatus}
                 userMessage={stageUser}
