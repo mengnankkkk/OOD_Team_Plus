@@ -48,7 +48,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 100) : 20;
   try {
     return NextResponse.json({
-      data: { items: listWatchlistItems(getRequestContext(request).userId, id, limit) },
+      data: listWatchlistItems(getRequestContext(request).userId, id, limit),
       meta: meta({ pagination: { limit, nextCursor: null, hasMore: false } }),
     });
   } catch (error) {

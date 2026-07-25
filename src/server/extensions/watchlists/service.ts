@@ -1,5 +1,6 @@
 import { createId, getDatabase, isoNow } from "@/server/http/context";
 
+import { aggregateWatchlistCollection, aggregateWatchlistItem } from "./aggregation";
 import {
   archivedError,
   assertVersion,
@@ -15,31 +16,23 @@ import {
   validateGoal,
   versionError,
 } from "./service-support";
-import type { CreateWatchlistItemInput, WatchlistItemBase, WatchlistItemPatch } from "./types";
+import type {
+  CreateWatchlistItemInput,
+  WatchlistItemAggregate,
+  WatchlistItemBase,
+  WatchlistItemPatch,
+  WatchlistItemsAggregate,
+} from "./types";
 import { WatchlistDomainError } from "./types";
 
 export { createWatchlist, deleteWatchlist, getWatchlist, listWatchlists, updateWatchlist } from "./list-service";
 
-export function listWatchlistItems(userId: string, watchlistId: string, limit: number): WatchlistItemBase[] {
-  const db = getDatabase();
-  try {
-    requireActiveWatchlistOrArchived(db, userId, watchlistId);
-    const ids = db.prepare(`SELECT id FROM watchlist_items
-      WHERE watchlist_id = ? AND status = 'active' ORDER BY added_at DESC, id DESC LIMIT ?`)
-      .all(watchlistId, limit) as Array<{ id: string }>;
-    return ids.map(({ id }) => readWatchlistItem(db, userId, id));
-  } finally {
-    db.close();
-  }
+export function listWatchlistItems(userId: string, watchlistId: string, limit: number): WatchlistItemsAggregate {
+  return aggregateWatchlistCollection(userId, watchlistId, limit);
 }
 
-export function getWatchlistItem(userId: string, itemId: string): WatchlistItemBase {
-  const db = getDatabase();
-  try {
-    return readWatchlistItem(db, userId, itemId);
-  } finally {
-    db.close();
-  }
+export function getWatchlistItem(userId: string, itemId: string): WatchlistItemAggregate {
+  return aggregateWatchlistItem(userId, itemId);
 }
 
 export function createWatchlistItem(
@@ -217,14 +210,4 @@ function createInitialDrawdownCondition(
       now,
       now,
     );
-}
-
-function requireActiveWatchlistOrArchived(
-  db: ReturnType<typeof getDatabase>,
-  userId: string,
-  watchlistId: string,
-): void {
-  const row = db.prepare("SELECT id FROM watchlists WHERE id = ? AND user_id = ? AND status != 'deleted'")
-    .get(watchlistId, userId);
-  if (!row) throw notFound("观察列表不存在");
 }

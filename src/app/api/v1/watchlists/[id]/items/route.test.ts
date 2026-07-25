@@ -53,6 +53,31 @@ describe("watchlist item routes", () => {
     expect(response.status).toBe(404);
   });
 
+  it("GET returns aggregate items with a collection summary", async () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO watchlist_items
+      (id,watchlist_id,instrument_id,source_type,status,added_at,created_at,updated_at)
+      VALUES ('i1','w1','AAPL','user','active',?,?,?)`)
+      .run("2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.close();
+
+    const response = await GET(authenticatedRequest(collectionUrl, {}, { userId }), context);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.items[0]).toMatchObject({
+      id: "i1",
+      instrument: { id: "AAPL", symbol: "AAPL" },
+      portfolioRelation: { isHeld: true },
+    });
+    expect(body.data.summary).toMatchObject({
+      itemCount: 1,
+      heldCount: 1,
+      activeConditionCount: 0,
+      unreadAlertCount: 0,
+    });
+  });
+
   it("PATCH returns 400 without If-Match", async () => {
     expect((await PATCH(new NextRequest(itemUrl, { method: "PATCH" }), context)).status).toBe(400);
   });
