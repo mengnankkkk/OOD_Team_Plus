@@ -87,8 +87,8 @@ export default function SimulationsPage() {
     return () => source.close();
   }, [options.data?.analysis?.streamUrl, options.data?.status, reloadOptions, reloadWorkspace]);
 
-  const queueOptions = async (workspaceId: string) => {
-    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective });
+  const queueOptions = async (workspaceId: string, objectiveText = objective) => {
+    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective: objectiveText });
     void pollOptionBatch(workspaceId, queued.analysis.analysisId);
   };
 
@@ -137,7 +137,7 @@ export default function SimulationsPage() {
     if (!workspace.data) return;
     setBusy("generate"); setError("");
     try {
-      await queueOptions(workspace.data.id);
+      await queueOptions(workspace.data.id, workspace.data.objectiveText);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "生成失败");
     } finally {
@@ -147,7 +147,7 @@ export default function SimulationsPage() {
 
   const pollOptionBatch = async (workspaceId: string, analysisId: string) => {
     const path = `/api/v1/simulation-workspaces/${workspaceId}/options`;
-    for (let attempt = 0; attempt < 180; attempt += 1) {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
       try {
         const latest = await apiGet<OptionsPayload>(path);
         if (selectedWorkspaceRef.current !== workspaceId) return;

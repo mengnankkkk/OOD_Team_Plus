@@ -50,7 +50,11 @@ export async function runBranchScenarioAgent(
     const plan = BranchScenarioPlanSchema.parse({
       ...output.object,
       provider: "CHIEF_ADVISOR",
-      options: output.object.options.map((option, index) => ({ ...option, label: scenarioLabel(option.strategy, index) })),
+      options: output.object.options.map((option, index) => ({
+        ...option,
+        label: scenarioLabel(option.strategy, index),
+        trades: option.trades.filter((trade) => Number(trade.quantity) > 0),
+      })),
     });
     for (const role of ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "SCENARIO_PLANNER", "COMPLIANCE_REVIEWER"]) {
       callbacks.onAgentCompleted?.(role, "已完成分支模拟阶段");
