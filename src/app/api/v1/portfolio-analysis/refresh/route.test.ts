@@ -172,4 +172,61 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
     checkDb.close();
     expect(latestPrice.price_decimal).toBe("11.1");
   });
+
+  it("uses the fund daily source for a tradable ETF cataloged as an index", async () => {
+    const db = getDatabase();
+    db.prepare("INSERT INTO instruments (id,symbol,name,market,asset_type,sector,tradable) VALUES (?,?,?,?,?,?,1)")
+      .run("510050.SH", "510050.SH", "上证50ETF", "SH", "index", "宽基指数");
+    db.prepare("INSERT INTO holdings (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?)")
+      .run("holding-50-etf", TEST_USER_ID, TEST_PORTFOLIO_ID, "510050.SH", "1000", "2.50", "2026-07-25T01:00:00.000Z", "2026-07-25T01:00:00.000Z");
+    db.close();
+    callPandaData.mockImplementation(async (method: string) => ({
+      method,
+      callDurationMs: 1,
+      data: method === "get_fund_daily"
+        ? [{ symbol: "510050.SH", date: "20260724", close: 2.807 }]
+        : [
+            { symbol: "AAPL", date: "2026-07-24", close: 155 },
+            { symbol: "MSFT", date: "2026-07-24", close: 225 },
+            { symbol: "SPY", date: "2026-07-24", close: 285 },
+          ],
+    }));
+
+    const response = await POST(authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "a-share-etf-price" },
+    }));
+
+    expect(response.status).toBe(202);
+    const body = await response.json();
+    expect(body.data.dataQuality).toBe("COMPLETE");
+    expect(body.data.sourceStatuses).toContainEqual(expect.objectContaining({
+      source: "PANDADATA:get_fund_daily",
+      status: "SUCCEEDED",
+      symbols: ["510050.SH"],
+    }));
+    expect(body.data.sourceStatuses).not.toContainEqual(expect.objectContaining({
+      source: "PREVIOUS_SNAPSHOT",
+      symbols: expect.arrayContaining(["510050.SH"]),
+    }));
+    expect(callPandaData).toHaveBeenCalledWith(
+      "get_fund_daily",
+      expect.objectContaining({
+        symbol: ["510050.SH"],
+        fields: ["symbol", "date", "close"],
+      }),
+    );
+    const checkDb = getDatabase();
+    const latestPrice = checkDb.prepare(`
+      SELECT hs.price_decimal
+      FROM holding_snapshots hs
+      JOIN portfolio_snapshots ps ON ps.id = hs.portfolio_snapshot_id
+      WHERE ps.user_id=? AND hs.instrument_id='510050.SH'
+      ORDER BY ps.created_at DESC, hs.created_at DESC
+      LIMIT 1
+    `).get(TEST_USER_ID) as { price_decimal: string };
+    checkDb.close();
+    expect(latestPrice.price_decimal).toBe("2.807");
+  });
 });
