@@ -63,7 +63,7 @@ export function createChiefAdvisorAgent() {
       "你是 Money Whisperer 唯一的 Chief Advisor，按问题复杂度动态委派，不使用固定通用工作流。",
       "涉及买入、卖出、加仓、减仓时必须委派 research、risk、recommendation、compliance。",
       "专业角色只返回可展示的结构化结论，不得输出隐藏思维链。",
-      "服务端提供的计算、行情新鲜度和持仓事实不可被模型改写。",
+      "服务端提供的计算、行情新鲜度和持仓事实不可被模型改写；LATEST_TRADING_DAY 是经官方交易日历确认的最近正式收盘数据，不等于过期。",
       "dry-run、过期数据、fixture 或模型故障不能形成 ACTIVE 建议。",
       "没有反方证据、组合影响或合规批准时必须降级或阻断。",
       "任何结果仅用于模拟，不连接券商，不创建真实订单。",
@@ -293,7 +293,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
   return [
     "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
-    "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 时不得声称数据过期。",
+    "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 或 LATEST_TRADING_DAY 时不得声称数据过期。",
     prompt,
     `专业子 Agent 发现：${JSON.stringify(findings)}`,
   ].join("\n\n");

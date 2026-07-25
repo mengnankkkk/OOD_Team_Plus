@@ -138,14 +138,26 @@ describe("buildPortfolioRecommendationDraft", () => {
     })).toBe("请先补充当前持仓，完成组合诊断后再形成具体标的建议");
   });
 
-  it("does not mark daily fallback or empty market results as fresh live data", () => {
+  it("accepts the latest official trading day while keeping older fallback data stale", () => {
     const freshExecution = {
+      source: { method: "get_stock_rt_daily" },
       result: { liveCallSucceeded: true, data: [{ close: 100 }], fresh: true },
+    };
+    const latestDailyExecution = {
+      source: { method: "get_stock_daily" },
+      result: {
+        liveCallSucceeded: true,
+        data: [{ close: 100, date: "20260724" }],
+        fresh: true,
+        asOfDate: "2026-07-24",
+      },
     };
 
     expect(classifyResearchDataState([freshExecution] as never, false)).toBe("LIVE_FRESH");
-    expect(classifyResearchDataState([freshExecution] as never, true)).toBe("STALE");
+    expect(classifyResearchDataState([latestDailyExecution] as never, true, "2026-07-24")).toBe("LATEST_TRADING_DAY");
+    expect(classifyResearchDataState([latestDailyExecution] as never, true, "2026-07-23")).toBe("STALE");
     expect(classifyResearchDataState([{
+      source: { method: "get_stock_rt_daily" },
       result: { liveCallSucceeded: true, data: [], fresh: true },
     }] as never, false)).toBe("UNAVAILABLE");
   });
@@ -184,6 +196,16 @@ describe("buildPortfolioRecommendationDraft", () => {
       unresolvedConflict: false,
       marketDataRequired: true,
     })).toBe("BLOCKED");
+    expect(enforcePublicationStatus({
+      candidate,
+      criticalMissing: [],
+      dataState: "LATEST_TRADING_DAY",
+      findings,
+      modelFallback: false,
+      unresolvedConflict: false,
+      marketDataRequired: true,
+      latestTradingDayAllowed: true,
+    } as never)).toBe("ACTIVE");
     expect(enforcePublicationStatus({
       candidate: {
         ...candidate,

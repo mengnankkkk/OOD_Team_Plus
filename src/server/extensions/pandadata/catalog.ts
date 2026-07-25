@@ -8,6 +8,7 @@ const Symbol = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 const Fields = z.union([z.string(), z.array(z.string())]).optional();
 
 export const PANDA_CONTRACTS = {
+  get_last_trade_date: z.object({ exchange: z.enum(["SH", "HK", "US"]).optional() }).strict(),
   get_stock_daily: z.object({ start_date: DateString, end_date: DateString, symbol: Symbol.optional(), fields: Fields, indicator: z.string().optional(), st: z.boolean().optional() }).strict(),
   get_stock_rt_daily: z.object({ symbol: Symbol.optional(), fields: Fields }).strict(),
   get_fund_daily: z.object({ start_date: DateString, end_date: DateString, symbol: Symbol.optional(), fields: Fields }).strict(),
