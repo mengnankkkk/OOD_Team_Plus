@@ -156,6 +156,12 @@ export function buildAgentCard(request?: NextRequest) {
         contextRetentionDays: 30,
         callerDataIsolation: "Each context receives a non-login execution principal.",
       },
+      taskExecution: {
+        mode: "bounded_initial_wait_then_async_polling",
+        pollEndpointTemplate: `${baseUrl}/api/a2a/tasks/{id}`,
+        pendingStates: ["submitted", "working"],
+        terminalStates: ["completed", "input-required", "failed", "canceled"],
+      },
       examplePrompts: [
         "Review my caller-supplied portfolio and explain the main risks.",
         "Start a bull/bear debate on whether AAPL valuation is justified.",

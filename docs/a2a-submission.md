@@ -53,6 +53,14 @@ market prices before persisting the isolated context snapshot.
 
 Task reads require `tasks_read`; cancellation and early context deletion require `tasks_cancel`.
 
+## Execution Time
+
+The send endpoint waits briefly for fast capabilities, then returns the persisted task instead of
+holding the HTTP connection open for the full agent run. When `status.state` is `submitted` or
+`working`, poll `GET /api/a2a/tasks/{id}` until the task reaches `completed`, `input-required`,
+`failed`, or `canceled`. `A2A_INITIAL_RESPONSE_TIMEOUT_MS` controls the initial wait budget and
+defaults to 750 milliseconds.
+
 ## JSON-RPC Example
 
 ```json
