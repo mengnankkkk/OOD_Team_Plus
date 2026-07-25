@@ -62,21 +62,23 @@ describe("POST /api/v1/recommendations/:id/decisions", () => {
     expect(acceptedBody.data).toMatchObject({
       recommendationId: "recommendation-active",
       analysisId: "analysis-active",
-      action: "ACCEPT",
+      action: "SIMULATED",
       recommendationStatus: "SIMULATED",
     });
 
     const db = getDatabase();
     const row = db.prepare("SELECT status FROM recommendations WHERE id=?").get("recommendation-active") as { status: string };
+    const acceptedLog = db.prepare("SELECT action FROM decision_logs WHERE recommendation_json LIKE ?").get("%recommendation-active%") as { action: string };
     db.close();
     expect(row.status).toBe("SIMULATED");
+    expect(acceptedLog.action).toBe("ACCEPT");
 
     const listed = await listDecisions(authenticatedRequest("http://localhost/api/v1/decisions", {}, { userId }));
     const listedBody = await listed.json();
     expect(listedBody.data.items[0]).toMatchObject({
       recommendationId: "recommendation-active",
       analysisId: "analysis-active",
-      action: "ACCEPT",
+      action: "simulated",
       reason: "风险预算允许，先做模拟",
     });
 
@@ -89,7 +91,7 @@ describe("POST /api/v1/recommendations/:id/decisions", () => {
       { params: Promise.resolve({ id: "recommendation-active" }) },
     );
     expect(revoked.status).toBe(201);
-    expect((await revoked.json()).data).toMatchObject({ action: "REVOKE", recommendationStatus: "ACTIVE" });
+    expect((await revoked.json()).data).toMatchObject({ action: "REVOKED", recommendationStatus: "ACTIVE" });
   });
 });
 

@@ -41,6 +41,26 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   }));
+  await page.route("**/api/v1/holdings", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        items: [{
+          id: "holding-evidence",
+          portfolio_id: "portfolio-evidence",
+          instrument_id: "AAPL",
+          symbol: "AAPL",
+          name: "Apple",
+          asset_type: "stock",
+          quantity_decimal: "2",
+          cost_decimal: "140",
+          current_price_decimal: "155",
+          market_value_decimal: "310",
+          created_at: "2026-07-25T08:00:00.000Z",
+        }],
+      },
+    }),
+  }));
   await page.route("**/api/v1/notifications**", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ data: { items: [] } }),
@@ -154,8 +174,15 @@ test("C 端用户可以完成证据查看与决策回放闭环", async ({ page }
   await expect(page).toHaveURL(/history\/evidence-lab\?analysisId=analysis-evidence/u);
 
   await page.goto("/history/decision-log");
-  await expect(page.getByText("模拟采纳", { exact: true })).toBeVisible();
-  await expect(page.getByText("先做模拟观察", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看证据" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "回到当时的建议" })).toBeVisible();
+  const decisionCard = page.getByRole("article");
+  await expect(decisionCard.getByText("模拟采纳", { exact: true })).toBeVisible();
+  await expect(decisionCard.getByText("先做模拟观察", { exact: true })).toBeVisible();
+
+  await decisionCard.getByRole("button", { name: "查看证据" }).click();
+  await expect(page).toHaveURL(/history\/evidence-lab\?analysisId=analysis-evidence/u);
+
+  await page.goto("/history/decision-log");
+  await page.getByRole("article").getByRole("button", { name: "回到当时的建议" }).click();
+  await expect(page).toHaveURL(/recommendations\/recommendation-evidence/u);
+  await expect(page.getByRole("heading", { name: blockedRecommendation.summary })).toBeVisible();
 });

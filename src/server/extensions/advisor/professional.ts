@@ -13,7 +13,6 @@ import {
   type AdvisorDecision,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
-import { deterministicAdvisorSummary } from "./decision-summary";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
 import type { RecommendationDraft } from "./types";
 
@@ -236,18 +235,19 @@ export async function runProfessionalAdvisor(input: {
             : `建议可供研究和模拟采纳；数据状态为 ${research.dataState}`,
       },
     };
-    const recommendation = requiredRoles.includes("RECOMMENDATION") || holdings.length > 0
+    const recommendation = target
       ? buildRecommendationDraft({
         status,
         candidate,
         target,
-        holding: targetHolding ?? holdings[0] ?? null,
-        holdings,
+        holding: targetHolding,
         profile,
         research,
         snapshot,
       })
-      : null;
+      : holdings.length > 0
+        ? buildPortfolioRecommendationDraft({ status, candidate, profile, holdings, research, snapshot })
+        : null;
     persistFindings(db, input.userId, input.analysisId, findings, research.executions);
     db.prepare("UPDATE agent_runs SET model_provider=?,model_name=?,output_summary=?,compliance_json=? WHERE id=?")
       .run(provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null,
@@ -479,11 +479,7 @@ async function researchInstrument(
       maxDrawdown: maximumDrawdown(item.points.map((point) => point.close))?.toDecimalPlaces(6).toString() ?? null,
     }));
     const correlations = pairwiseCorrelations(series);
-    const dataState: DataState = executions.every((execution) => execution.result.liveCallSucceeded && execution.result.data.length > 0 && execution.result.fresh)
-      ? "LIVE_FRESH"
-      : executions.some((execution) => execution.result.data.length > 0)
-        ? "STALE"
-        : "UNAVAILABLE";
+    const dataState = classifyResearchDataState(executions, usedDailyFallback);
     const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
     const quotes = executions.map((execution) => ({
       symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
@@ -552,6 +548,46 @@ function portfolioRiskFinding(holdings: Holding[], snapshot: Record<string, unkn
   });
 }
 
+export function classifyResearchDataState(
+  executions: Array<Pick<PandaSourceExecution, "result">>,
+  usedDailyFallback: boolean,
+): DataState {
+  const hasRows = executions.some((execution) => execution.result.data.length > 0);
+  const fullyFreshLive = hasRows
+    && !usedDailyFallback
+    && executions.every((execution) =>
+      execution.result.liveCallSucceeded
+      && execution.result.data.length > 0
+      && execution.result.fresh
+    );
+
+  return fullyFreshLive ? "LIVE_FRESH" : hasRows ? "STALE" : "UNAVAILABLE";
+}
+
+export function deterministicAdvisorSummary(input: {
+  targetSymbol: string | null;
+  profileReady: boolean;
+  hasHoldings: boolean;
+  concentrationRisk: boolean;
+}): string {
+  if (input.targetSymbol) {
+    return `${input.targetSymbol} 需要在画像、真实数据、组合风险和合规条件下进行条件化决策`;
+  }
+  if (!input.profileReady && !input.hasHoldings) {
+    return "请先完成投资画像并补充当前持仓，再形成具体标的建议";
+  }
+  if (!input.profileReady) {
+    return "请先完成投资画像，再继续组合诊断";
+  }
+  if (!input.hasHoldings) {
+    return "请先补充当前持仓，完成组合诊断后再形成具体标的建议";
+  }
+  if (input.concentrationRisk) {
+    return "已完成画像与组合诊断，当前应暂停加仓并优先降低集中度";
+  }
+  return "已完成画像与组合诊断，当前组合以继续观察为主";
+}
+
 function deterministicDecisionFor(input: {
   intent: AdvisorIntent;
   requestedDirection: AdvisorDecision["requestedDirection"];
@@ -603,12 +639,12 @@ function recommendationFinding(decision: AdvisorDecision, findings: AgentFinding
 
 function complianceFindingFor(criticalMissing: string[], dataState: DataState, findings: AgentFinding[]): AgentFinding {
   const blocked = criticalMissing.length > 0;
-  const unavailable = dataState === "UNAVAILABLE";
+  const degraded = dataState === "STALE" || dataState === "UNAVAILABLE";
   return AgentFindingSchema.parse({
     agent: "COMPLIANCE_REVIEWER",
-    conclusion: blocked ? "存在必须先确认的关键输入" : unavailable ? "市场数据调用未完成，暂不能形成交易动作" : "画像、市场证据、组合影响和动作边界检查完成",
+    conclusion: blocked ? "存在必须先确认的关键输入" : degraded ? "市场数据条件不满足，暂不能形成交易动作" : "画像、市场证据、组合影响和动作边界检查完成",
     supportEvidence: [`已检查 ${findings.length} 个专业节点`, `市场数据状态：${dataState}`],
-    counterEvidence: [blocked ? `待确认：${criticalMissing.join(", ")}` : unavailable ? "市场数据恢复后需要重新计算" : "市场变化可能使当前结论和触发条件失效"],
+    counterEvidence: [blocked ? `待确认：${criticalMissing.join(", ")}` : degraded ? "市场数据恢复后需要重新计算" : "市场变化可能使当前结论和触发条件失效"],
     missingInformation: criticalMissing,
     risks: ["采纳前仍需复核最新价格、资金用途和组合约束"],
     confidence: 0.95,
@@ -645,13 +681,12 @@ export function enforcePublicationStatus(input: {
   unresolvedConflict: boolean;
   marketDataRequired: boolean;
 }): PublicationStatus {
-  if (input.criticalMissing.length || input.unresolvedConflict) return "BLOCKED";
-  if (input.marketDataRequired && input.dataState === "UNAVAILABLE") return "BLOCKED";
+  if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
+  if (input.marketDataRequired && input.dataState !== "LIVE_FRESH") return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
-  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH"
-    || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
-  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact) return "ACTIVE";
+  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
+  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
   return "DEGRADED";
 }
 
@@ -671,18 +706,14 @@ function preserveDirection(model: AdvisorDecision, fallback: AdvisorDecision): {
 function buildRecommendationDraft(input: {
   status: PublicationStatus;
   candidate: AdvisorDecision;
-  target: Instrument | null;
+  target: Instrument;
   holding: Holding | null;
-  holdings: Holding[];
   profile: Profile | undefined;
   research: ResearchState;
   snapshot: Record<string, unknown> | undefined;
 }): RecommendationDraft {
   const maxDrawdown = decimal(input.profile?.max_drawdown_decimal) ?? new Decimal("0.1");
-  const portfolioLevel = input.target === null;
-  const volatility = portfolioLevel
-    ? portfolioAnnualizedVolatility(input.research, input.holdings)
-    : annualizedVolatility(input.research.closes);
+  const volatility = annualizedVolatility(input.research.closes);
   const riskBudget = maxDrawdown.mul("0.25");
   const maxWeight = volatility?.gt(0) ? Decimal.min(new Decimal(1), riskBudget.div(volatility)) : null;
   const firstWeight = maxWeight?.div(3);
@@ -690,8 +721,8 @@ function buildRecommendationDraft(input: {
   const reduction = input.candidate.requestedDirection === "SELL" && currentWeight.gt(0) && maxWeight
     ? Decimal.max(0, currentWeight.minus(maxWeight)).div(currentWeight)
     : null;
-  const latest = portfolioLevel ? null : input.research.latest;
-  const recent = portfolioLevel ? [] : input.research.closes.slice(-20);
+  const latest = input.research.latest;
+  const recent = input.research.closes.slice(-20);
   const lower = recent.length ? recent.reduce((value, item) => Decimal.min(value, item)) : null;
   const upper = recent.length ? recent.reduce((value, item) => Decimal.max(value, item)) : null;
   const stop = latest?.mul(new Decimal(1).minus(maxDrawdown));
@@ -700,18 +731,18 @@ function buildRecommendationDraft(input: {
   const validUntil = new Date();
   validUntil.setUTCDate(validUntil.getUTCDate() + (horizon === "SHORT" ? 7 : horizon === "LONG" ? 90 : 30));
   return {
-    instrumentId: input.target?.id ?? null,
-    symbol: input.target?.symbol ?? "PORTFOLIO",
+    instrumentId: input.target.id,
+    symbol: input.target.symbol,
     action: input.candidate.action,
     suitability: input.status === "ACTIVE" ? input.candidate.suitability : "LOW",
     summary: input.candidate.summary,
     confidence: new Decimal(input.status === "ACTIVE" ? input.candidate.confidence : Math.min(input.candidate.confidence, 0.45)).toString(),
-    positionRange: maxWeight ? ["0%", percent(maxWeight)] : ["需要完成组合波动率计算后确定"],
+    positionRange: maxWeight ? ["0%", percent(maxWeight)] : ["需要完成波动率计算后确定"],
     firstPosition: input.candidate.requestedDirection === "BUY" && firstWeight ? percent(firstWeight) : null,
     addConditions: ["PandaData live 数据保持新鲜", "重新计算后组合风险不超过用户最大回撤约束", "反方证据没有恶化"],
-    referenceRange: portfolioLevel ? ["组合级建议不使用单一标的价格区间"] : lower && upper ? [lower.toString(), upper.toString()] : ["数据不可用，暂不提供价格区间"],
-    stopLoss: portfolioLevel ? `组合回撤达到 ${percent(maxDrawdown)} 或资金用途发生变化时重新评估` : stop ? `价格低于 ${stop.toDecimalPlaces(4).toString()} 或投资逻辑失效` : "数据恢复后计算价格条件；投资逻辑失效时停止行动",
-    takeProfit: portfolioLevel ? "完成降集中度目标且组合风险回到画像约束内时重新平衡" : take ? `价格达到 ${take.toDecimalPlaces(4).toString()}、估值过热或组合需要再平衡` : "达到目标收益、估值过热或组合需要再平衡",
+    referenceRange: lower && upper ? [lower.toString(), upper.toString()] : ["数据不可用，暂不提供价格区间"],
+    stopLoss: stop ? `价格低于 ${stop.toDecimalPlaces(4).toString()} 或投资逻辑失效` : "数据恢复后计算价格条件；投资逻辑失效时停止行动",
+    takeProfit: take ? `价格达到 ${take.toDecimalPlaces(4).toString()}、估值过热或组合需要再平衡` : "达到目标收益、估值过热或组合需要再平衡",
     horizon,
     expiresAt: validUntil.toISOString(),
     reasons: input.candidate.rationales,
@@ -730,10 +761,10 @@ function buildRecommendationDraft(input: {
       publicationStatus: input.status,
       dataState: input.research.dataState,
       snapshotId: input.snapshot?.id ?? null,
-      formulaVersion: portfolioLevel ? "advisor-portfolio-covariance-v1" : "advisor-allocation-risk-budget-v1",
+      formulaVersion: "advisor-allocation-risk-budget-v1",
       annualizedVolatility: volatility?.toString() ?? null,
       currentWeight: currentWeight.toString(),
-      recommendationScope: portfolioLevel ? "PORTFOLIO" : "INSTRUMENT",
+      recommendationScope: "INSTRUMENT",
       suggestedReduction: reduction?.toString() ?? null,
       modelCannotOverridePublicationGate: true,
     },
@@ -973,37 +1004,6 @@ function annualizedVolatility(closes: Decimal[]): Decimal | null {
   const mean = Decimal.sum(...returns).div(returns.length);
   const variance = Decimal.sum(...returns.map((value) => value.minus(mean).pow(2))).div(returns.length - 1);
   return variance.sqrt().mul(new Decimal(252).sqrt());
-}
-
-function portfolioAnnualizedVolatility(research: ResearchState, holdings: Holding[]): Decimal | null {
-  const volatilityBySymbol = new Map(research.riskMetrics.flatMap((metric) => {
-    const volatility = decimal(metric.annualizedVolatility);
-    return volatility ? [[normalizeSymbol(metric.symbol), volatility] as const] : [];
-  }));
-  const components = holdings.flatMap((holding) => {
-    const volatility = volatilityBySymbol.get(normalizeSymbol(holding.symbol));
-    return volatility ? [{ symbol: normalizeSymbol(holding.symbol), weight: new Decimal(holding.weight_bps), volatility }] : [];
-  });
-  if (!components.length) return null;
-  const totalWeight = Decimal.sum(...components.map((item) => item.weight));
-  if (totalWeight.lte(0)) return null;
-  const correlationByPair = new Map(research.correlations.flatMap((item) => {
-    const correlation = decimal(item.value);
-    if (!correlation) return [];
-    const left = normalizeSymbol(item.left);
-    const right = normalizeSymbol(item.right);
-    return [[`${left}|${right}`, correlation] as const, [`${right}|${left}`, correlation] as const];
-  }));
-  let variance = new Decimal(0);
-  for (const left of components) {
-    const leftWeight = left.weight.div(totalWeight);
-    for (const right of components) {
-      const rightWeight = right.weight.div(totalWeight);
-      const correlation = left.symbol === right.symbol ? new Decimal(1) : correlationByPair.get(`${left.symbol}|${right.symbol}`) ?? new Decimal(0);
-      variance = variance.plus(leftWeight.mul(rightWeight).mul(left.volatility).mul(right.volatility).mul(correlation));
-    }
-  }
-  return variance.gt(0) ? variance.sqrt() : null;
 }
 
 function percent(value: Decimal): string {

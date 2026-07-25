@@ -42,7 +42,7 @@ describe("decision log lifecycle", () => {
     const item = body.data.items[0];
 
     expect(item.recommendationId).toBe(recommendationId);
-    expect(item.action).toBe("ACCEPT");
+    expect(item.action).toBe("simulated");
     expect(item.reason).toBe("先用模拟组合观察回撤");
     expect(item.userQuestion).toBe("科技板块现在适合入场吗？");
     expect(item.advisorReply).toContain("建议先试仓");
@@ -65,6 +65,45 @@ describe("decision log lifecycle", () => {
     db.close();
     expect(recommendation.status).toBe("ACTIVE");
     expect(actions.map((item) => item.action)).toEqual(["ACCEPT", "REVOKE"]);
+  });
+
+  it("filters current and legacy action aliases while preserving top-level snapshot links", async () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO decision_logs
+      (id,user_id,conversation_id,action,recommendation_json,decision,created_at)
+      VALUES (?,?,?,?,?,?,?)`).run(
+      "legacy-simulated-decision",
+      TEST_USER_ID,
+      conversationId,
+      "SIMULATED",
+      JSON.stringify({
+        recommendationId,
+        analysisId,
+        recommendation: { summary: "旧版模拟采纳记录" },
+      }),
+      "SIMULATED",
+      "2026-07-25T08:00:00.000Z",
+    );
+    db.close();
+    await postDecision("ACCEPT", "当前版本模拟采纳", "current-simulated-decision");
+
+    const list = await GET(authenticatedRequest("http://localhost/api/v1/decisions?action=simulated&limit=20"));
+    const body = await list.json();
+
+    expect(body.data.items).toHaveLength(2);
+    expect(body.data.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        recommendationId,
+        analysisId,
+        action: "simulated",
+      }),
+      expect.objectContaining({
+        recommendationId,
+        analysisId,
+        action: "simulated",
+        recommendation: { summary: "旧版模拟采纳记录" },
+      }),
+    ]));
   });
 });
 

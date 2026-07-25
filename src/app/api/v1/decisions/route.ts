@@ -4,7 +4,15 @@ import { getDatabase, getRequestContext, meta, pageParams, parseJson } from "@/s
 
 type Row = Record<string, unknown>;
 
-const ACTIONS = new Set(["ACCEPT", "REJECT", "DEFER", "REVOKE", "FOLLOW_UP", "VIEWED", "COMMENT"]);
+const ACTION_ALIASES: Record<string, string[]> = {
+  ACCEPT: ["ACCEPT", "SIMULATED"],
+  REJECT: ["REJECT", "REJECTED"],
+  DEFER: ["DEFER", "LATER"],
+  REVOKE: ["REVOKE", "REVOKED"],
+  FOLLOW_UP: ["FOLLOW_UP", "FOLLOWUP_QUESTION"],
+  VIEWED: ["VIEWED"],
+  COMMENT: ["COMMENT", "COMMENTED"],
+};
 
 function record(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
@@ -21,25 +29,39 @@ function normalizedAction(value: unknown): string {
   return action;
 }
 
+function publicAction(value: unknown): string {
+  const action = String(value ?? "VIEWED").toUpperCase();
+  if (action === "ACCEPT" || action === "SIMULATED") return "simulated";
+  if (action === "REJECT" || action === "REJECTED") return "rejected";
+  if (action === "REVOKE" || action === "REVOKED") return "revoked";
+  if (action === "DEFER" || action === "LATER") return "later";
+  if (action === "FOLLOW_UP" || action === "FOLLOWUP_QUESTION") return "followup_question";
+  if (action === "COMMENT" || action === "COMMENTED") return "commented";
+  return "viewed";
+}
+
 export async function GET(req: NextRequest) {
   const { userId } = getRequestContext(req);
   const { limit } = pageParams(req);
   const actionFilter = normalizedAction(req.nextUrl.searchParams.get("action"));
-  const hasActionFilter = req.nextUrl.searchParams.has("action") && ACTIONS.has(actionFilter);
+  const actionAliases = ACTION_ALIASES[actionFilter] ?? [];
+  const hasActionFilter = req.nextUrl.searchParams.has("action") && actionAliases.length > 0;
   const db = getDatabase();
   const rows = db.prepare(`SELECT * FROM decision_logs
-    WHERE user_id=? ${hasActionFilter ? "AND UPPER(action)=?" : ""}
+    WHERE user_id=? ${hasActionFilter ? `AND UPPER(action) IN (${actionAliases.map(() => "?").join(",")})` : ""}
     ORDER BY created_at DESC, id DESC LIMIT ?`)
-    .all(...(hasActionFilter ? [userId, actionFilter, limit] : [userId, limit])) as Row[];
+    .all(...(hasActionFilter ? [userId, ...actionAliases, limit] : [userId, limit])) as Row[];
 
   const items = rows.map((row) => {
     const payload = record(parseJson(String(row.recommendation_json ?? "{}"), {}));
     const recommendation = record(payload.recommendation ?? payload);
-    const recommendationId = recommendation.id == null ? null : String(recommendation.id);
+    const recommendationIdValue = payload.recommendationId ?? recommendation.id;
+    const recommendationId = recommendationIdValue == null ? null : String(recommendationIdValue);
     const conversationId = row.conversation_id == null
       ? recommendation.conversationId == null ? null : String(recommendation.conversationId)
       : String(row.conversation_id);
-    const analysisId = recommendation.analysisId == null ? null : String(recommendation.analysisId);
+    const analysisIdValue = payload.analysisId ?? recommendation.analysisId;
+    const analysisId = analysisIdValue == null ? null : String(analysisIdValue);
     const current = recommendationId
       ? db.prepare("SELECT status,updated_at FROM recommendations WHERE id=? AND user_id=? AND status!='deleted'").get(recommendationId, userId) as Row | undefined
       : undefined;
@@ -63,7 +85,7 @@ export async function GET(req: NextRequest) {
       recommendationId,
       conversationId,
       analysisId,
-      action: normalizedAction(row.action ?? row.decision),
+      action: publicAction(row.action ?? row.decision),
       reason: payload.reason == null ? null : String(payload.reason),
       note: payload.note == null ? null : String(payload.note),
       recommendation,

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPortfolioRecommendationDraft, criticalMissingInformation, marketForHolding } from "./professional";
+import {
+  buildPortfolioRecommendationDraft,
+  classifyResearchDataState,
+  criticalMissingInformation,
+  deterministicAdvisorSummary,
+  enforcePublicationStatus,
+  marketForHolding,
+} from "./professional";
+import type { AdvisorDecision } from "./professional";
 
 describe("buildPortfolioRecommendationDraft", () => {
   it("creates a portfolio-level recommendation without inventing a target security", () => {
@@ -109,5 +117,113 @@ describe("buildPortfolioRecommendationDraft", () => {
   it("uses instrument market metadata when a holding symbol has no suffix", () => {
     expect(marketForHolding({ symbol: "AAPL", market: "US" })).toBe("US");
     expect(marketForHolding({ symbol: "000001.SZ", market: null })).toBe("SZ");
+  });
+
+  it("keeps deterministic portfolio summaries self-contained and aware of profile completeness", () => {
+    expect(deterministicAdvisorSummary({
+      targetSymbol: null,
+      profileReady: true,
+      hasHoldings: true,
+      concentrationRisk: false,
+    })).toBe("已完成画像与组合诊断，当前组合以继续观察为主");
+    expect(deterministicAdvisorSummary({
+      targetSymbol: null,
+      profileReady: true,
+      hasHoldings: false,
+      concentrationRisk: false,
+    })).toBe("请先补充当前持仓，完成组合诊断后再形成具体标的建议");
+  });
+
+  it("does not mark daily fallback or empty market results as fresh live data", () => {
+    const freshExecution = {
+      result: { liveCallSucceeded: true, data: [{ close: 100 }], fresh: true },
+    };
+
+    expect(classifyResearchDataState([freshExecution] as never, false)).toBe("LIVE_FRESH");
+    expect(classifyResearchDataState([freshExecution] as never, true)).toBe("STALE");
+    expect(classifyResearchDataState([{
+      result: { liveCallSucceeded: true, data: [], fresh: true },
+    }] as never, false)).toBe("UNAVAILABLE");
+  });
+
+  it("blocks stale trading advice and model-level compliance failures", () => {
+    const candidate: AdvisorDecision = {
+      action: "HOLD",
+      requestedDirection: "ANALYZE",
+      summary: "继续观察",
+      suitability: "MEDIUM",
+      confidence: 0.8,
+      rationales: ["组合风险可控"],
+      counterEvidence: ["市场仍可能波动"],
+      risks: ["历史数据不能代表未来"],
+      portfolioImpact: "维持当前风险预算",
+      invalidationConditions: ["画像变化"],
+      compliance: { approved: true, decision: "APPROVED", reason: "通过" },
+    };
+    const findings = [{
+      agent: "COMPLIANCE_REVIEWER",
+      conclusion: "通过",
+      supportEvidence: ["画像完整"],
+      counterEvidence: ["市场仍可能波动"],
+      missingInformation: [],
+      risks: [],
+      confidence: 0.9,
+      needsAnotherAgent: false,
+    }] as never;
+
+    expect(enforcePublicationStatus({
+      candidate,
+      criticalMissing: [],
+      dataState: "STALE",
+      findings,
+      modelFallback: false,
+      unresolvedConflict: false,
+      marketDataRequired: true,
+    })).toBe("BLOCKED");
+    expect(enforcePublicationStatus({
+      candidate: {
+        ...candidate,
+        compliance: { approved: false, decision: "BLOCKED", reason: "合规阻断" },
+      },
+      criticalMissing: [],
+      dataState: "LIVE_FRESH",
+      findings,
+      modelFallback: false,
+      unresolvedConflict: false,
+      marketDataRequired: true,
+    })).toBe("BLOCKED");
+  });
+
+  it("allows a fully supported non-market task to publish without fake market data", () => {
+    expect(enforcePublicationStatus({
+      candidate: {
+        action: "HOLD",
+        requestedDirection: "ANALYZE",
+        summary: "完成画像说明",
+        suitability: "MEDIUM",
+        confidence: 0.8,
+        rationales: ["画像完整"],
+        counterEvidence: ["资金用途变化会使结论失效"],
+        risks: ["画像可能变化"],
+        portfolioImpact: "不改变持仓",
+        invalidationConditions: ["画像变化"],
+        compliance: { approved: true, decision: "APPROVED", reason: "通过" },
+      },
+      criticalMissing: [],
+      dataState: "NOT_REQUIRED",
+      findings: [{
+        agent: "COMPLIANCE_REVIEWER",
+        conclusion: "通过",
+        supportEvidence: ["画像完整"],
+        counterEvidence: ["画像可能变化"],
+        missingInformation: [],
+        risks: [],
+        confidence: 0.9,
+        needsAnotherAgent: false,
+      }],
+      modelFallback: false,
+      unresolvedConflict: false,
+      marketDataRequired: false,
+    })).toBe("ACTIVE");
   });
 });

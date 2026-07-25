@@ -55,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       decisionId,
       userId,
       recommendation.conversation_id ?? null,
-      transition.logAction,
+      parsed.data.action,
       json({
         recommendationId: id,
         analysisId: recommendation.analysis_id ?? null,
@@ -63,22 +63,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         reason: parsed.data.reason ?? null,
         note: parsed.data.note ?? null,
       }),
-      transition.logAction,
+      parsed.data.action,
       now,
     );
   })();
   db.close();
-  const payload = { data: { decisionId, recommendationId: id, analysisId: recommendation.analysis_id ?? null, action: transition.logAction, recommendationStatus: transition.recommendationStatus, ordersCreated: false, createdAt: now }, meta: meta() };
+  const payload = { data: { decisionId, recommendationId: id, analysisId: recommendation.analysis_id ?? null, action: transition.responseAction, recommendationStatus: transition.recommendationStatus, ordersCreated: false, createdAt: now }, meta: meta() };
   await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
   return NextResponse.json(payload, { status: 201 });
 }
 
 function decisionTransition(action: z.infer<typeof Schema>["action"], currentStatus: string) {
-  if (action === "ACCEPT") return { logAction: "ACCEPT", recommendationStatus: "SIMULATED", shouldUpdateRecommendation: true };
-  if (action === "REJECT") return { logAction: "REJECT", recommendationStatus: "REJECTED", shouldUpdateRecommendation: true };
-  if (action === "REVOKE") return { logAction: "REVOKE", recommendationStatus: "ACTIVE", shouldUpdateRecommendation: true };
-  if (action === "DEFER") return { logAction: "DEFER", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
-  if (action === "FOLLOW_UP") return { logAction: "FOLLOW_UP", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
-  if (action === "COMMENT") return { logAction: "COMMENT", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
-  return { logAction: "VIEWED", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
+  if (action === "ACCEPT") return { responseAction: "SIMULATED", recommendationStatus: "SIMULATED", shouldUpdateRecommendation: true };
+  if (action === "REJECT") return { responseAction: "REJECTED", recommendationStatus: "REJECTED", shouldUpdateRecommendation: true };
+  if (action === "REVOKE") return { responseAction: "REVOKED", recommendationStatus: "ACTIVE", shouldUpdateRecommendation: true };
+  if (action === "DEFER") return { responseAction: "LATER", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
+  return { responseAction: action, recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
 }
