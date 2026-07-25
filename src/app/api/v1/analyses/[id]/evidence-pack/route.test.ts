@@ -36,10 +36,12 @@ describe("GET /api/v1/analyses/:id/evidence-pack", () => {
       "2026-07-25T08:00:00.000Z", "2026-07-25T08:00:03.000Z",
     );
     db.prepare(`INSERT INTO agent_runs
-      (id,user_id,type,status,root_run_id,parent_run_id,agent_type,created_at,completed_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      (id,user_id,type,status,root_run_id,parent_run_id,agent_type,objective,created_at,completed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
       "analysis-evidence-data", userId, "data_research", "failed", "analysis-evidence", "analysis-evidence",
-      "data_research", "2026-07-25T08:00:01.000Z", "2026-07-25T08:00:02.000Z",
+      "data_research",
+      "当前角色：DATA_RESEARCH 你是 Money Whisperer 的真实专业子 Agent。用户与服务端上下文：内部提示。已完成的上游发现：内部数据。",
+      "2026-07-25T08:00:01.000Z", "2026-07-25T08:00:02.000Z",
     );
     const skill = db.prepare("SELECT id FROM skill_assets WHERE slug='pandadata-api'").get() as { id: string };
     db.prepare(`INSERT INTO skill_runs
@@ -88,5 +90,12 @@ describe("GET /api/v1/analyses/:id/evidence-pack", () => {
       allowed: false,
       reason: "该运行已完成或被阻断，请基于当前信息发起新的顾问分析。",
     });
+    const dataResearchTrace = body.data.agentTrace.find((item: { agent: string }) => item.agent === "DATA_RESEARCH");
+    expect(dataResearchTrace).toMatchObject({
+      purpose: "核验市场数据、估值与资讯证据",
+      inputSummary: "核验市场数据、估值与资讯证据",
+    });
+    expect(JSON.stringify(dataResearchTrace)).not.toContain("用户与服务端上下文");
+    expect(JSON.stringify(dataResearchTrace)).not.toContain("已完成的上游发现");
   });
 });

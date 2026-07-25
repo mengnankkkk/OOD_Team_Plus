@@ -88,8 +88,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         parentRunId: item.parent_run_id ?? null,
         agent: String(item.agent_type ?? item.type).toUpperCase(),
         status: String(item.status).toUpperCase(),
-        inputSummary: item.objective ?? null,
-        purpose: item.objective ?? null,
+        inputSummary: publicAgentPurpose(item),
+        purpose: publicAgentPurpose(item),
         summary: item.output_summary ?? null,
         modelProvider: item.model_provider ?? null,
         modelName: item.model_name ?? null,
@@ -230,4 +230,24 @@ function sanitizePayload(value: unknown): unknown {
     key,
     /token|password|secret|api[_-]?key|authorization|cookie/iu.test(key) ? "[REDACTED]" : sanitizePayload(item),
   ]));
+}
+
+const PUBLIC_AGENT_PURPOSES: Record<string, string> = {
+  chief_advisor: "统筹画像、数据、组合风险、建议与合规结论",
+  profile_context: "核对用户画像、目标、资金约束与持仓事实",
+  data_research: "核验市场数据、估值与资讯证据",
+  portfolio_risk: "评估集中度、回撤约束与压力情景",
+  recommendation: "汇总证据并形成候选建议方案",
+  compliance_reviewer: "检查证据完整性、适当性与发布条件",
+  explanation_report: "整理面向用户的结论与证据链",
+};
+
+function publicAgentPurpose(item: Row): string {
+  const agent = String(item.agent_type ?? item.type ?? "").toLowerCase();
+  if (PUBLIC_AGENT_PURPOSES[agent]) return PUBLIC_AGENT_PURPOSES[agent];
+
+  const objective = String(item.objective ?? "").replace(/\s+/gu, " ").trim();
+  const containsInternalContext = /当前角色|服务端上下文|确定性节点发现|已完成的上游发现|请动态委派/iu.test(objective);
+  if (!objective || objective.length > 160 || containsInternalContext) return "执行专业分析任务";
+  return objective;
 }
