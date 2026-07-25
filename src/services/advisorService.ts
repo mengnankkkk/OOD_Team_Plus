@@ -229,7 +229,7 @@ function delay(ms: number): Promise<void> {
 async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
   const pack = await apiGet<{
     analysis: { createdAt: string; completedAt?: string | null };
-    agentTrace: Array<{ id: string; parentRunId?: string | null; agent: string; status: string; purpose?: string | null; summary?: string | null; modelProvider?: string | null; modelName?: string | null; startedAt: string; completedAt?: string | null; failure?: { message?: string } | null }>;
+    agentTrace: Array<{ id: string; parentRunId?: string | null; agent: string; status: string; inputSummary?: string | null; purpose?: string | null; summary?: string | null; modelProvider?: string | null; modelName?: string | null; startedAt: string; completedAt?: string | null; failure?: { message?: string } | null }>;
     toolCalls: Array<{ id: string; toolName: string; status: string; input?: unknown; result?: unknown; outputSummary?: string | null; startedAt?: string | null; completedAt?: string | null; error?: { message?: string } | null }>;
     skillRuns: Array<{ id: string; method: string; status: string; quality: string; outputSummary?: string | null; dataAsOf?: string | null }>;
     missingEvidence: string[];
@@ -247,7 +247,7 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
       label: item.agent,
       kind: item.modelProvider && item.modelProvider !== "deterministic" ? "llm" : "reasoning",
       tool: null,
-      input: item.purpose ?? null,
+      input: item.inputSummary ?? item.purpose ?? null,
       output: item.summary ?? item.failure?.message ?? null,
       startedAt: item.startedAt,
       durationMs: elapsed(item.startedAt, item.completedAt ?? (item.parentRunId ? null : traceEnd)),

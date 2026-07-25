@@ -85,6 +85,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         parentRunId: item.parent_run_id ?? null,
         agent: String(item.agent_type ?? item.type).toUpperCase(),
         status: String(item.status).toUpperCase(),
+        inputSummary: item.objective ?? null,
         purpose: item.objective ?? null,
         summary: item.output_summary ?? null,
         modelProvider: item.model_provider ?? null,
