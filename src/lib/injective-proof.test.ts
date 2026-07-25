@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildProofCalldata, canonicalizeReport, INJECTIVE_PROOF_PREFIX_HEX, sha256Hex } from "./injective-proof";
+import { buildProofCalldata, buildProofDeploymentData, canonicalizeReport, INJECTIVE_PROOF_PREFIX_HEX, sha256Hex } from "./injective-proof";
 
 describe("Injective report proof", () => {
   it("canonicalizes line endings and outer whitespace", () => {
@@ -20,7 +20,15 @@ describe("Injective report proof", () => {
     expect((calldata.length - 2) / 2).toBe(36);
   });
 
+  it("builds valid init code for an inert proof capsule contract", () => {
+    const hash = `0x${"ab".repeat(32)}`;
+    const deploymentData = buildProofDeploymentData(hash);
+    expect(deploymentData).toBe(`0x6025600c60003960256000f300${INJECTIVE_PROOF_PREFIX_HEX}${"ab".repeat(32)}`);
+    expect((deploymentData.length - 2) / 2).toBe(49);
+  });
+
   it("rejects malformed hashes", () => {
     expect(() => buildProofCalldata("0x1234")).toThrow("报告哈希格式无效");
+    expect(() => buildProofDeploymentData("0x1234")).toThrow("报告哈希格式无效");
   });
 });

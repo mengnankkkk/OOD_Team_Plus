@@ -28,6 +28,13 @@ export function buildProofCalldata(hash: string): `0x${string}` {
   return `0x${INJECTIVE_PROOF_PREFIX_HEX}${hash.slice(2).toLowerCase()}`;
 }
 
+export function buildProofDeploymentData(hash: string): `0x${string}` {
+  const proofPayload = buildProofCalldata(hash).slice(2);
+  // Deploy 37 bytes of inert runtime code: STOP + "MWP1" + SHA-256(report).
+  // PUSH1 0x25, PUSH1 0x0c, PUSH1 0, CODECOPY, PUSH1 0x25, PUSH1 0, RETURN.
+  return `0x6025600c60003960256000f300${proofPayload}`;
+}
+
 export function saveInjectiveProofDraft(draft: Omit<InjectiveProofDraft, "capturedAt"> & { capturedAt?: string }): boolean {
   if (typeof window === "undefined") return false;
   try {

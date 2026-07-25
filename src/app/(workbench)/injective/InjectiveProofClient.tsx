@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "@/features/frontend-migration/api";
 import { InjectiveProofView, type NetworkStatus, type Phase } from "./InjectiveProofView";
 import {
-  buildProofCalldata,
+  buildProofDeploymentData,
   canonicalizeReport,
   INJECTIVE_CHAIN_ID_HEX,
   INJECTIVE_EXPLORER_URL,
@@ -19,7 +19,7 @@ type EthereumProvider = {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
 };
 
-type Receipt = { status?: string; blockNumber?: string };
+type Receipt = { status?: string; blockNumber?: string; contractAddress?: string | null };
 
 const EXAMPLE_REPORT = `Money Whisperer AI 投资建议摘要
 
@@ -43,6 +43,7 @@ function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "object" && error !== null && "message" in error ? String((error as { message: unknown }).message) : String(error);
   if (message === "NO_WALLET") return "未检测到 EVM 钱包。请先安装 MetaMask，再刷新页面。";
   if (message === "NO_TEST_INJ" || message.toLowerCase().includes("insufficient funds")) return "钱包中没有足够的测试网 INJ 支付 Gas，请先从 Faucet 领取。";
+  if (message.includes("External transactions to internal accounts cannot include data")) return "Injective 拒绝了旧版自转账存证。请强制刷新页面后重新提交。";
   return message || "Injective 存证失败，请稍后重试。";
 }
 
@@ -90,6 +91,7 @@ export default function InjectiveProofClient() {
   const [wallet, setWallet] = useState("");
   const [transactionHash, setTransactionHash] = useState("");
   const [confirmedBlock, setConfirmedBlock] = useState<number | null>(null);
+  const [proofContract, setProofContract] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<"hash" | "transaction" | null>(null);
 
@@ -133,6 +135,7 @@ export default function InjectiveProofClient() {
     if (transactionHash) {
       setTransactionHash("");
       setConfirmedBlock(null);
+      setProofContract("");
       setWallet("");
       setPhase("idle");
     }
@@ -177,7 +180,7 @@ export default function InjectiveProofClient() {
       setPhase("signing");
       const result = await provider.request({
         method: "eth_sendTransaction",
-        params: [{ from: account, to: account, value: "0x0", data: buildProofCalldata(hash) }],
+        params: [{ from: account, value: "0x0", data: buildProofDeploymentData(hash) }],
       });
       if (typeof result !== "string") throw new Error("钱包没有返回交易哈希");
       setTransactionHash(result);
@@ -194,6 +197,7 @@ export default function InjectiveProofClient() {
         return;
       }
       setConfirmedBlock(receipt.blockNumber ? Number.parseInt(receipt.blockNumber, 16) : null);
+      setProofContract(receipt.contractAddress ?? "");
       setPhase("confirmed");
     } catch (caught) {
       setPhase("idle");
@@ -212,6 +216,7 @@ export default function InjectiveProofClient() {
       wallet={wallet}
       transactionHash={transactionHash}
       confirmedBlock={confirmedBlock}
+      proofContract={proofContract}
       error={error}
       copied={copied}
       busy={busy}
