@@ -157,8 +157,10 @@
 .markdown-preview h3 { font-size: 16px; }
 .markdown-preview p { margin: 0; }
 .markdown-spacer { height: 4px; }
-.markdown-bullet { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 4px; }
-.markdown-bullet > span { color: hsl(var(--primary)); font-weight: 800; }
+.markdown-bullet { display: grid; width: 100%; min-width: 0; grid-template-columns: 14px minmax(0, 1fr); gap: 4px; align-items: start; }
+.markdown-bullet > .markdown-bullet-icon { color: hsl(var(--primary)); font-weight: 800; }
+.markdown-bullet-content { display: block; width: 100%; min-width: 0; white-space: normal; writing-mode: horizontal-tb; overflow-wrap: break-word; word-break: break-word; }
+.markdown-bullet-content strong { white-space: nowrap; }
 .markdown-callout { border-left: 3px solid hsl(var(--primary)); background: hsl(var(--primary) / .06); padding: 10px 12px; font-weight: 700; }
 .markdown-table-wrap { max-width: 100%; margin: 8px 0 12px; overflow-x: auto; border: 1px solid hsl(var(--border)); }
 .markdown-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12px; }

@@ -79,7 +79,7 @@ type ResearchState = {
   closes: Decimal[];
   latest: Decimal | null;
   asOfDate: string | null;
-  quotes: Array<{ symbol: string; latest: string | null; asOfDate: string | null; method: string }>;
+  quotes: Array<{ symbol: string; name: string; latest: string | null; asOfDate: string | null; method: string }>;
   riskMetrics: Array<{ symbol: string; observations: number; annualizedVolatility: string | null; maxDrawdown: string | null }>;
   correlations: Array<{ left: string; right: string; observations: number; value: string | null }>;
   study?: ResearchStudy;
@@ -92,6 +92,11 @@ type ResearchStudy =
 type RoleRunResult = {
   childRunId: string;
   finding: AgentFinding;
+};
+
+type ProfileCompleteness = {
+  complete: boolean;
+  missing: string[];
 };
 
 export type ProfessionalAdvisorResult = {
@@ -140,6 +145,7 @@ export async function runProfessionalAdvisor(input: {
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
   const dailyPortfolio = input.workflow === "DAILY_PORTFOLIO";
   const decisionProfile = dailyPortfolio ? profileWithDailyAssumptions(profile) : profile;
+  const profileCompleteness = profileCompletenessFor(decisionProfile, dailyPortfolio);
   const requiredRoles = rolesFor(intent, Boolean(target), holdings.length > 0, input.content);
   const findings: AgentFinding[] = [];
   const roleRunIds = new Map<ProfessionalAgentRole, string>();
@@ -180,7 +186,7 @@ export async function runProfessionalAdvisor(input: {
       };
     }
 
-    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content)) {
+    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content) && !profileCompleteness.complete) {
       return {
         kind: "GUIDED_INTAKE",
         runId: input.analysisId,
@@ -239,6 +245,20 @@ export async function runProfessionalAdvisor(input: {
       analysisId: input.analysisId,
       question: input.content,
     });
+    const chiefContext = buildChiefAdvisorContext({
+      input,
+      profile: decisionProfile,
+      profileCompleteness,
+      goals,
+      holdings,
+      snapshot,
+      target,
+      research,
+      findings,
+      requiredRoles,
+      semanticContext,
+      dailyPortfolio,
+    });
 
     let candidate = deterministicDecision;
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
@@ -261,6 +281,7 @@ export async function runProfessionalAdvisor(input: {
       try {
         const model = await runChiefAdvisor({
           prompt: chiefPrompt(input.content, decisionProfile, goals, holdings, snapshot, target, research, findings, requiredRoles, semanticContext, dailyPortfolio),
+          context: chiefContext,
           requiredAgents: requiredRoles,
           fallbackFindings: findings,
           onAgentStarted: (agent, label) => {
@@ -374,7 +395,7 @@ export async function runProfessionalAdvisor(input: {
       findings,
       missingInformation,
       recommendation,
-      answer: formatAnswer(candidate, status, findings, research.dataState, publicationReasons, profile, goals),
+      answer: formatAnswer(candidate, status, findings, research, publicationReasons, profile, goals),
       provider,
       debateSuggestion: attachTrustedTargetSymbol(candidate.debateSuggestion, target?.symbol),
     };
@@ -497,16 +518,74 @@ function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding
   return [...byAgent.values()];
 }
 
-function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
+function profileCompletenessFor(profile: Profile | undefined, allowAssumptions = false): ProfileCompleteness {
+  const missing = allowAssumptions ? [] : profileMissingInformation(profile);
+  return { complete: missing.length === 0, missing };
+}
+
+function profileMissingInformation(profile: Profile | undefined): string[] {
   const preferences = parsePreferences(profile?.preferences_json);
-  const missing = [
+  return [
     !profile?.risk_level ? "risk_level" : null,
     !profile?.investment_amount_decimal ? "investment_amount" : null,
     !profile?.horizon ? "horizon" : null,
     !profile?.max_drawdown_decimal ? "max_drawdown" : null,
-    preferences.instrumentPreference === undefined ? "instrument_preference" : null,
-    preferences.nearTermUse === undefined ? "near_term_use" : null,
+    preferences.instrumentPreference == null || preferences.instrumentPreference === "" ? "instrument_preference" : null,
+    preferences.nearTermUse == null ? "near_term_use" : null,
   ].filter((value): value is string => Boolean(value));
+}
+
+function buildChiefAdvisorContext(input: {
+  input: {
+    userId: string;
+    sessionId: string;
+    analysisId: string;
+    content: string;
+    workflow?: AdvisorWorkflow;
+  };
+  profile: Profile | undefined;
+  profileCompleteness: ProfileCompleteness;
+  goals: Goal[];
+  holdings: Holding[];
+  snapshot: Record<string, unknown> | undefined;
+  target: Instrument | null;
+  research: ResearchState;
+  findings: AgentFinding[];
+  requiredRoles: ProfessionalAgentRole[];
+  semanticContext: AdvisorSemanticToolsContext;
+  dailyPortfolio: boolean;
+}): Record<string, unknown> {
+  return {
+    workflow: input.dailyPortfolio ? "DAILY_PORTFOLIO" : "CONVERSATION",
+    userQuestion: input.input.content,
+    profile: input.profile ?? null,
+    profileCompleteness: input.profileCompleteness,
+    goals: input.goals,
+    holdings: input.holdings,
+    portfolioSnapshot: input.snapshot ?? null,
+    targetInstrument: input.target,
+    marketData: {
+      dataState: input.research.dataState,
+      asOfDate: input.research.asOfDate,
+      quotes: input.research.quotes,
+      riskMetrics: input.research.riskMetrics,
+      correlations: input.research.correlations,
+      study: input.research.study ?? null,
+    },
+    semanticTools: summarizeAdvisorSemanticToolsContext(input.semanticContext),
+    knownFacts: {
+      profileIsComplete: input.profileCompleteness.complete,
+      missingProfileFields: input.profileCompleteness.missing,
+      hasPortfolioSnapshot: Boolean(input.snapshot),
+      holdingCount: input.holdings.length,
+      requiredRoles: input.requiredRoles,
+    },
+    missingInformation: [...new Set(input.findings.flatMap((finding) => finding.missingInformation))],
+  };
+}
+
+function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
+  const missing = profileMissingInformation(profile);
   return AgentFindingSchema.parse({
     agent: "PROFILE_CONTEXT",
     conclusion: missing.length && !allowAssumptions
@@ -516,7 +595,7 @@ function profileFindingFor(profile: Profile | undefined, allowAssumptions = fals
         : "已加载风险等级、投资金额、期限和最大回撤约束",
     supportEvidence: allowAssumptions && missing.length
       ? ["默认假设：平衡型、中线、最大回撤 10%、偏好宽基 ETF、近期不使用"]
-      : missing.length ? [] : [`风险等级：${profile?.risk_level}`, `投资期限：${profile?.horizon}`],
+      : missing.length ? [] : formatProfileFacts(profile).slice(0, 3),
     counterEvidence: [missing.length ? "缺失画像会使仓位和期限建议失真" : "画像可能随资金用途变化，需要在执行前复核"],
     missingInformation: allowAssumptions ? [] : missing,
     risks: ["近期资金用途变化会降低风险承受能力"],
@@ -630,12 +709,17 @@ async function researchInstrument(
     const correlations = pairwiseCorrelations(series);
     const dataState = classifyResearchDataState(executions, usedDailyFallback, latestTradingDate);
     const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
-    const quotes = executions.map((execution) => ({
-      symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
-      latest: [...execution.result.data].sort(compareMarketRows).map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null).at(-1)?.toString() ?? null,
-      asOfDate: execution.result.asOfDate,
-      method: execution.source.method,
-    }));
+    const quotes = executions.map((execution) => {
+      const symbol = String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset);
+      const instrument = instruments.find((candidate) => normalizeSymbol(candidate.symbol) === normalizeSymbol(symbol));
+      return {
+        symbol,
+        name: instrument?.name ?? symbol,
+        latest: [...execution.result.data].sort(compareMarketRows).map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null).at(-1)?.toString() ?? null,
+        asOfDate: execution.result.asOfDate,
+        method: execution.source.method,
+      };
+    });
     const study = intent === "FACTOR_RESEARCH"
       ? factorStudy(executions, factorNames(content))
       : intent === "STRATEGY_BACKTEST"
@@ -648,11 +732,10 @@ async function researchInstrument(
       state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes, riskMetrics, correlations, study },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH",
-        conclusion: studySummary ?? `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
+        conclusion: studySummary ?? `行情数据已完成核对，并完成历史波动和最大回撤计算（截至 ${formatMarketDate(asOfDates.at(-1) ?? null)}）`,
         supportEvidence: [
-          latest ? `最新价格样本：${latest.toString()}` : "市场接口已完成 live call",
-          `数据日期：${asOfDates.at(-1) ?? "未知"}`,
-          studySummary ?? `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
+          `行情数据截至：${asOfDates.at(-1) ?? "未知"}`,
+          studySummary ?? "已取得行情收盘价，并计算历史波动和最大回撤。",
         ].slice(0, 3),
         counterEvidence: [
           dataState === "LIVE_FRESH"
@@ -1213,15 +1296,7 @@ export function criticalMissingInformation(
 ): string[] {
   if (intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return target ? [] : ["instrument"];
   if (intent !== "BUY" && intent !== "SELL" && intent !== "DIAGNOSIS") return [];
-  const preferences = parsePreferences(profile?.preferences_json);
-  const profileMissing = [
-    !profile?.risk_level ? "risk_level" : null,
-    !profile?.investment_amount_decimal ? "investment_amount" : null,
-    !profile?.horizon ? "horizon" : null,
-    !profile?.max_drawdown_decimal ? "max_drawdown" : null,
-    preferences.instrumentPreference === undefined ? "instrument_preference" : null,
-    preferences.nearTermUse === undefined ? "near_term_use" : null,
-  ].filter((value): value is string => Boolean(value));
+  const profileMissing = profileMissingInformation(profile);
   const requiredProfileMissing = allowProfileAssumptions ? [] : profileMissing;
   if (intent === "DIAGNOSIS") return [...requiredProfileMissing, ...(!hasHoldings ? ["holdings"] : [])];
   return [
@@ -1303,6 +1378,7 @@ export function chiefPrompt(
 ): string {
   const cash = decimal(snapshot?.cash_decimal);
   const totalMarketValue = decimal(snapshot?.total_market_value_decimal);
+  const completeness = profileCompletenessFor(profile, dailyPortfolio);
   const marketFacts = research.executions.map(({ source, result }) => ({
     method: source.method,
     requestedSymbol: source.parameters.symbol,
@@ -1318,6 +1394,8 @@ export function chiefPrompt(
     `服务端当前时间：${isoNow()}；数据状态由服务端计算，禁止自行改写或臆测数据已过期`,
     `必须委派：${requiredRoles.join(", ")}`,
     `用户画像：${json(profile ?? {})}`,
+    `用户画像完整性：${json(completeness)}。complete=true 时这些画像字段已知，禁止重复要求用户补齐画像；应直接基于画像回答当前问题。`,
+    "普通模式路由要求：只有画像不完整且问题仍是开放式 GENERAL 时才继续澄清；画像完整后必须由 Chief Advisor 作为真正理财顾问回答。无标的的一般理财/资产配置/资金规划问题不得要求补充 instrument。",
     `用户目标：${json(goals)}`,
     `现金与组合快照：${json({
       snapshotId: snapshot?.id ?? null,
@@ -1347,7 +1425,7 @@ export function chiefPrompt(
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
-    "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。",
+    "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。请直接回答用户当前追问，不要固定回复“下一步先整理资金分层”。",
   ].join("\n");
 }
 
@@ -1355,38 +1433,28 @@ function formatAnswer(
   decision: AdvisorDecision,
   status: PublicationStatus,
   findings: AgentFinding[],
-  dataState: DataState,
+  researchState: ResearchState,
   publicationReasons: string[],
   profile: Profile | undefined,
   goals: Goal[],
 ): string {
   const profileFinding = findings.find((finding) => finding.agent === "PROFILE_CONTEXT");
-  const research = findings.find((finding) => finding.agent === "DATA_RESEARCH");
   const risk = findings.find((finding) => finding.agent === "PORTFOLIO_RISK");
   const compliance = findings.find((finding) => finding.agent === "COMPLIANCE_REVIEWER");
   const profileEvidence = [
     profileFinding?.conclusion,
     ...formatProfileFacts(profile),
     ...goals.slice(0, 2).map((goal) => `投资目标：${goal.name}，期限：${translateHorizon(goal.horizon)}${goal.target_amount_decimal ? `，目标金额：${goal.target_amount_decimal} 元` : ""}`),
-    ...(profileFinding?.supportEvidence ?? []),
+    ...(profileFinding?.supportEvidence ?? []).map((evidence) => translateProfileValue(evidence)),
   ].filter(Boolean);
-  const marketEvidence = [
-    research?.conclusion,
-    ...(research?.supportEvidence ?? []),
-  ].filter(Boolean);
-  const fundamentalEvidence = findings
-    .flatMap((finding) => finding.supportEvidence)
-    .filter((evidence) => /基本面|财务|估值|盈利|营收|利润|公告|新闻|消息|政策|行业景气/u.test(evidence));
-  const technicalEvidence = findings
-    .flatMap((finding) => finding.supportEvidence)
-    .filter((evidence) => /技术|均线|趋势|动量|波动|回撤|成交量|价格|行情/u.test(evidence));
+  const marketEvidence = formatMarketEvidence(researchState);
+  const fundamentalEvidence = "本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。";
   return [
     `建议状态：${status}；建议动作：${decision.action}`,
     `核心结论：${decision.summary}`,
     `用户画像与投资目标依据：${profileEvidence.join("；") || "本次未获得可用的用户画像和投资目标证据"}`,
-    `数据研究：${research?.conclusion ?? `本次不要求外部数据（${dataState}）`}`,
-    `行情与技术观察：${[...new Set([...technicalEvidence, ...marketEvidence])].slice(0, 4).join("；") || "本次未获得可用的行情或技术面证据"}`,
-    `基本面与消息面依据：${fundamentalEvidence.slice(0, 3).join("；") || "本次未获得可用的基本面或消息面证据，未据此做判断"}`,
+    `行情与技术观察：${marketEvidence.join("；") || "本次未获得可用的行情或技术面证据"}`,
+    `基本面与消息面依据：${fundamentalEvidence}`,
     `组合影响：${decision.portfolioImpact}`,
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,
@@ -1395,6 +1463,38 @@ function formatAnswer(
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
+}
+
+function formatMarketEvidence(research: ResearchState): string[] {
+  const names = new Map(research.quotes.map((quote) => [normalizeSymbol(quote.symbol), quote.name]));
+  const quoteEvidence = research.quotes
+    .filter((quote) => quote.latest)
+    .map((quote) => `${quote.name}（${quote.symbol}）最近交易日收盘价约为 ${formatMarketPrice(quote.latest)} 元，数据截至 ${formatMarketDate(quote.asOfDate)}`);
+  const riskEvidence = research.riskMetrics.map((metric) => {
+    const name = names.get(normalizeSymbol(metric.symbol)) ?? metric.symbol;
+    const volatility = formatRatioAsPercent(metric.annualizedVolatility);
+    const drawdown = formatRatioAsPercent(metric.maxDrawdown);
+    return `${name}近 ${metric.observations} 个交易日的历史年化波动约为 ${volatility}，历史最大回撤约为 ${drawdown}`;
+  });
+  const scope = research.riskMetrics.length
+    ? "本次观察使用了收盘价、历史波动和最大回撤，不包含完整的均线、估值或成交量形态判断。"
+    : "";
+  return [...quoteEvidence, ...riskEvidence, scope].filter(Boolean);
+}
+
+function formatMarketPrice(value: string | null): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "暂无";
+}
+
+function formatRatioAsPercent(value: string | null): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(2)}%` : "暂无法计算";
+}
+
+function formatMarketDate(value: string | null): string {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/u);
+  return match ? `${match[1]}年${Number(match[2])}月${Number(match[3])}日` : value ?? "未知日期";
 }
 
 function formatProfileFacts(profile: Profile | undefined): string[] {
@@ -1426,7 +1526,17 @@ function translateProfileValue(value: string): string {
     .replaceAll("BALANCED", "平衡型")
     .replaceAll("CONSERVATIVE", "保守型")
     .replaceAll("AGGRESSIVE", "进取型")
-    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF");
+    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF")
+    .replaceAll("INDEX", "指数基金")
+    .replaceAll("SECTOR_ETF", "行业 ETF")
+    .replaceAll("STOCK", "个股")
+    .replaceAll("instrumentPreference", "偏好资产")
+    .replaceAll("risk_level", "风险等级")
+    .replaceAll("investment_amount", "可投资金额")
+    .replaceAll("max_drawdown", "最大回撤")
+    .replaceAll("SHORT", "短线")
+    .replaceAll("MEDIUM", "中线")
+    .replaceAll("LONG", "长线");
 }
 
 function formatGuidedIntakeAnswer(messages: string[]): string {
