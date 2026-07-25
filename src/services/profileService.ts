@@ -37,7 +37,9 @@ function mapProfile(row: ApiProfile): UserProfile {
     riskCapacity: prefs.riskCapacity == null ? null : String(prefs.riskCapacity),
     behaviorNotes: prefs.behaviorNotes == null ? null : String(prefs.behaviorNotes),
     hasGoal: Boolean(row.hasGoal),
-    onboardingCompleted: Boolean(row.onboardingCompleted) || ((row.status === "COMPLETED" || row.status === "COMPLETE") && Boolean(row.hasGoal)),
+    onboardingCompleted: row.onboardingCompleted === undefined
+      ? ((row.status === "COMPLETED" || row.status === "COMPLETE") && Boolean(row.hasGoal))
+      : Boolean(row.onboardingCompleted),
     createdAt: String(prefs.createdAt ?? now),
     updatedAt: now,
   };
