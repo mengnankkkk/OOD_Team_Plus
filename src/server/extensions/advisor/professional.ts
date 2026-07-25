@@ -13,6 +13,7 @@ import {
   type AdvisorDecision,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
+import { deterministicAdvisorSummary } from "./decision-summary";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
 import type { RecommendationDraft } from "./types";
 
@@ -36,6 +37,7 @@ type Holding = {
   symbol: string;
   name: string;
   asset_type: string;
+  market: string | null;
   sector: string | null;
   quantity_decimal: string;
   cost_decimal: string;
@@ -88,7 +90,7 @@ export async function runProfessionalAdvisor(input: {
     WHERE id=? AND user_id=?`).run(input.sessionId, input.analysisId, input.content.slice(0, 500), now, input.analysisId, input.userId);
   const profile = db.prepare("SELECT risk_level,investment_amount_decimal,horizon,max_drawdown_decimal,preferences_json FROM user_profiles WHERE user_id=?").get(input.userId) as Profile | undefined;
   const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1").get(input.userId) as Record<string, unknown> | undefined;
-  const holdings = snapshot ? db.prepare(`SELECT hs.instrument_id,i.symbol,i.name,i.asset_type,i.sector,
+  const holdings = snapshot ? db.prepare(`SELECT hs.instrument_id,i.symbol,i.name,i.asset_type,i.market,i.sector,
       hs.quantity_decimal,hs.cost_decimal,hs.price_decimal,hs.market_value_decimal,hs.unrealized_pnl_decimal,hs.weight_bps
     FROM holding_snapshots hs JOIN instruments i ON i.id=hs.instrument_id
     WHERE hs.portfolio_snapshot_id=? ORDER BY hs.weight_bps DESC`).all(snapshot.id) as Holding[] : [];
@@ -109,7 +111,7 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
-    registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
+    const profileFinding = registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
 
     let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] };
     if (requiredRoles.includes("DATA_RESEARCH")) {
@@ -122,12 +124,21 @@ export async function runProfessionalAdvisor(input: {
 
     const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot, research), { emitEvents: false }));
 
-    const deterministicDecision = deterministicDecisionFor({ intent, requestedDirection, target, targetHolding, profile, research, riskFinding });
+    const deterministicDecision = deterministicDecisionFor({
+      intent,
+      requestedDirection,
+      target,
+      targetHolding,
+      profileReady: profileFinding.missingInformation.length === 0,
+      hasHoldings: holdings.length > 0,
+      research,
+      riskFinding,
+    });
     if (requiredRoles.includes("RECOMMENDATION")) {
       registerFinding(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings), { emitEvents: false }));
     }
 
-    const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding);
+    const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding, holdings.length > 0);
     const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings);
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
       registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding, { emitEvents: false }));
@@ -146,53 +157,62 @@ export async function runProfessionalAdvisor(input: {
     let unresolvedConflict = false;
     const streamSnippets = new Map<string, string>();
     if (!process.env.DEEPSEEK_API_KEY?.trim()) {
-      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_REQUIRED", retryable: true } });
-      db.prepare("UPDATE agent_runs SET model_provider='missing',failure_code=?,failure_message=? WHERE id=?")
-        .run("MODEL_REQUIRED", "DeepSeek model service is required; deterministic fallback is disabled.", input.analysisId);
-      throw new Error("DeepSeek model service is required; deterministic fallback is disabled.");
-    }
-    try {
-      const model = await runChiefAdvisor({
-        prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
-        requiredAgents: requiredRoles,
-        onAgentStarted: (agent, label) => {
-          markModelAttemptStarted(db, roleRunIds.get(agent), label);
-          persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
-        },
-        onAgentCompleted: (finding) => {
-          persistModelFinding(db, roleRunIds.get(finding.agent), finding);
-          persistSseEvent({ analysisId: input.analysisId, type: "advisor.thinking", payload: {
-            phase: "specialist", agent: finding.agent, title: `${finding.agent} 已形成完整公开结论`, content: finding.conclusion,
-          } });
-          persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
-        },
-        onAgentFailed: (agent, error) => {
-          persistSseEvent({
-            analysisId: input.analysisId,
-            type: "agent.failed",
-            payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
-          });
-          persistModelAttemptFailure(db, roleRunIds.get(agent), findings.find((finding) => finding.agent === agent), error);
-        },
-        onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
-      });
-      findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings, research));
-      const preserved = preserveDirection(model.decision, deterministicDecision);
-      unresolvedConflict = preserved.conflict;
-      candidate = preserved.decision;
-      if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
-      provider = "CHIEF_ADVISOR";
-      modelFallback = false;
-    } catch (error) {
       persistSseEvent({
         analysisId: input.analysisId,
         type: "advisor.thinking",
-        payload: { phase: "model_failed", title: "真实模型服务未完成", content: "本次不会使用确定性/mock 结果补成成功，请修复模型输出或重试。" },
+        payload: {
+          phase: "model_unavailable",
+          title: "模型服务未配置，进入降级建议",
+          content: "已保留画像、数据、组合风险与合规节点结果；发布门不会把降级结论标记为 ACTIVE。",
+        },
       });
-      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true, message: safeMessage(error) } });
-      db.prepare("UPDATE agent_runs SET model_provider='deepseek',failure_code=?,failure_message=? WHERE id=?")
-        .run("MODEL_UNAVAILABLE", safeMessage(error), input.analysisId);
-      throw error;
+      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_REQUIRED", retryable: true } });
+    } else {
+      try {
+        const model = await runChiefAdvisor({
+          prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
+          requiredAgents: requiredRoles,
+          fallbackFindings: findings,
+          onAgentStarted: (agent, label) => {
+            markModelAttemptStarted(db, roleRunIds.get(agent), label);
+            persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
+          },
+          onAgentCompleted: (finding) => {
+            persistModelFinding(db, roleRunIds.get(finding.agent), finding);
+            persistSseEvent({ analysisId: input.analysisId, type: "advisor.thinking", payload: {
+              phase: "specialist", agent: finding.agent, title: `${finding.agent} 已形成完整公开结论`, content: finding.conclusion,
+            } });
+            persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
+          },
+          onAgentFailed: (agent, error) => {
+            persistSseEvent({
+              analysisId: input.analysisId,
+              type: "agent.failed",
+              payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
+            });
+            persistModelAttemptFailure(db, roleRunIds.get(agent), findings.find((finding) => finding.agent === agent), error);
+          },
+          onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
+        });
+        findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings, research));
+        const preserved = preserveDirection(model.decision, deterministicDecision);
+        unresolvedConflict = preserved.conflict;
+        candidate = preserved.decision;
+        if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
+        provider = "CHIEF_ADVISOR";
+        modelFallback = model.fallbackAgents.length > 0;
+      } catch (error) {
+        persistSseEvent({
+          analysisId: input.analysisId,
+          type: "advisor.thinking",
+          payload: {
+            phase: "model_failed",
+            title: "模型服务暂时未完成，进入降级建议",
+            content: "已保留服务端专业节点结果；发布门不会把降级结论标记为 ACTIVE。",
+          },
+        });
+        persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true, message: safeMessage(error) } });
+      }
     }
 
     const status = enforcePublicationStatus({
@@ -392,7 +412,7 @@ async function researchInstrument(
     symbol: holding.symbol,
     name: holding.name,
     asset_type: holding.asset_type,
-    market: marketForSymbol(holding.symbol),
+    market: marketForHolding(holding),
   }));
   if (!instruments.length) return {
     state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] },
@@ -537,7 +557,8 @@ function deterministicDecisionFor(input: {
   requestedDirection: AdvisorDecision["requestedDirection"];
   target: Instrument | null;
   targetHolding: Holding | null;
-  profile: Profile | undefined;
+  profileReady: boolean;
+  hasHoldings: boolean;
   research: ResearchState;
   riskFinding: AgentFinding;
 }): AdvisorDecision {
@@ -550,7 +571,12 @@ function deterministicDecisionFor(input: {
   return AdvisorDecisionSchema.parse({
     action,
     requestedDirection: input.requestedDirection,
-    summary: input.target ? `${input.target.symbol} 需要在画像、真实数据、组合风险和合规条件下进行条件化决策` : "先完成画像与组合诊断，再形成具体标的建议",
+    summary: deterministicAdvisorSummary({
+      targetSymbol: input.target?.symbol ?? null,
+      profileReady: input.profileReady,
+      hasHoldings: input.hasHoldings,
+      concentrationRisk,
+    }),
     suitability: "MEDIUM",
     confidence: input.research.dataState === "LIVE_FRESH" ? 0.72 : 0.4,
     rationales: [input.riskFinding.conclusion, input.research.latest ? `最新市场价格 ${input.research.latest.toString()}` : "市场数据不可用时仅保留方向"],
@@ -712,6 +738,80 @@ function buildRecommendationDraft(input: {
   };
 }
 
+export function buildPortfolioRecommendationDraft(input: {
+  status: PublicationStatus;
+  candidate: AdvisorDecision;
+  profile: Profile | undefined;
+  holdings: Holding[];
+  research: ResearchState;
+  snapshot: Record<string, unknown> | undefined;
+}): RecommendationDraft {
+  const maxDrawdown = decimal(input.profile?.max_drawdown_decimal) ?? new Decimal("0.1");
+  const investedValue = input.holdings.reduce(
+    (sum, holding) => sum.plus(decimal(holding.market_value_decimal) ?? 0),
+    new Decimal(0),
+  );
+  const cash = decimal(input.snapshot?.cash_decimal) ?? new Decimal(0);
+  const totalAssets = investedValue.plus(cash);
+  const investedRatio = totalAssets.gt(0) ? investedValue.div(totalAssets) : new Decimal(0);
+  const largestWeight = input.holdings.reduce(
+    (largest, holding) => Decimal.max(largest, new Decimal(holding.weight_bps).div(10_000)),
+    new Decimal(0),
+  );
+  const horizon = normalizeHorizon(input.profile?.horizon);
+  const validUntil = new Date();
+  validUntil.setUTCDate(validUntil.getUTCDate() + (horizon === "SHORT" ? 7 : horizon === "LONG" ? 90 : 30));
+  const headline = input.status === "BLOCKED"
+    ? "关键行情数据不可用，今日暂不调整组合"
+    : input.candidate.summary;
+  const reasons = [...new Set([
+    ...(headline === input.candidate.summary ? [] : [input.candidate.summary]),
+    ...input.candidate.rationales,
+  ])].slice(0, 3);
+  return {
+    instrumentId: null,
+    symbol: null,
+    action: input.candidate.action,
+    suitability: input.status === "ACTIVE" ? input.candidate.suitability : "LOW",
+    summary: headline,
+    confidence: new Decimal(input.status === "ACTIVE" ? input.candidate.confidence : Math.min(input.candidate.confidence, 0.45)).toString(),
+    positionRange: [percent(investedRatio), percent(investedRatio)],
+    firstPosition: input.status === "BLOCKED" ? "今日不调整；数据恢复后重新评估" : null,
+    addConditions: [
+      "用户画像、资金用途与持仓没有发生重大变化",
+      "组合压力测试仍处于最大可接受回撤以内",
+      "反方证据没有明显恶化",
+    ],
+    referenceRange: ["组合级建议不设置单一证券价格区间"],
+    stopLoss: `组合回撤达到 ${percent(maxDrawdown)}，或核心投资逻辑与资金用途发生变化`,
+    takeProfit: "达到目标收益、单一持仓明显超出风险预算或组合需要再平衡",
+    horizon,
+    expiresAt: validUntil.toISOString(),
+    reasons,
+    counterEvidence: input.candidate.counterEvidence.length ? input.candidate.counterEvidence : ["市场环境可能改变当前组合判断"],
+    risks: input.candidate.risks.slice(0, 3),
+    alternatives: ["降低单一持仓集中度", "提高现金或低波动资产比例", "维持现有仓位并继续观察"],
+    invalidation: input.candidate.invalidationConditions.join("；"),
+    compliance: {
+      status: input.status === "ACTIVE" ? "PASSED" : input.status,
+      reasons: [input.candidate.compliance.reason, ...(input.status === "DEGRADED" ? [`数据状态：${input.research.dataState}`] : [])],
+      disclaimer: "本结果仅用于投资研究和方案模拟，不连接券商，不创建真实订单。",
+    },
+    dataAsOf: input.research.asOfDate ?? String(input.snapshot?.as_of ?? isoNow()),
+    provenance: {
+      engine: "professional-chief-advisor-v2",
+      scope: "PORTFOLIO",
+      publicationStatus: input.status,
+      dataState: input.research.dataState,
+      snapshotId: input.snapshot?.id ?? null,
+      investedRatio: investedRatio.toString(),
+      largestHoldingWeight: largestWeight.toString(),
+      holdingCount: input.holdings.length,
+      modelCannotOverridePublicationGate: true,
+    },
+  };
+}
+
 function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], executions: PandaSourceExecution[]): void {
   const marketExecutions = executions;
   for (const finding of findings) {
@@ -757,16 +857,20 @@ function persistConflict(db: ReturnType<typeof getDatabase>, rootRunId: string, 
   );
 }
 
-function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | undefined, target: Instrument | null, holding: Holding | null): string[] {
-  if (intent !== "BUY" && intent !== "SELL") return [];
+export function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | undefined, target: Instrument | null, holding: Holding | null, hasHoldings = true): string[] {
+  if (intent !== "BUY" && intent !== "SELL" && intent !== "DIAGNOSIS") return [];
   const preferences = parsePreferences(profile?.preferences_json);
-  return [
+  const profileMissing = [
     !profile?.risk_level ? "risk_level" : null,
     !profile?.investment_amount_decimal ? "investment_amount" : null,
     !profile?.horizon ? "horizon" : null,
     !profile?.max_drawdown_decimal ? "max_drawdown" : null,
     preferences.instrumentPreference === undefined ? "instrument_preference" : null,
     preferences.nearTermUse === undefined ? "near_term_use" : null,
+  ].filter((value): value is string => Boolean(value));
+  if (intent === "DIAGNOSIS") return [...profileMissing, ...(!hasHoldings ? ["holdings"] : [])];
+  return [
+    ...profileMissing,
     !target ? "instrument" : null,
     intent === "SELL" && !holding ? "target_holding" : null,
   ].filter((value): value is string => Boolean(value));
@@ -1025,6 +1129,11 @@ function marketMethod(target: Instrument): PandaQuerySource["method"] {
 function marketForSymbol(symbol: string): string {
   const suffix = symbol.toUpperCase().split(".").at(-1);
   return suffix === "US" ? "US" : suffix === "HK" ? "HK" : suffix === "SH" || suffix === "SZ" || suffix === "OF" ? suffix : "UNKNOWN";
+}
+
+export function marketForHolding(holding: { symbol: string; market?: string | null }): string {
+  const market = holding.market?.trim().toUpperCase();
+  return market || marketForSymbol(holding.symbol);
 }
 
 function pandaSymbol(symbol: string, assetType: string, market: string): string {

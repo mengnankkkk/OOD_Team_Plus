@@ -1,33 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFrontendAuth } from "@/features/frontend-migration/auth";
 import { fetchCurrentProfile } from "@/services/profileService";
-import type { UserProfile } from "@/types/app/user";
 
 export const useAuth = () => {
   const auth = useFrontendAuth();
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [profileLoading, setProfileLoading] = useState(false);
+  const queryClient = useQueryClient();
+  const profileQuery = useQuery({
+    queryKey: ["profile", auth.user?.id],
+    queryFn: () => fetchCurrentProfile(auth.user!.id),
+    enabled: Boolean(auth.user),
+    staleTime: 30_000,
+  });
 
   const refreshProfile = useCallback(async () => {
-    if (!auth.user) {
-      setProfile(null);
-      setProfileLoading(false);
-      return;
-    }
-    setProfileLoading(true);
-    try {
-      setProfile(await fetchCurrentProfile(auth.user.id));
-    } finally {
-      setProfileLoading(false);
-    }
-  }, [auth.user]);
-
-  useEffect(() => {
-    void refreshProfile();
-  }, [refreshProfile]);
+    if (!auth.user) return;
+    await queryClient.invalidateQueries({ queryKey: ["profile", auth.user.id] });
+  }, [auth.user, queryClient]);
 
   return useMemo(() => {
     const user = auth.user ? {
@@ -40,9 +32,9 @@ export const useAuth = () => {
     return {
       session: user ? { user } : null,
       user,
-      profile,
-      loading: auth.loading || profileLoading,
-      profileLoading,
+      profile: profileQuery.data ?? null,
+      loading: auth.loading || profileQuery.isLoading,
+      profileLoading: profileQuery.isLoading,
       isAnonymous: false,
       refreshProfile,
       async signInWithPassword(username: string, password: string) {
@@ -55,5 +47,5 @@ export const useAuth = () => {
       },
       signOut: auth.signOut,
     };
-  }, [auth, profile, profileLoading, refreshProfile]);
+  }, [auth, profileQuery.data, profileQuery.isLoading, refreshProfile]);
 };

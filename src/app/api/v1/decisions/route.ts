@@ -21,6 +21,17 @@ function normalizedAction(value: unknown): string {
   return action;
 }
 
+function publicAction(value: unknown): string {
+  const action = String(value ?? "VIEWED").toUpperCase();
+  if (action === "ACCEPT" || action === "SIMULATED") return "simulated";
+  if (action === "REJECT" || action === "REJECTED") return "rejected";
+  if (action === "REVOKE" || action === "REVOKED") return "revoked";
+  if (action === "DEFER" || action === "LATER") return "later";
+  if (action === "FOLLOW_UP" || action === "FOLLOWUP_QUESTION") return "followup_question";
+  if (action === "COMMENT" || action === "COMMENTED") return "commented";
+  return "viewed";
+}
+
 export async function GET(req: NextRequest) {
   const { userId } = getRequestContext(req);
   const { limit } = pageParams(req);
@@ -63,7 +74,7 @@ export async function GET(req: NextRequest) {
       recommendationId,
       conversationId,
       analysisId,
-      action: normalizedAction(row.action ?? row.decision),
+      action: publicAction(row.action ?? row.decision),
       reason: payload.reason == null ? null : String(payload.reason),
       note: payload.note == null ? null : String(payload.note),
       recommendation,

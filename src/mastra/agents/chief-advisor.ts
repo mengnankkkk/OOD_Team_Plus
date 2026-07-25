@@ -1,5 +1,5 @@
+/* eslint-disable max-lines */
 import { Agent } from "@mastra/core/agent";
-import type { ReadableStream as NodeReadableStream } from "stream/web";
 import { z } from "zod";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
@@ -37,12 +37,11 @@ const ChiefAdvisorDecisionSchema = z.object({
   }).optional(),
 });
 
-type ChiefAdvisorDecision = z.infer<typeof ChiefAdvisorDecisionSchema>;
-
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
   findings: AgentFinding[];
   delegatedAgents: AgentFinding["agent"][];
+  fallbackAgents: AgentFinding["agent"][];
 };
 
 export type ChiefAdvisorStreamEvent =
@@ -75,6 +74,7 @@ export function createChiefAdvisorAgent() {
 export async function runChiefAdvisor(input: {
   prompt: string;
   requiredAgents: AgentFinding["agent"][];
+  fallbackFindings?: AgentFinding[];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
   onAgentFailed?: (agent: AgentFinding["agent"], error: unknown) => void;
@@ -83,6 +83,7 @@ export async function runChiefAdvisor(input: {
   const chief = createChiefAdvisorAgent();
   const findings: AgentFinding[] = [];
   const delegated = new Set<AgentFinding["agent"]>();
+  const fallbackAgents = new Set<AgentFinding["agent"]>();
   const specialists = createSpecialistAgents();
   const failures: Array<{ role: AgentFinding["agent"]; error: unknown }> = [];
 
@@ -107,7 +108,15 @@ export async function runChiefAdvisor(input: {
         lastError = error;
       }
     }
-    if (!finding) throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+    if (!finding) {
+      const fallback = input.fallbackFindings?.find((candidate) => candidate.agent === role);
+      if (fallback) {
+        fallbackAgents.add(role);
+        input.onAgentFailed?.(role, lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`));
+        return fallback;
+      }
+      throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+    }
     input.onAgentCompleted?.(finding);
     return finding;
   };
@@ -159,19 +168,7 @@ export async function runChiefAdvisor(input: {
   if (!modelDecision) throw lastDecisionError ?? new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR");
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: modelDecision, findings, delegatedAgents: [...delegated] };
-}
-
-async function streamModelText(agent: Agent, prompt: string, maxOutputTokens: number, onText: (text: string) => void): Promise<string> {
-  const stream = await agent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens, temperature: 0.1 } });
-  let streamedText = "";
-  await consumeFullTextStream(stream.fullStream, (text) => {
-    streamedText += text;
-    onText(text);
-  });
-  if (streamedText.trim()) return streamedText;
-  const completedText = await stream.text.catch(() => "");
-  return typeof completedText === "string" ? completedText : "";
+  return { decision: modelDecision, findings, delegatedAgents: [...delegated], fallbackAgents: [...fallbackAgents] };
 }
 
 async function streamModelObject<T extends object>(
@@ -181,7 +178,7 @@ async function streamModelObject<T extends object>(
   onPartial: (partial: Partial<T>) => void,
 ): Promise<T> {
   const stream = await agent.stream(prompt, {
-    structuredOutput: { schema },
+    structuredOutput: { schema, jsonPromptInjection: "system" },
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_400, temperature: 0.1 },
   });
@@ -198,60 +195,6 @@ async function streamModelObject<T extends object>(
   if (result && typeof result === "object") return result as T;
   if (Object.keys(latestPartial).length > 0) return latestPartial as T;
   throw new Error("MODEL_OUTPUT_EMPTY");
-}
-
-async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (!value || typeof value !== "object") continue;
-      const chunk = value as { type?: string; payload?: { text?: unknown } };
-      if ((chunk.type === "text-delta" || chunk.type === "text") && typeof chunk.payload?.text === "string") onChunk(chunk.payload.text);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function parseModelJson(value: string): unknown {
-  const text = value.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
-  if (!text) throw new Error("MODEL_OUTPUT_EMPTY");
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1)) as unknown;
-    throw new Error("MODEL_OUTPUT_INVALID_JSON");
-  }
-}
-
-async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value) onChunk(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-async function consumeObjectStream<T extends object>(stream: NodeReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value && Object.keys(value).length > 0) onPartial(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 function normalizeChiefFinding(value: unknown): Partial<AgentFinding> {

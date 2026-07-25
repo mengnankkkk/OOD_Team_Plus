@@ -58,17 +58,25 @@ export async function callPandaData(
 
   const pythonPath = options.pythonPath ?? process.env.PANDADATA_PYTHON ?? "python";
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const configuredBaseUrl = process.env.JAVA_SERVICE_BASE_URL?.trim();
-  if (!configuredBaseUrl || /^(?:your_value_here|default_placeholder)$/iu.test(configuredBaseUrl)) {
-    throw pandaError("PANDADATA_AUTH_FAILED", "PandaData is not configured: JAVA_SERVICE_BASE_URL must be set in the deployment secret store.", false, { phase: "CONFIG" });
+  const configuredBaseUrl = configuredValue(process.env.JAVA_SERVICE_BASE_URL, process.env.PANDADATA_BASE_URL);
+  const configuredUsername = configuredValue(process.env.DEFAULT_USERNAME, process.env.PANDADATA_USERNAME);
+  const configuredPassword = configuredValue(process.env.DEFAULT_PASSWORD, process.env.PANDADATA_PASSWORD);
+  if (!configuredBaseUrl || !configuredUsername || !configuredPassword) {
+    throw pandaError("PANDADATA_AUTH_FAILED", "PandaData credentials are incomplete. Configure username, password, and service base URL.", false, { phase: "CONFIG" });
   }
+  const runtimeEnv = {
+    ...process.env,
+    DEFAULT_USERNAME: configuredUsername,
+    DEFAULT_PASSWORD: configuredPassword,
+    JAVA_SERVICE_BASE_URL: configuredBaseUrl,
+  };
   const scriptPath = path.join(resolvePandaSkillRoot(), "scripts", "call_api.py");
   const args = [scriptPath, "--method", method, "--params", JSON.stringify(validated)];
   const startedAt = Date.now();
   const dryRunStartedAt = Date.now();
   let dryRunDurationMs = 0;
   try {
-    await execFileAsync(pythonPath, [...args, "--dry-run"], { env: process.env, timeout: Math.min(timeoutMs, 10_000) });
+    await execFileAsync(pythonPath, [...args, "--dry-run"], { env: runtimeEnv, timeout: Math.min(timeoutMs, 10_000) });
     dryRunDurationMs = Date.now() - dryRunStartedAt;
   } catch (error) {
     const message = processError(error);
@@ -82,7 +90,7 @@ export async function callPandaData(
 
   const liveCallStartedAt = Date.now();
   try {
-    const { stdout } = await execFileAsync(pythonPath, [...args, "--no-setup"], { env: process.env, timeout: timeoutMs });
+    const { stdout } = await execFileAsync(pythonPath, [...args, "--no-setup"], { env: runtimeEnv, timeout: timeoutMs });
     const rows = parseRows(stdout);
     // An empty response is not evidence for the requested date. This matters
     // for real-time endpoints on weekends and exchange holidays.
@@ -157,6 +165,14 @@ function classifyError(message: string): PandaDataErrorCategory {
   if (/timeout|network|ECONN|connection|socket|DNS/i.test(message)) return "PANDADATA_NETWORK_FAILED";
   if (/parameter|contract|method not found/i.test(message)) return "PANDADATA_CONTRACT_INVALID";
   return "PANDADATA_UNAVAILABLE";
+}
+
+function configuredValue(...values: Array<string | undefined>): string | null {
+  for (const value of values) {
+    const candidate = value?.trim();
+    if (candidate && !/^(?:your_value_here|default_placeholder)$/iu.test(candidate)) return candidate;
+  }
+  return null;
 }
 
 function pandaError(category: PandaDataErrorCategory, message: string, retryable: boolean, details: Record<string, unknown> = {}) {

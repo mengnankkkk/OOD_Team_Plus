@@ -134,19 +134,30 @@ function defaultOrderColumn(dataset: SemanticDatasetKey): string {
 async function requestSemanticPlan(question: string, datasets: SemanticDatasetKey[], requestedLimit: number, semanticContext: ManagedSemanticContext | null): Promise<QueryPlan | null> {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return null;
-  const response = await fetch(process.env.DEEPSEEK_API_URL ?? "https://api.deepseek.com/v1/chat/completions", {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat", temperature: 0, response_format: { type: "json_object" }, messages: [
-      { role: "system", content: "Return only a JSON QueryPlan. Select only the provided semantic datasets. Never emit SQL." },
-      { role: "user", content: JSON.stringify({ question, allowedDatasets: datasets, semanticLayer: semanticContext, requestedLimit }) },
-    ] }),
-  });
-  if (!response.ok) throw new Error(`DeepSeek API error: ${response.status}`);
-  const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error("DeepSeek returned an empty QueryPlan");
-  const parsed = SemanticPlanSchema.safeParse(JSON.parse(content));
-  if (!parsed.success) throw new Error(`Invalid QueryPlan: ${z.prettifyError(parsed.error)}`);
+  let content: string | undefined;
+  try {
+    const response = await fetch(process.env.DEEPSEEK_API_URL ?? "https://api.deepseek.com/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat", temperature: 0, response_format: { type: "json_object" }, messages: [
+        { role: "system", content: "Return only a JSON QueryPlan. Select only the provided semantic datasets. Never emit SQL." },
+        { role: "user", content: JSON.stringify({ question, allowedDatasets: datasets, semanticLayer: semanticContext, requestedLimit }) },
+      ] }),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    content = payload.choices?.[0]?.message?.content;
+  } catch {
+    return null;
+  }
+  if (!content) return null;
+  let rawPlan: unknown;
+  try {
+    rawPlan = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  const parsed = SemanticPlanSchema.safeParse(rawPlan);
+  if (!parsed.success) return null;
   if (parsed.data.datasets.some((dataset) => {
     const normalized = normalizeDatasets([dataset])[0];
     return !normalized || isMarketDataset(normalized) || !datasets.includes(normalized);

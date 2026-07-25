@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  FileSearch,
   History,
   MessageSquareText,
   RefreshCw,
@@ -255,9 +256,14 @@ function DecisionEntry({ log, onNavigate }: { log: DecisionLog; onNavigate: (to:
         </details>
 
         <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          {log.analysisId ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => onNavigate(`/history/evidence-lab?analysisId=${encodeURIComponent(log.analysisId!)}`)}>
+              查看证据 <FileSearch className="size-3.5" />
+            </Button>
+          ) : null}
           {log.recommendationId ? (
             <Button type="button" variant="outline" size="sm" onClick={() => onNavigate(`/recommendations/${log.recommendationId}`)}>
-              回看建议 <ArrowUpRight className="size-3.5" />
+              回到当时的建议 <ArrowUpRight className="size-3.5" />
             </Button>
           ) : null}
           <Button type="button" variant="ghost" size="sm" onClick={() => onNavigate(`/advisor?prompt=${encodeURIComponent(continuePrompt)}`)}>

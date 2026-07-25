@@ -84,6 +84,8 @@ export async function POST(req: NextRequest) {
         emergencyTargetMonths: parsed.data.profile.emergencyTargetMonths,
         riskSubjective: assessment.willingnessLevel,
         riskCapacity: assessment.capacityLevel,
+        instrumentPreference: parsed.data.goal.assetPreference,
+        nearTermUse: parsed.data.answers.near_term_use !== "not_needed",
         onboardingCompleted: true,
         onboardingVersion: 1,
       };

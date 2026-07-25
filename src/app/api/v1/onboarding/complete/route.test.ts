@@ -71,12 +71,16 @@ describe("/api/v1/onboarding/complete", () => {
     expect(body.data.riskLevel).toMatch(/^R[1-5]$/u);
 
     const db = getDatabase();
-    const profile = db.prepare("SELECT status, risk_level, investment_amount_decimal FROM user_profiles WHERE user_id=?").get(TEST_USER_ID) as Record<string, unknown>;
+    const profile = db.prepare("SELECT status, risk_level, investment_amount_decimal, preferences_json FROM user_profiles WHERE user_id=?").get(TEST_USER_ID) as Record<string, unknown>;
     const goal = db.prepare("SELECT name, target_amount_decimal FROM goals WHERE user_id=? AND status='active'").get(TEST_USER_ID) as Record<string, unknown>;
     const assessment = db.prepare("SELECT COUNT(*) AS count FROM risk_assessments WHERE user_id=?").get(TEST_USER_ID) as { count: number };
     db.close();
 
     expect(profile).toMatchObject({ status: "complete", risk_level: body.data.riskLevel, investment_amount_decimal: "50000" });
+    expect(JSON.parse(String(profile.preferences_json))).toMatchObject({
+      instrumentPreference: "INDEX",
+      nearTermUse: true,
+    });
     expect(goal).toMatchObject({ name: "三年后购房首付", target_amount_decimal: "300000" });
     expect(assessment.count).toBe(1);
   });
