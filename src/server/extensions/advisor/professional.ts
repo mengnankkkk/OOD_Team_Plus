@@ -222,6 +222,7 @@ export async function runProfessionalAdvisor(input: {
         candidate,
         target,
         holding: targetHolding ?? holdings[0] ?? null,
+        holdings,
         profile,
         research,
         snapshot,
@@ -540,11 +541,12 @@ function deterministicDecisionFor(input: {
   research: ResearchState;
   riskFinding: AgentFinding;
 }): AdvisorDecision {
+  const concentrationRisk = input.riskFinding.risks.some((risk) => risk.includes("单一持仓波动可能主导组合回撤"));
   const action: AdvisorDecision["action"] = input.intent === "BUY"
     ? input.targetHolding ? "SCALE_IN" : input.target ? "TRIAL_BUY" : "WATCH"
     : input.intent === "SELL"
       ? input.targetHolding ? "SCALE_OUT" : "HOLD"
-      : input.targetHolding ? "HOLD" : "WATCH";
+      : input.targetHolding ? "HOLD" : concentrationRisk ? "STOP_ADDING" : "WATCH";
   return AdvisorDecisionSchema.parse({
     action,
     requestedDirection: input.requestedDirection,
@@ -629,7 +631,12 @@ function preserveDirection(model: AdvisorDecision, fallback: AdvisorDecision): {
   const expected = fallback.requestedDirection;
   const allowed = actionMatchesDirection(model.action, expected);
   const sameDirection = model.requestedDirection === expected;
-  if (allowed && sameDirection) return { decision: model, conflict: false };
+  if (allowed && sameDirection) {
+    return {
+      decision: fallback.action === "STOP_ADDING" && model.action !== "STOP_ADDING" ? { ...model, action: "STOP_ADDING" } : model,
+      conflict: false,
+    };
+  }
   return { decision: { ...model, action: fallback.action, requestedDirection: expected, summary: fallback.summary }, conflict: false };
 }
 
@@ -638,12 +645,16 @@ function buildRecommendationDraft(input: {
   candidate: AdvisorDecision;
   target: Instrument | null;
   holding: Holding | null;
+  holdings: Holding[];
   profile: Profile | undefined;
   research: ResearchState;
   snapshot: Record<string, unknown> | undefined;
 }): RecommendationDraft {
   const maxDrawdown = decimal(input.profile?.max_drawdown_decimal) ?? new Decimal("0.1");
-  const volatility = annualizedVolatility(input.research.closes);
+  const portfolioLevel = input.target === null;
+  const volatility = portfolioLevel
+    ? portfolioAnnualizedVolatility(input.research, input.holdings)
+    : annualizedVolatility(input.research.closes);
   const riskBudget = maxDrawdown.mul("0.25");
   const maxWeight = volatility?.gt(0) ? Decimal.min(new Decimal(1), riskBudget.div(volatility)) : null;
   const firstWeight = maxWeight?.div(3);
@@ -651,8 +662,8 @@ function buildRecommendationDraft(input: {
   const reduction = input.candidate.requestedDirection === "SELL" && currentWeight.gt(0) && maxWeight
     ? Decimal.max(0, currentWeight.minus(maxWeight)).div(currentWeight)
     : null;
-  const latest = input.research.latest;
-  const recent = input.research.closes.slice(-20);
+  const latest = portfolioLevel ? null : input.research.latest;
+  const recent = portfolioLevel ? [] : input.research.closes.slice(-20);
   const lower = recent.length ? recent.reduce((value, item) => Decimal.min(value, item)) : null;
   const upper = recent.length ? recent.reduce((value, item) => Decimal.max(value, item)) : null;
   const stop = latest?.mul(new Decimal(1).minus(maxDrawdown));
@@ -661,18 +672,18 @@ function buildRecommendationDraft(input: {
   const validUntil = new Date();
   validUntil.setUTCDate(validUntil.getUTCDate() + (horizon === "SHORT" ? 7 : horizon === "LONG" ? 90 : 30));
   return {
-    instrumentId: input.target?.id ?? input.holding?.instrument_id ?? null,
-    symbol: input.target?.symbol ?? input.holding?.symbol ?? "PORTFOLIO",
+    instrumentId: input.target?.id ?? null,
+    symbol: input.target?.symbol ?? "PORTFOLIO",
     action: input.candidate.action,
     suitability: input.status === "ACTIVE" ? input.candidate.suitability : "LOW",
     summary: input.candidate.summary,
     confidence: new Decimal(input.status === "ACTIVE" ? input.candidate.confidence : Math.min(input.candidate.confidence, 0.45)).toString(),
-    positionRange: maxWeight ? ["0%", percent(maxWeight)] : ["需要完成波动率计算后确定"],
+    positionRange: maxWeight ? ["0%", percent(maxWeight)] : ["需要完成组合波动率计算后确定"],
     firstPosition: input.candidate.requestedDirection === "BUY" && firstWeight ? percent(firstWeight) : null,
     addConditions: ["PandaData live 数据保持新鲜", "重新计算后组合风险不超过用户最大回撤约束", "反方证据没有恶化"],
-    referenceRange: lower && upper ? [lower.toString(), upper.toString()] : ["数据不可用，暂不提供价格区间"],
-    stopLoss: stop ? `价格低于 ${stop.toDecimalPlaces(4).toString()} 或投资逻辑失效` : "数据恢复后计算价格条件；投资逻辑失效时停止行动",
-    takeProfit: take ? `价格达到 ${take.toDecimalPlaces(4).toString()}、估值过热或组合需要再平衡` : "达到目标收益、估值过热或组合需要再平衡",
+    referenceRange: portfolioLevel ? ["组合级建议不使用单一标的价格区间"] : lower && upper ? [lower.toString(), upper.toString()] : ["数据不可用，暂不提供价格区间"],
+    stopLoss: portfolioLevel ? `组合回撤达到 ${percent(maxDrawdown)} 或资金用途发生变化时重新评估` : stop ? `价格低于 ${stop.toDecimalPlaces(4).toString()} 或投资逻辑失效` : "数据恢复后计算价格条件；投资逻辑失效时停止行动",
+    takeProfit: portfolioLevel ? "完成降集中度目标且组合风险回到画像约束内时重新平衡" : take ? `价格达到 ${take.toDecimalPlaces(4).toString()}、估值过热或组合需要再平衡` : "达到目标收益、估值过热或组合需要再平衡",
     horizon,
     expiresAt: validUntil.toISOString(),
     reasons: input.candidate.rationales,
@@ -691,9 +702,10 @@ function buildRecommendationDraft(input: {
       publicationStatus: input.status,
       dataState: input.research.dataState,
       snapshotId: input.snapshot?.id ?? null,
-      formulaVersion: "advisor-allocation-risk-budget-v1",
+      formulaVersion: portfolioLevel ? "advisor-portfolio-covariance-v1" : "advisor-allocation-risk-budget-v1",
       annualizedVolatility: volatility?.toString() ?? null,
       currentWeight: currentWeight.toString(),
+      recommendationScope: portfolioLevel ? "PORTFOLIO" : "INSTRUMENT",
       suggestedReduction: reduction?.toString() ?? null,
       modelCannotOverridePublicationGate: true,
     },
@@ -855,6 +867,37 @@ function annualizedVolatility(closes: Decimal[]): Decimal | null {
   const mean = Decimal.sum(...returns).div(returns.length);
   const variance = Decimal.sum(...returns.map((value) => value.minus(mean).pow(2))).div(returns.length - 1);
   return variance.sqrt().mul(new Decimal(252).sqrt());
+}
+
+function portfolioAnnualizedVolatility(research: ResearchState, holdings: Holding[]): Decimal | null {
+  const volatilityBySymbol = new Map(research.riskMetrics.flatMap((metric) => {
+    const volatility = decimal(metric.annualizedVolatility);
+    return volatility ? [[normalizeSymbol(metric.symbol), volatility] as const] : [];
+  }));
+  const components = holdings.flatMap((holding) => {
+    const volatility = volatilityBySymbol.get(normalizeSymbol(holding.symbol));
+    return volatility ? [{ symbol: normalizeSymbol(holding.symbol), weight: new Decimal(holding.weight_bps), volatility }] : [];
+  });
+  if (!components.length) return null;
+  const totalWeight = Decimal.sum(...components.map((item) => item.weight));
+  if (totalWeight.lte(0)) return null;
+  const correlationByPair = new Map(research.correlations.flatMap((item) => {
+    const correlation = decimal(item.value);
+    if (!correlation) return [];
+    const left = normalizeSymbol(item.left);
+    const right = normalizeSymbol(item.right);
+    return [[`${left}|${right}`, correlation] as const, [`${right}|${left}`, correlation] as const];
+  }));
+  let variance = new Decimal(0);
+  for (const left of components) {
+    const leftWeight = left.weight.div(totalWeight);
+    for (const right of components) {
+      const rightWeight = right.weight.div(totalWeight);
+      const correlation = left.symbol === right.symbol ? new Decimal(1) : correlationByPair.get(`${left.symbol}|${right.symbol}`) ?? new Decimal(0);
+      variance = variance.plus(leftWeight.mul(rightWeight).mul(left.volatility).mul(right.volatility).mul(correlation));
+    }
+  }
+  return variance.gt(0) ? variance.sqrt() : null;
 }
 
 function percent(value: Decimal): string {

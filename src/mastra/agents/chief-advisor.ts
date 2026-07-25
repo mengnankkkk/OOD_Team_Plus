@@ -286,7 +286,7 @@ function coerceModelFinding(
     counterEvidence: counterEvidence.length ? counterEvidence : ["市场、画像或持仓变化可能使当前结论失效"],
     missingInformation,
     risks: coerceStringArray(merged.risks).slice(0, 3),
-    confidence: coerceConfidence(merged.confidence),
+    confidence: coerceConfidence(merged.confidence, missingInformation.length ? 0.45 : 0.7),
     needsAnotherAgent: typeof merged.needsAnotherAgent === "boolean"
       ? merged.needsAnotherAgent
       : missingInformation.length > 0 || Boolean(suggestedNextAgent),
@@ -305,7 +305,7 @@ function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDec
     requestedDirection: merged.requestedDirection ?? "ANALYZE",
     summary: nonEmptyString(merged.summary, "模型未能形成完整结论，已按观察处理"),
     suitability: merged.suitability ?? "LOW",
-    confidence: coerceConfidence(merged.confidence),
+    confidence: coerceConfidence(merged.confidence, 0.65),
     rationales: coerceStringArray(merged.rationales).slice(0, 3).length ? coerceStringArray(merged.rationales).slice(0, 3) : ["根据当前画像、持仓和市场证据维持观察"],
     counterEvidence: coerceStringArray(merged.counterEvidence).slice(0, 3).length ? coerceStringArray(merged.counterEvidence).slice(0, 3) : ["市场、画像或持仓变化可能使当前结论失效"],
     risks: coerceStringArray(merged.risks).slice(0, 3).length ? coerceStringArray(merged.risks).slice(0, 3) : ["模型输出不完整"],
@@ -332,9 +332,9 @@ function coerceStringArray(value: unknown): string[] {
   return values.map((item) => String(item).trim()).filter(Boolean);
 }
 
-function coerceConfidence(value: unknown): number {
+function coerceConfidence(value: unknown, fallback = 0.6): number {
   const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  if (!Number.isFinite(numeric)) return 0.35;
+  if (!Number.isFinite(numeric)) return fallback;
   return Math.min(1, Math.max(0, numeric));
 }
 
