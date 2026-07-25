@@ -399,6 +399,32 @@ jobs:
             "$BASE_URL/api/a2a/tasks?limit=1")"
           test "$STATUS" = "200"
           jq -e '.items | type == "array"' /tmp/a2a-tasks.json >/dev/null
+          ADVISOR_BODY="$(jq -nc --arg messageId "deploy-advisor-$GITHUB_SHA" '{
+            message: {
+              messageId: $messageId,
+              parts: [{ kind: "text", text: "Verify the external A2A Chief Advisor initial response path." }],
+              metadata: {
+                capabilityId: "chief_advisor_conversation",
+                operation: "send"
+              }
+            }
+          }')"
+          ADVISOR_TIME="$(curl --fail --silent --show-error \
+            --connect-timeout 5 \
+            --max-time 8 \
+            --output /tmp/a2a-advisor.json \
+            --write-out '%{time_total}' \
+            -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
+            -H "content-type: application/json" \
+            -d "$ADVISOR_BODY" \
+            "$BASE_URL/api/a2a/message:send")"
+          jq -e '
+            .kind == "task"
+            and (.status.state as $state
+              | ["submitted", "working", "completed", "input-required"]
+              | index($state) != null)
+          ' /tmp/a2a-advisor.json >/dev/null
+          echo "[deploy] Chief Advisor initial A2A response completed in ${ADVISOR_TIME}s."
           RESEARCH_BODY="$(jq -nc --arg messageId "deploy-research-$GITHUB_SHA" '{
             message: {
               messageId: $messageId,

@@ -39,6 +39,8 @@ import {
 import { refreshA2ATaskFromDomain } from "./task-refresh";
 
 type AdapterRegistry = Record<CapabilityId, CapabilityAdapter>;
+const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS = 750;
+const MAX_INITIAL_RESPONSE_TIMEOUT_MS = 5_000;
 
 export function createA2ARequestHandlers(adapters: AdapterRegistry) {
   return {
@@ -173,30 +175,14 @@ export async function executeA2ACommand(
     });
     let task = created.task;
     if (!created.replayed) {
-      try {
-        task = await adapters[command.payload.capabilityId].run({
-          principal,
-          task: created.task,
-          context,
-          messageId: command.payload.messageId,
-          text: command.payload.text,
-          operation: command.payload.operation,
-          input: command.payload.input,
-          acceptedOutputModes: command.payload.acceptedOutputModes,
-        });
-      } catch (error) {
-        const publicError = asPublicError(error);
-        failA2ATask(principal.clientId, created.task.id, publicError);
-        writeA2AAudit({
-          clientId: principal.clientId,
-          action: "A2A_CAPABILITY_INVOKE",
-          targetType: "A2A_TASK",
-          targetId: created.task.id,
-          outcome: "FAILED",
-          metadata: { code: publicError.code },
-        });
-        throw error;
-      }
+      const execution = runCapabilityAdapter(principal, command, context, created.task, adapters);
+      const initialResult = await waitForInitialResult(
+        execution,
+        initialResponseTimeoutMs(),
+      );
+      task = initialResult
+        ?? getA2ATask(principal.clientId, created.task.id)
+        ?? created.task;
     }
     return jsonRpcSuccess(command.requestId, toA2ATaskResource(task));
   }
@@ -238,6 +224,72 @@ export async function executeA2ACommand(
     command.requestId,
     toA2ATaskResource(canceled),
   );
+}
+
+async function runCapabilityAdapter(
+  principal: ExternalClientPrincipal,
+  command: Extract<A2ACommand, { kind: "send-message" }>,
+  context: Awaited<ReturnType<typeof createContext>>,
+  task: ReturnType<typeof createA2ATask>["task"],
+  adapters: AdapterRegistry,
+) {
+  try {
+    return await adapters[command.payload.capabilityId].run({
+      principal,
+      task,
+      context,
+      messageId: command.payload.messageId,
+      text: command.payload.text,
+      operation: command.payload.operation,
+      input: command.payload.input,
+      acceptedOutputModes: command.payload.acceptedOutputModes,
+    });
+  } catch (error) {
+    const publicError = asPublicError(error);
+    failA2ATask(principal.clientId, task.id, publicError);
+    writeA2AAudit({
+      clientId: principal.clientId,
+      action: "A2A_CAPABILITY_INVOKE",
+      targetType: "A2A_TASK",
+      targetId: task.id,
+      outcome: "FAILED",
+      metadata: { code: publicError.code },
+    });
+    throw error;
+  }
+}
+
+function waitForInitialResult<T>(
+  execution: Promise<T>,
+  timeoutMs: number,
+): Promise<T | null> {
+  return new Promise<T | null>((resolve, reject) => {
+    let waiting = true;
+    const timeout = setTimeout(() => {
+      waiting = false;
+      resolve(null);
+    }, timeoutMs);
+    execution.then(
+      (result) => {
+        if (!waiting) return;
+        waiting = false;
+        clearTimeout(timeout);
+        resolve(result);
+      },
+      (error: unknown) => {
+        if (!waiting) return;
+        waiting = false;
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function initialResponseTimeoutMs(): number {
+  const configured = Number(process.env.A2A_INITIAL_RESPONSE_TIMEOUT_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS;
+  return Math.min(Math.max(Math.trunc(configured), 0), MAX_INITIAL_RESPONSE_TIMEOUT_MS);
 }
 
 async function createContext(

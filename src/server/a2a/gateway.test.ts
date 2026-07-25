@@ -58,6 +58,39 @@ describe("A2A capability gateway", () => {
     });
   });
 
+  it("returns the accepted task before a slow capability finishes", async () => {
+    vi.stubEnv("A2A_INITIAL_RESPONSE_TIMEOUT_MS", "5");
+    let finishRun: (() => void) | undefined;
+    const run = vi.fn(({ principal, task }: Parameters<CapabilityAdapter["run"]>[0]) =>
+      new Promise<ReturnType<typeof completeA2ATask>>((resolve) => {
+        finishRun = () => resolve(completeA2ATask(principal.clientId, task.id, {
+          message: "done",
+          artifacts: [],
+        }));
+      }));
+    const execution = executeA2ACommand(principal(), sendCommand(), registry({ run }));
+
+    const winner = await Promise.race([
+      execution.then((result) => ({ kind: "returned" as const, result })),
+      new Promise<{ kind: "timed-out" }>((resolve) => {
+        setTimeout(() => resolve({ kind: "timed-out" }), 50);
+      }),
+    ]);
+    finishRun?.();
+    await execution;
+
+    expect(winner).toMatchObject({
+      kind: "returned",
+      result: {
+        result: {
+          kind: "task",
+          status: { state: "submitted" },
+        },
+      },
+    });
+    expect(listA2ATasks("client-1", { limit: 20 }).items[0]?.status).toBe("completed");
+  });
+
   it("rejects capabilities outside the client scope", async () => {
     await expect(executeA2ACommand(
       { ...principal(), capabilities: ["tasks_read"] },
