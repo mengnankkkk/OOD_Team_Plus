@@ -425,7 +425,7 @@ async function researchInstrument(
         return execution.result.data.length === 0 && fallback >= 0 ? fallbackExecutions[fallback] : execution;
       });
     }
-    const allRows = executions.flatMap((execution) => execution.result.data);
+    const allRows = executions.flatMap((execution) => execution.result.data).sort(compareMarketRows);
     const closes = allRows.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
     const latest = closes.at(-1) ?? null;
     const dataState: DataState = !usedDailyFallback && executions.every((execution) => execution.result.fresh && execution.result.liveCallSucceeded) ? "LIVE_FRESH" : "STALE";
@@ -766,7 +766,7 @@ function chiefPrompt(
     requestedSymbol: source.parameters.symbol,
     rowCount: result.data.length,
     asOfDate: result.asOfDate,
-    rows: result.data.slice(-5),
+      rows: [...result.data].sort(compareMarketRows).slice(-5),
   }));
   return [
     `用户问题：${question}`,
@@ -820,6 +820,15 @@ function decimal(value: unknown): Decimal | null {
   } catch {
     return null;
   }
+}
+
+function compareMarketRows(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  return marketRowDate(left).localeCompare(marketRowDate(right));
+}
+
+function marketRowDate(row: Record<string, unknown>): string {
+  const value = row.date ?? row.trade_date ?? row.datetime ?? row.timestamp;
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
 
 function extractSymbol(content: string): string | null {
