@@ -30,6 +30,18 @@ describe("SSE_EVENT_TYPES", () => {
       "assistant.delta",
       "compliance.completed",
       "recommendation.created",
+      "debate.started",
+      "debate.round.started",
+      "debate.evidence.started",
+      "debate.evidence.completed",
+      "debate.agent.started",
+      "debate.agent.completed",
+      "debate.speech.delta",
+      "debate.turn.completed",
+      "debate.judge.started",
+      "debate.judge.completed",
+      "debate.round.completed",
+      "debate.blocked",
     ]);
   });
 });

@@ -25,6 +25,27 @@ describe("debate contracts", () => {
     expect(plan.speakingOrder).toEqual(["evidence", "bull", "bear", "bull", "judge"]);
   });
 
+  it("rejects user and orchestrator speakers from a round plan", () => {
+    const basePlan = {
+      userDebateRole: "neutral",
+      userIntent: "ask_both",
+      motion: "The motion is debatable.",
+      roundFocus: "Compare both sides.",
+      requiredAgents: ["evidence", "bull", "bear", "judge"],
+      needsFreshData: false,
+      reasonForFocus: "The user asked for a balanced review.",
+    };
+
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      speakingOrder: ["user"],
+    })).toThrow();
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      speakingOrder: ["orchestrator"],
+    })).toThrow();
+  });
+
   it("parses advocate speech with an admitted weakness and argument defaults", () => {
     const speech = AdvocateSpeechSchema.parse({
       stance: "bull",

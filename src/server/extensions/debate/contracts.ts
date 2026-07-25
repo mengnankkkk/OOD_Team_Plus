@@ -75,7 +75,7 @@ export const DebateRoundPlanSchema = z.object({
   motion: z.string().min(1),
   roundFocus: z.string().min(1),
   requiredAgents: z.array(DebateAgentSchema).min(1),
-  speakingOrder: z.array(DebateSpeakerSchema).min(1),
+  speakingOrder: z.array(DebateAgentSchema).min(1),
   needsFreshData: z.boolean(),
   reasonForFocus: z.string().min(1),
 });
