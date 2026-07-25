@@ -36,7 +36,21 @@ jobs:
           sudo apt-get install -y curl ca-certificates openssh-client sshpass
           curl -Ls --tlsv1.2 --proto '=https' https://cli.doppler.com/install.sh | sudo sh
 
+      - name: Check release freshness
+        id: freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "[deploy] Marking stale queued commit $GITHUB_SHA; current main is $LATEST_SHA."
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Load deployment secrets
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
@@ -70,6 +84,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Package source
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -85,22 +100,31 @@ jobs:
             --exclude='./test-results' \
             -czf "$SOURCE_ARCHIVE" .
           SOURCE_ARCHIVE_SHA256="$(sha256sum "$SOURCE_ARCHIVE" | cut -d ' ' -f 1)"
+          SOURCE_REMOTE_PATH="/tmp/money-whisperer-source-$GITHUB_SHA.tgz"
           echo "SOURCE_ARCHIVE=$SOURCE_ARCHIVE" >> "$GITHUB_ENV"
           echo "SOURCE_ARCHIVE_SHA256=$SOURCE_ARCHIVE_SHA256" >> "$GITHUB_ENV"
+          echo "SOURCE_REMOTE_PATH=$SOURCE_REMOTE_PATH" >> "$GITHUB_ENV"
           echo "[deploy] Packaged source archive: $(stat -c '%s bytes' "$SOURCE_ARCHIVE")"
 
       - name: Upload deployment assets
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         run: |
           set -euo pipefail
           export SSHPASS="$DEPLOY_PASSWORD"
           sshpass -e scp -P "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
             "$(command -v doppler)" \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/doppler"
+          sshpass -e scp -P "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
             "$SOURCE_ARCHIVE" \
-            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+            "$DEPLOY_USER@$DEPLOY_HOST:$SOURCE_REMOTE_PATH"
 
       - name: Verify uploaded source
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -110,9 +134,9 @@ jobs:
               -p "$DEPLOY_PORT" \
               -o StrictHostKeyChecking=accept-new \
               -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=4 \
+              -o ServerAliveCountMax=40 \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              "sha256sum /tmp/money-whisperer-source.tgz | cut -d ' ' -f 1"
+              "sha256sum '$SOURCE_REMOTE_PATH' | cut -d ' ' -f 1"
           )"
 
           if [ "$REMOTE_SOURCE_SHA256" != "$SOURCE_ARCHIVE_SHA256" ]; then
@@ -123,6 +147,7 @@ jobs:
           echo "[deploy] Source archive upload verified by SHA-256."
 
       - name: Prepare server
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
@@ -138,7 +163,7 @@ jobs:
             -p "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=4 \
+            -o ServerAliveCountMax=40 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") bash -s" <<'REMOTE'
           set -euo pipefail
@@ -189,11 +214,11 @@ jobs:
                   "$source_file"
               done
               $SUDO apt-get update
-              $SUDO apt-get install -y git curl docker.io docker-compose-plugin
+              $SUDO apt-get install -y git curl util-linux coreutils docker.io docker-compose-plugin
             elif command -v dnf >/dev/null 2>&1; then
-              $SUDO dnf install -y git curl ca-certificates docker docker-compose-plugin
+              $SUDO dnf install -y git curl ca-certificates util-linux coreutils docker docker-compose-plugin
             elif command -v yum >/dev/null 2>&1; then
-              $SUDO yum install -y git curl ca-certificates docker docker-compose-plugin
+              $SUDO yum install -y git curl ca-certificates util-linux coreutils docker docker-compose-plugin
             else
               echo "Unsupported server OS: apt-get, dnf, or yum is required." >&2
               exit 1
@@ -201,7 +226,7 @@ jobs:
           }
 
           echo "::group::Install server packages"
-          if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+          if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1 || ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
             install_packages
           fi
 
@@ -227,6 +252,7 @@ jobs:
           REMOTE
 
       - name: Build and restart containers
+        if: steps.freshness.outputs.stale != 'true'
         shell: bash
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
@@ -237,14 +263,15 @@ jobs:
             printf '%q' "$1"
           }
 
-          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
+          REMOTE_ENV="DOPPLER_TOKEN=$(quote "$DOPPLER_TOKEN") DEPLOY_PATH=$(quote "$DEPLOY_PATH") SOURCE_REMOTE_PATH=$(quote "$SOURCE_REMOTE_PATH") DEPLOY_BRANCH=$(quote "$DEPLOY_BRANCH") GITHUB_REPOSITORY=$(quote "$GITHUB_REPOSITORY") GITHUB_SHA=$(quote "$GITHUB_SHA") DOPPLER_PROJECT=$(quote "$DOPPLER_PROJECT") DOPPLER_CONFIG=$(quote "$DOPPLER_CONFIG")"
 
           export SSHPASS="$DEPLOY_PASSWORD"
           sshpass -e ssh \
             -p "$DEPLOY_PORT" \
             -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
             -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=4 \
+            -o ServerAliveCountMax=40 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "$REMOTE_ENV bash -s" <<'REMOTE'
           set -euo pipefail
@@ -254,6 +281,7 @@ jobs:
           : "${GITHUB_SHA:?}"
           : "${DOPPLER_PROJECT:?}"
           : "${DOPPLER_CONFIG:?}"
+          : "${SOURCE_REMOTE_PATH:?}"
 
           export DOPPLER_TOKEN
           export GIT_SHA="$GITHUB_SHA"
@@ -263,13 +291,20 @@ jobs:
             SUDO="sudo"
           fi
 
+          $SUDO mkdir -p "$DEPLOY_PATH"
+          exec 9>"$DEPLOY_PATH/.deploy.lock"
+          if ! flock -n 9; then
+            echo "[deploy] Another production deployment is active; refusing concurrent build." >&2
+            exit 75
+          fi
+
           echo "::group::Unpack release"
           RELEASE_DIR="$DEPLOY_PATH/releases/$GITHUB_SHA"
           $SUDO rm -rf "$RELEASE_DIR"
           $SUDO mkdir -p "$RELEASE_DIR"
-          $SUDO tar -xzf /tmp/money-whisperer-source.tgz -C "$RELEASE_DIR"
-          $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_PATH/current"
-          cd "$DEPLOY_PATH/current"
+          $SUDO tar -xzf "$SOURCE_REMOTE_PATH" -C "$RELEASE_DIR"
+          $SUDO rm -f "$SOURCE_REMOTE_PATH"
+          cd "$RELEASE_DIR"
           echo "::endgroup::"
 
           echo "[deploy] Starting Docker image build at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -288,7 +323,7 @@ jobs:
           }
           trap stop_heartbeat EXIT
 
-          doppler run \
+          timeout --signal=TERM --kill-after=60s 20m doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
             -- env BUILDKIT_PROGRESS=plain COMPOSE_PROGRESS=plain \
@@ -298,15 +333,18 @@ jobs:
           trap - EXIT
           echo "[deploy] Docker image build completed at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
+          $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_PATH/current"
+
           echo "::group::Restart containers"
-          doppler run \
+          timeout --signal=TERM --kill-after=60s 5m doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
-            -- docker compose -p money-whisperer up -d --no-build --remove-orphans
+            -- docker compose -p money-whisperer up -d --no-build --remove-orphans --wait --wait-timeout 180
           echo "::endgroup::"
 
           echo "::group::Deployment status"
           $SUDO docker image prune -f
           $SUDO docker compose -p money-whisperer ps
+          timeout --signal=TERM --kill-after=15s 2m $SUDO docker builder prune --force --filter until=168h || echo "[deploy] BuildKit cache cleanup skipped after timeout."
           echo "::endgroup::"
           REMOTE
