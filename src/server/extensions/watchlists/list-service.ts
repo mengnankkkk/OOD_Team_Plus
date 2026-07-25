@@ -47,6 +47,15 @@ export function listWatchlists(
   }
 }
 
+export function getWatchlist(userId: string, id: string): WatchlistSummary {
+  const db = getDatabase();
+  try {
+    return readWatchlistSummary(db, userId, id);
+  } finally {
+    db.close();
+  }
+}
+
 export function updateWatchlist(
   userId: string,
   id: string,
