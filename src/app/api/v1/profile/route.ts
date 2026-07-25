@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { authError } from "@/server/auth/http";
-import { createId, getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
+import { createId, getDatabase, getRequestContext, isoNow, meta, parseJson } from "@/server/http/context";
 
 const ProfileSchema = z.object({ riskLevel: z.enum(["R1", "R2", "R3", "R4", "R5", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"]).nullable().optional(), investmentAmount: z.string().optional(), targetAmount: z.string().optional(), targetDate: z.string().nullable().optional(), horizon: z.enum(["SHORT", "MEDIUM", "LONG"]).nullable().optional(), priority: z.enum(["STOCK", "SECTOR", "INDEX"]).nullable().optional(), maxDrawdown: z.string().nullable().optional(), preferences: z.record(z.string(), z.unknown()).optional() });
 
@@ -59,6 +59,15 @@ export async function PATCH(req: NextRequest) {
 
 function format(row: Record<string, unknown>, goalCount = 0) {
   const status = String(row.status).toUpperCase();
+  const preferences = parseJson<Record<string, unknown>>(String(row.preferences_json ?? "{}"), {});
+  const hasSuitabilityAnswers = Boolean(
+    row.risk_level
+    && row.investment_amount_decimal
+    && row.horizon
+    && row.max_drawdown_decimal
+    && Object.hasOwn(preferences, "instrumentPreference")
+    && Object.hasOwn(preferences, "nearTermUse"),
+  );
   return {
     id: row.id,
     status,
@@ -69,10 +78,10 @@ function format(row: Record<string, unknown>, goalCount = 0) {
     horizon: row.horizon,
     priority: row.priority,
     maxDrawdown: row.max_drawdown_decimal,
-    preferences: JSON.parse(String(row.preferences_json ?? "{}")),
+    preferences,
     version: row.version,
     updatedAt: row.updated_at,
     hasGoal: goalCount > 0,
-    onboardingCompleted: (status === "COMPLETE" || status === "COMPLETED") && goalCount > 0,
+    onboardingCompleted: (status === "COMPLETE" || status === "COMPLETED") && goalCount > 0 && hasSuitabilityAnswers,
   };
 }

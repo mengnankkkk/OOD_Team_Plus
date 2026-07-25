@@ -112,9 +112,10 @@ function Field({ label, htmlFor, required, children }: { label: string; htmlFor?
 
 export default function OnboardingGate() {
   const { user, profile, loading, refreshProfile } = useAuth();
-  const { data: savedHoldings = [], isLoading: holdingsLoading, isError: holdingsError } = useHoldings();
+  const { data: savedHoldings = [], isLoading: holdingsLoading } = useHoldings();
   const invalidateHoldings = useHoldingsInvalidator();
   const holdingIdRef = useRef(2);
+  const refreshedUserIdRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -131,12 +132,17 @@ export default function OnboardingGate() {
     user
     && !loading
     && !holdingsLoading
-    && !holdingsError
     && profile
     && (!profileComplete || savedHoldings.length === 0),
   );
   const currentQuestion = questions[questionIndex];
   const progress = step === 0 ? ((questionIndex + 1) / Math.max(questions.length, 1)) * 25 : (step + 1) * 25;
+
+  useEffect(() => {
+    if (!user || refreshedUserIdRef.current === user.id) return;
+    refreshedUserIdRef.current = user.id;
+    void refreshProfile().catch(() => undefined);
+  }, [refreshProfile, user]);
 
   useEffect(() => {
     if (!needsOnboarding) {
