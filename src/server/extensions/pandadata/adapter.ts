@@ -58,6 +58,10 @@ export async function callPandaData(
 
   const pythonPath = options.pythonPath ?? process.env.PANDADATA_PYTHON ?? "python";
   const timeoutMs = options.timeoutMs ?? 30_000;
+  const configuredBaseUrl = process.env.JAVA_SERVICE_BASE_URL?.trim();
+  if (!configuredBaseUrl || /^(?:your_value_here|default_placeholder)$/iu.test(configuredBaseUrl)) {
+    throw pandaError("PANDADATA_AUTH_FAILED", "PandaData is not configured: JAVA_SERVICE_BASE_URL must be set in the deployment secret store.", false, { phase: "CONFIG" });
+  }
   const scriptPath = path.join(resolvePandaSkillRoot(), "scripts", "call_api.py");
   const args = [scriptPath, "--method", method, "--params", JSON.stringify(validated)];
   const startedAt = Date.now();

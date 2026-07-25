@@ -370,14 +370,15 @@ async function researchInstrument(
   startDate.setUTCDate(startDate.getUTCDate() - 180);
   const sources = instruments.map((instrument): PandaQuerySource => {
     const method = marketMethod(instrument);
+    const symbol = pandaSymbol(instrument.symbol, instrument.asset_type, instrument.market);
     const realtime = method === "get_stock_rt_daily";
     const columns = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "num_trades"];
     return {
       dataset: marketDataset(instrument),
       method,
       parameters: realtime
-        ? { symbol: [instrument.symbol], fields: columns }
-        : { symbol: [instrument.symbol], start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""), end_date: end, fields: columns },
+        ? { symbol: [symbol], fields: columns }
+        : { symbol: [symbol], start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""), end_date: end, fields: columns },
       columns,
       joinKeys: ["symbol", "date"],
       assetType: instrument.asset_type.toUpperCase(),
@@ -798,6 +799,16 @@ function marketMethod(target: Instrument): PandaQuerySource["method"] {
 function marketForSymbol(symbol: string): string {
   const suffix = symbol.toUpperCase().split(".").at(-1);
   return suffix === "US" ? "US" : suffix === "HK" ? "HK" : suffix === "SH" || suffix === "SZ" || suffix === "OF" ? suffix : "UNKNOWN";
+}
+
+function pandaSymbol(symbol: string, assetType: string, market: string): string {
+  const normalized = symbol.trim().toUpperCase();
+  if (normalized.includes(".")) return normalized;
+  if (!assetType.toUpperCase().includes("STOCK")) return normalized;
+  if (market.toUpperCase() === "SH" || market.toUpperCase() === "SZ" || market.toUpperCase() === "OF") return `${normalized}.${market.toUpperCase()}`;
+  if (/^(?:5|6|68)\d{4}$/u.test(normalized)) return `${normalized}.SH`;
+  if (/^(?:0|3)\d{5}$/u.test(normalized)) return `${normalized}.SZ`;
+  return normalized;
 }
 
 function normalizeHorizon(value: unknown): "SHORT" | "MEDIUM" | "LONG" {

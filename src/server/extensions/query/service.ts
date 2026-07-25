@@ -27,6 +27,7 @@ const DATASET_TABLES: Record<string, string> = {
   HOLDING_SNAPSHOTS: "holding_snapshots",
   INSTRUMENTS: "instruments",
   MARKET_STOCK_DAILY: "pandadata:get_stock_daily",
+  MARKET_STOCK_RT_DAILY: "pandadata:get_stock_rt_daily",
   MARKET_FUND_DAILY: "pandadata:get_fund_daily",
   MARKET_INDEX_DAILY: "pandadata:get_index_daily",
   MARKET_US_DAILY: "pandadata:get_us_daily",

@@ -104,8 +104,10 @@ export async function runChiefAdvisor(input: {
           const retryPrompt = attempt === 0
             ? prompt
             : `${prompt}\n\n这是一次真实模型重试。请忽略此前任何非 JSON 输出，只返回一个完整、可解析的 JSON 对象，不要 Markdown，不要解释文字。`;
-          const modelText = await streamModelText(specialistAgent, retryPrompt, 1_400, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
-          finding = coerceModelFinding(role, parseModelJson(modelText));
+          const modelObject = await streamModelObject(specialistAgent, retryPrompt, ChiefAgentFindingSchema, (partial) => {
+            input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) });
+          });
+          finding = coerceModelFinding(role, modelObject);
         } catch (error) {
           lastError = error;
         }
@@ -127,8 +129,10 @@ export async function runChiefAdvisor(input: {
       const decisionPrompt = chiefDecisionPrompt(input.prompt, findings) + (attempt === 0
         ? ""
         : "\n\n这是一次真实模型重试。只返回一个完整、可解析的 AdvisorDecision JSON 对象，不要 Markdown，不要解释文字。");
-      const modelText = await streamModelText(chief, decisionPrompt, 2_200, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
-      modelDecision = coerceModelDecision(parseModelJson(modelText));
+      const modelObject = await streamModelObject(chief, decisionPrompt, ChiefAdvisorDecisionSchema, (partial) => {
+        input.onStreamEvent?.({ type: "decision.object", partial: normalizeRecord(partial) as Partial<AdvisorDecision> });
+      });
+      modelDecision = coerceModelDecision(modelObject);
     } catch (error) {
       lastDecisionError = error;
     }
@@ -149,6 +153,27 @@ async function streamModelText(agent: Agent, prompt: string, maxOutputTokens: nu
   if (streamedText.trim()) return streamedText;
   const completedText = await stream.text.catch(() => "");
   return typeof completedText === "string" ? completedText : "";
+}
+
+async function streamModelObject<T extends object>(
+  agent: Agent,
+  prompt: string,
+  schema: z.ZodType<T>,
+  onPartial: (partial: Partial<T>) => void,
+): Promise<T> {
+  const stream = await agent.stream(prompt, {
+    structuredOutput: { schema },
+    maxSteps: 1,
+    modelSettings: { maxOutputTokens: 1_400, temperature: 0.1 },
+  });
+  if (stream.objectStream) {
+    for await (const partial of stream.objectStream) {
+      if (partial && typeof partial === "object") onPartial(partial as Partial<T>);
+    }
+  }
+  const result = await stream.object;
+  if (!result || typeof result !== "object") throw new Error("MODEL_OUTPUT_EMPTY");
+  return result as T;
 }
 
 async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
