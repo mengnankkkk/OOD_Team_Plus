@@ -58,6 +58,17 @@ docs/                           # 产品、API、数据库和模块设计文档
 tests/                          # E2E 与辅助代码
 ```
 
+## Injective 链上存证
+
+Money Whisperer 可以把 Advisor 回答或 AI 生成报告转入 `/injective`，在浏览器本地计算 SHA-256，并通过钱包把 `MWP1 + 32 字节报告哈希` 写入 Injective EVM Testnet（Chain ID `1439`）。交易金额为 `0 INJ`，只消耗测试网 Gas；报告正文、持仓与身份信息不会上传到链上。
+
+- Advisor 最终回答下方可直接进入存证流程。
+- AI 生成报告详情页提供 `Injective 存证` 操作。
+- `/api/v1/injective/status` 只读检查测试网 Chain ID 与最新区块。
+- 成功后可通过 Injective Blockscout 公开核验交易 Input Data。
+
+该功能只使用公开测试网配置，不需要新增密钥或本地 `.env`。
+
 ## 环境变量
 
 真实密钥必须由 Doppler、CI/CD Secret 或容器 Secret 注入。禁止创建或提交真实 `.env` 文件。

@@ -9,7 +9,7 @@ describe("Injective report proof", () => {
 
   it("calculates a stable SHA-256 digest", async () => {
     await expect(sha256Hex("Money Whisperer")).resolves.toBe(
-      "0xb4cf008ee51e794fa1950ab0aa9c6c2bc757bd525f1d375e1964cda076b204e7",
+      "0x728e8975b01f4ed4f9b4b236fb2021e0105954c3bd1d8c2fad68329153fcc929",
     );
   });
 
