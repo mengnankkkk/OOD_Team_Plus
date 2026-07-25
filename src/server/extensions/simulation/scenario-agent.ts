@@ -46,10 +46,11 @@ export async function runBranchScenarioAgent(
     const plan = BranchScenarioPlanSchema.parse({
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
-      options: modelPlan.options.map((option, index) => ({
+      delegatedAgents: Array.isArray(modelPlan.delegatedAgents) ? modelPlan.delegatedAgents : [],
+      options: (modelPlan.options ?? []).map((option, index) => ({
         ...option,
-        strategy: normalizeScenarioStrategy(option.strategy, option.trades),
-        label: scenarioLabel(normalizeScenarioStrategy(option.strategy, option.trades), index),
+        strategy: normalizeScenarioStrategy(option.strategy, option.trades ?? []),
+        label: scenarioLabel(normalizeScenarioStrategy(option.strategy, option.trades ?? []), index),
         trades: normalizeModelTrades(option.trades),
       })),
     });
@@ -72,12 +73,12 @@ async function generateModelPlan(agent: Agent, prompt: string): Promise<BranchSc
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请完整输出全部候选方案。" : "上一轮结构化输出不完整。请重新完整输出 options 数组，不要省略任何字段。"}`, {
+      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请输出紧凑的 options 数组。" : "上一轮输出不完整。请只补齐 options、description、strategy、trades，解释字段可以省略。"}`, {
         maxSteps: 10,
-        modelSettings: { maxOutputTokens: 3_600, temperature: 0.1 },
+        modelSettings: { maxOutputTokens: 4_000, temperature: 0.1 },
         structuredOutput: {
           schema: BranchScenarioModelPlanSchema,
-          instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。必须完整输出 options 数组及每个方案的全部字段。",
+          instructions: "只输出 JSON。优先保证 options 数组和每个方案的 description、strategy、trades；rationale、counterEvidence、risks、assumptions、invalidationConditions 可以省略，服务端会补齐。不要输出 provider 或 label；交易中禁止输出 price，所有价格由服务端冻结。",
         },
       });
       let latestPartial: Partial<BranchScenarioModelPlan> = {};
@@ -122,8 +123,8 @@ export function createBranchScenarioAgent() {
     },
     instructions: [
       "你是分支模拟的 Chief Advisor，需要根据用户目标动态协作，而不是机械套用固定工作流。",
-      "输出 1 到 5 个互斥的候选方案，通常包含保持、再平衡、降险三类不同路径。",
-      "每个方案必须有至少一条主要依据、一条反方证据、一条风险、假设和失效条件。",
+      "输出 1 到 3 个互斥的候选方案，优先保证每个方案有 description、strategy、trades 三个字段。",
+      "rationale、counterEvidence、risks、assumptions、invalidationConditions 是可选的，缺失时由服务端补齐。",
       "只输出交易意图 instrumentId/action/quantity，禁止输出 price；服务端会使用冻结价格。",
       "不允许修改真实 holdings，不允许声称真实收益或未来概率。",
     ].join("\n"),
@@ -210,7 +211,7 @@ function positiveHalf(value: string): string | null {
 function buildPrompt(input: BranchScenarioAgentInput): string {
   return [
     "请为资产分支模拟生成候选方案。",
-    "输出必须符合结构化 schema，不要 Markdown，不要隐藏思维链。provider 和 label 由服务端生成，禁止输出这两个字段。",
+    "输出必须是紧凑的结构化 JSON，不要 Markdown，不要隐藏思维链。优先输出 1 到 3 个 options，每个只需 description、strategy、trades；解释数组可省略。provider 和 label 由服务端生成，禁止输出这两个字段。",
     "模型只负责场景理解和交易意图，禁止填写 price；不得创造不在 instruments 中的标的。",
     JSON.stringify(input),
   ].join("\n");
@@ -222,17 +223,24 @@ function scenarioLabel(strategy: BranchScenarioOption["strategy"], index: number
 }
 
 export function normalizeModelTrades(
-  trades: BranchScenarioModelPlan["options"][number]["trades"],
+  trades: Array<{
+    instrumentId?: string | null;
+    action?: string | null;
+    quantity?: string | number | null;
+  }> | null | undefined,
 ): Array<{ instrumentId: string; action: "BUY" | "SELL"; quantity: string }> {
   const grouped = new Map<string, { instrumentId: string; action: "BUY" | "SELL"; quantity: Decimal }>();
-  for (const trade of trades) {
-    const quantity = new Decimal(String(trade.quantity));
+  for (const trade of trades ?? []) {
+    const instrumentId = String(trade.instrumentId ?? "").trim();
+    const action = String(trade.action ?? "").toUpperCase();
+    if (!instrumentId || !["BUY", "SELL"].includes(action)) continue;
+    const quantity = new Decimal(String(trade.quantity ?? ""));
     if (!quantity.isFinite() || !quantity.gt(0)) continue;
-    const key = `${trade.instrumentId}:${trade.action}`;
+    const key = `${instrumentId}:${action}`;
     const current = grouped.get(key);
     grouped.set(key, current
       ? { ...current, quantity: current.quantity.plus(quantity) }
-      : { instrumentId: trade.instrumentId, action: trade.action, quantity });
+      : { instrumentId, action: action as "BUY" | "SELL", quantity });
   }
   return [...grouped.values()].map((trade) => ({
     instrumentId: trade.instrumentId,

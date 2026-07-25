@@ -1,8 +1,20 @@
+import Decimal from "decimal.js";
+
 import {
   BranchScenarioModelPlanSchema,
   type BranchScenarioModelPlan,
   type BranchScenarioOption,
 } from "./scenario-contracts";
+
+const meaningfulOptionKeys = [
+  "description", "summary", "name", "title", "strategy", "mode", "trades",
+  "transactions", "tradeIntents", "targetAllocations", "target_allocations", "rationale",
+];
+const bareOptionKeys = [
+  "description", "name", "title", "strategy", "mode", "trades", "transactions",
+  "tradeIntents", "targetAllocations", "target_allocations", "rationale", "counterEvidence",
+  "risks", "assumptions", "invalidationConditions",
+];
 
 export function mergeBranchScenarioPartial(
   previous: Partial<BranchScenarioModelPlan>,
@@ -18,12 +30,12 @@ export function parseBranchScenarioModelPlan(
   let lastError: unknown;
   for (const candidate of [completed, partial, mergeDefined(partial, completed)]) {
     try {
-      return BranchScenarioModelPlanSchema.parse(normalizeModelPlan(stripModelOwnedFields(candidate)));
+      return BranchScenarioModelPlanSchema.parse(normalizeModelPlan(stripModelOwnedFields(candidate))) as unknown as BranchScenarioModelPlan;
     } catch (error) {
       lastError = error;
     }
   }
-  throw lastError;
+  throw lastError instanceof Error ? lastError : new Error("MODEL_OUTPUT_INVALID");
 }
 
 function stripModelOwnedFields(value: unknown): unknown {
@@ -35,53 +47,173 @@ function stripModelOwnedFields(value: unknown): unknown {
 }
 
 function normalizeModelPlan(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const plan = value as Record<string, unknown>;
-  if (!Array.isArray(plan.options)) return value;
-  return { ...plan, options: plan.options.map(normalizeModelOption) };
+  const unwrapped = unwrapModelEnvelope(value);
+  if (!isRecord(unwrapped)) return unwrapped;
+  const rawOptions = optionCollection(unwrapped);
+  const options = rawOptions
+    .map(normalizeModelOption)
+    .filter((option): option is Record<string, unknown> => option !== null);
+  const modelSummary = normalizeText(unwrapped.modelSummary ?? unwrapped.summary);
+  const normalized: Record<string, unknown> = {
+    options,
+    delegatedAgents: normalizeDelegatedAgents(unwrapped.delegatedAgents ?? unwrapped.agents),
+  };
+  if (modelSummary) normalized.modelSummary = modelSummary.slice(0, 1000);
+  return normalized;
 }
 
-function normalizeModelOption(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const option = value as Record<string, unknown>;
-  const trades = Array.isArray(option.trades) ? option.trades.map(normalizeModelTrade) : [];
-  const targetAllocations = Array.isArray(option.targetAllocations)
-    ? option.targetAllocations.map(normalizeModelAllocation)
-    : [];
+function normalizeModelOption(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !hasMeaningfulOption(value)) return null;
+  const trades = asCollection(value.trades ?? value.transactions ?? value.tradeIntents)
+    .map(normalizeModelTrade)
+    .filter((trade): trade is Record<string, unknown> => trade !== null);
+  const targetAllocations = asCollection(value.targetAllocations ?? value.target_allocations)
+    .map(normalizeModelAllocation)
+    .filter((allocation): allocation is Record<string, unknown> => allocation !== null);
   return {
-    ...option,
-    strategy: normalizeScenarioStrategy(option.strategy, trades),
+    description: normalizeText(value.description ?? value.summary ?? value.name ?? value.title) ?? "模型候选方案",
+    strategy: normalizeScenarioStrategy(value.strategy ?? value.mode, trades),
     trades,
     targetAllocations,
-    rationale: normalizeList(option.rationale, "基于当前分支上下文生成的模型候选"),
-    counterEvidence: normalizeList(option.counterEvidence, "市场变化可能使当前方案失效"),
-    risks: normalizeList(option.risks, "候选结果仅用于模拟，不代表未来收益"),
-    assumptions: normalizeList(option.assumptions, "价格由服务端冻结并用于比较"),
-    invalidationConditions: normalizeList(option.invalidationConditions, "风险画像、资金用途或市场数据发生变化"),
+    rationale: normalizeList(value.rationale, "基于当前分支上下文生成的模型候选", 3),
+    counterEvidence: normalizeList(value.counterEvidence, "市场变化可能使当前方案失效", 3),
+    risks: normalizeList(value.risks, "候选结果仅用于模拟，不代表未来收益", 3),
+    assumptions: normalizeList(value.assumptions, "价格由服务端冻结并用于比较", 8),
+    invalidationConditions: normalizeList(value.invalidationConditions, "风险画像、资金用途或市场数据发生变化", 6),
   };
 }
 
-function normalizeList(value: unknown, fallback: string): string[] {
-  if (!Array.isArray(value)) return [fallback];
-  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8);
+function normalizeList(value: unknown, fallback: string, limit: number): string[] {
+  const rawItems = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  const items = rawItems.map((item) => {
+    if (typeof item === "string") return item.trim();
+    if (!isRecord(item)) return "";
+    return normalizeText(item.text ?? item.reason ?? item.message ?? item.value) ?? "";
+  }).filter((item) => item.length > 0).slice(0, limit);
   return items.length ? items : [fallback];
 }
 
-function normalizeModelTrade(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const trade = value as Record<string, unknown>;
-  return { ...trade, quantity: normalizeDecimalValue(trade.quantity) };
+function normalizeModelTrade(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const nestedInstrument = isRecord(value.instrument) ? value.instrument : undefined;
+  const instrumentId = normalizeText(
+    value.instrumentId
+      ?? value.instrument_id
+      ?? value.symbol
+      ?? value.ticker
+      ?? value.asset
+      ?? nestedInstrument?.id
+      ?? nestedInstrument?.symbol
+      ?? value.instrument,
+  );
+  const action = normalizeTradeAction(value.action ?? value.side ?? value.direction ?? value.tradeAction);
+  const quantity = normalizeDecimalValue(value.quantity ?? value.qty ?? value.amount ?? value.shares ?? value.units);
+  if (!instrumentId || !action || !quantity || !isPositiveDecimal(quantity)) return null;
+  return { instrumentId, action, quantity };
 }
 
-function normalizeModelAllocation(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const allocation = value as Record<string, unknown>;
-  return { ...allocation, weight: normalizeDecimalValue(allocation.weight) };
+function normalizeModelAllocation(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const instrumentId = normalizeText(value.instrumentId ?? value.instrument_id ?? value.symbol ?? value.ticker);
+  const weight = normalizeDecimalValue(value.weight ?? value.targetWeight ?? value.percentage);
+  if (!instrumentId || !weight) return null;
+  return { instrumentId, weight };
 }
 
-function normalizeDecimalValue(value: unknown): unknown {
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return typeof value === "string" ? value.trim() : value;
+function normalizeDecimalValue(value: unknown): string | undefined {
+  const raw = typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : typeof value === "string"
+      ? value.trim().replaceAll(",", "")
+      : "";
+  if (!raw) return undefined;
+  try {
+    const amount = raw.endsWith("%")
+      ? new Decimal(raw.slice(0, -1)).div(100)
+      : new Decimal(raw);
+    if (!amount.isFinite() || amount.isNegative()) return undefined;
+    return trimDecimal(amount.toFixed(12));
+  } catch {
+    return undefined;
+  }
+}
+
+function isPositiveDecimal(value: string): boolean {
+  try {
+    return new Decimal(value).gt(0);
+  } catch {
+    return false;
+  }
+}
+
+function trimDecimal(value: string): string {
+  return value.replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1");
+}
+
+function normalizeTradeAction(value: unknown): "BUY" | "SELL" | null {
+  const action = normalizeText(value)?.toUpperCase().replace(/[\s_-]+/gu, "_");
+  if (!action) return null;
+  if (["BUY", "PURCHASE", "ADD", "买入", "增持"].includes(action)) return "BUY";
+  if (["SELL", "LIQUIDATE", "REDUCE", "卖出", "减持"].includes(action)) return "SELL";
+  return null;
+}
+
+function normalizeText(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  const text = String(value).trim();
+  return text || undefined;
+}
+
+function normalizeDelegatedAgents(value: unknown): string[] {
+  const raw = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  return raw
+    .map((item) => normalizeText(item))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, 12);
+}
+
+function optionCollection(plan: Record<string, unknown>): unknown[] {
+  for (const key of ["options", "candidates", "scenarios", "plans", "variants", "items", "option", "candidate"]) {
+    const items = asCollection(plan[key]);
+    if (items.some((item) => isRecord(item) && hasMeaningfulOption(item))) return items;
+  }
+  if (hasBareOptionShape(plan)) return [plan];
+  return [];
+}
+
+function asCollection(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return isRecord(value) ? [value] : [];
+}
+
+function hasMeaningfulOption(value: Record<string, unknown>): boolean {
+  return hasAnyOptionValue(value, meaningfulOptionKeys);
+}
+
+function hasBareOptionShape(value: Record<string, unknown>): boolean {
+  return hasAnyOptionValue(value, bareOptionKeys);
+}
+
+function hasAnyOptionValue(value: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => {
+    const item = value[key];
+    return Array.isArray(item) ? item.length > 0 : normalizeText(item) !== undefined;
+  });
+}
+
+function unwrapModelEnvelope(value: unknown): unknown {
+  let current = value;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!isRecord(current) || optionCollection(current).length > 0) return current;
+    const nested = current.result ?? current.data ?? current.output ?? current.plan ?? current.payload;
+    if (!isRecord(nested)) return current;
+    current = nested;
+  }
+  return current;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function mergeDefined(partial: Partial<BranchScenarioModelPlan>, completed: unknown): Record<string, unknown> {

@@ -48,31 +48,51 @@ export const BranchScenarioPlanSchema = z.object({
 }).strict();
 
 const BranchScenarioModelTradeSchema = z.object({
-  instrumentId: z.string().min(1).max(120),
-  action: z.enum(["BUY", "SELL"]),
-  quantity: z.union([decimalString, z.number().finite()]),
-});
+  instrumentId: z.string().min(1).max(120).nullish(),
+  instrument_id: z.string().min(1).max(120).nullish(),
+  symbol: z.string().min(1).max(120).nullish(),
+  ticker: z.string().min(1).max(120).nullish(),
+  action: z.string().max(40).nullish(),
+  side: z.string().max(40).nullish(),
+  direction: z.string().max(40).nullish(),
+  quantity: z.union([decimalString, z.number().finite()]).nullish(),
+  qty: z.union([decimalString, z.number().finite()]).nullish(),
+  amount: z.union([decimalString, z.number().finite()]).nullish(),
+}).passthrough();
 
 export const BranchScenarioModelOptionDraftSchema = z.object({
-  description: z.string().min(1).max(800).default("模型候选方案"),
-  strategy: z.string().min(1).max(80).default("HOLD"),
-  trades: z.array(BranchScenarioModelTradeSchema).max(30).default([]),
+  description: z.string().min(1).max(800).nullish(),
+  summary: z.string().min(1).max(800).nullish(),
+  name: z.string().min(1).max(120).nullish(),
+  strategy: z.string().max(80).nullish(),
+  mode: z.string().max(80).nullish(),
+  trades: z.array(BranchScenarioModelTradeSchema).max(30).nullish(),
+  transactions: z.array(BranchScenarioModelTradeSchema).max(30).nullish(),
   targetAllocations: z.array(z.object({
-    instrumentId: z.string().min(1).max(120),
-    weight: z.union([decimalString, z.number().finite()]),
-  })).max(50).default([]),
-  rationale: z.array(z.string().min(1)).max(3).default(["基于当前分支上下文生成的模型候选"]),
-  counterEvidence: z.array(z.string().min(1)).max(3).default(["市场变化可能使当前方案失效"]),
-  risks: z.array(z.string().min(1)).max(3).default(["候选结果仅用于模拟，不代表未来收益"]),
-  assumptions: z.array(z.string().min(1)).max(8).default(["价格由服务端冻结并用于比较"]),
-  invalidationConditions: z.array(z.string().min(1)).max(6).default(["风险画像、资金用途或市场数据发生变化"]),
-});
+    instrumentId: z.string().min(1).max(120).nullish(),
+    instrument_id: z.string().min(1).max(120).nullish(),
+    symbol: z.string().min(1).max(120).nullish(),
+    weight: z.union([decimalString, z.number().finite()]).nullish(),
+    targetWeight: z.union([decimalString, z.number().finite()]).nullish(),
+  }).passthrough()).max(50).nullish(),
+  rationale: z.union([z.string(), z.array(z.string().min(1)).max(3)]).nullish(),
+  counterEvidence: z.union([z.string(), z.array(z.string().min(1)).max(3)]).nullish(),
+  risks: z.union([z.string(), z.array(z.string().min(1)).max(3)]).nullish(),
+  assumptions: z.union([z.string(), z.array(z.string().min(1)).max(8)]).nullish(),
+  invalidationConditions: z.union([z.string(), z.array(z.string().min(1)).max(6)]).nullish(),
+}).passthrough();
 
 export const BranchScenarioModelPlanSchema = z.object({
-  options: z.array(BranchScenarioModelOptionDraftSchema).min(1).max(5),
-  delegatedAgents: z.array(z.string().min(1).max(80)).max(12).default([]),
-  modelSummary: z.string().max(1000).optional(),
-});
+  options: z.array(BranchScenarioModelOptionDraftSchema).max(5).nullish(),
+  candidates: z.array(BranchScenarioModelOptionDraftSchema).max(5).nullish(),
+  scenarios: z.array(BranchScenarioModelOptionDraftSchema).max(5).nullish(),
+  option: BranchScenarioModelOptionDraftSchema.nullish(),
+  candidate: BranchScenarioModelOptionDraftSchema.nullish(),
+  delegatedAgents: z.preprocess((value) => typeof value === "string" ? [value] : value ?? undefined, z.array(z.string().min(1).max(80)).max(12).default([])),
+  agents: z.array(z.string().min(1).max(80)).max(12).nullish(),
+  modelSummary: z.string().max(1000).nullish(),
+  summary: z.string().max(1000).nullish(),
+}).passthrough();
 
 export const BranchScenarioContextSchema = z.object({
   objective: z.string().min(1).max(2000),
@@ -87,5 +107,25 @@ export const BranchScenarioContextSchema = z.object({
 export type BranchScenarioTrade = z.infer<typeof BranchScenarioTradeSchema>;
 export type BranchScenarioOption = z.infer<typeof BranchScenarioOptionSchema>;
 export type BranchScenarioPlan = z.infer<typeof BranchScenarioPlanSchema>;
-export type BranchScenarioModelPlan = z.infer<typeof BranchScenarioModelPlanSchema>;
+export type BranchScenarioModelTrade = {
+  instrumentId?: string | null;
+  action?: string | null;
+  quantity?: string | number | null;
+};
+export type BranchScenarioModelOptionDraft = {
+  description: string;
+  strategy: string;
+  trades: Array<{ instrumentId: string; action: "BUY" | "SELL"; quantity: string }>;
+  targetAllocations: Array<{ instrumentId: string; weight: string }>;
+  rationale: string[];
+  counterEvidence: string[];
+  risks: string[];
+  assumptions: string[];
+  invalidationConditions: string[];
+};
+export type BranchScenarioModelPlan = {
+  options: BranchScenarioModelOptionDraft[];
+  delegatedAgents: string[];
+  modelSummary?: string;
+};
 export type BranchScenarioAgentInput = z.infer<typeof BranchScenarioContextSchema>;
