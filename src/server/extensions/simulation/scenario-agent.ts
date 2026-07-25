@@ -214,10 +214,37 @@ function normalizeModelPlan(value: unknown): unknown {
     options: plan.options.map((rawOption) => {
       if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) return rawOption;
       const option = rawOption as Record<string, unknown>;
-      const trades = Array.isArray(option.trades) ? option.trades : [];
-      return { ...option, strategy: normalizeStrategy(option.strategy, trades) };
+      const trades = Array.isArray(option.trades)
+        ? option.trades.map((trade) => normalizeModelTrade(trade))
+        : [];
+      const targetAllocations = Array.isArray(option.targetAllocations)
+        ? option.targetAllocations.map((allocation) => normalizeModelAllocation(allocation))
+        : [];
+      return {
+        ...option,
+        strategy: normalizeStrategy(option.strategy, trades),
+        trades,
+        targetAllocations,
+      };
     }),
   };
+}
+
+function normalizeModelTrade(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const trade = value as Record<string, unknown>;
+  return { ...trade, quantity: normalizeDecimalValue(trade.quantity) };
+}
+
+function normalizeModelAllocation(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const allocation = value as Record<string, unknown>;
+  return { ...allocation, weight: normalizeDecimalValue(allocation.weight) };
+}
+
+function normalizeDecimalValue(value: unknown): unknown {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" ? value.trim() : value;
 }
 
 function mergeDefined(partial: Partial<BranchScenarioModelPlan>, completed: unknown): Record<string, unknown> {
