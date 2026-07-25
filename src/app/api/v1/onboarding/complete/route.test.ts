@@ -61,6 +61,14 @@ describe("/api/v1/onboarding/complete", () => {
           priority: "1",
           assetPreference: "INDEX",
         },
+        portfolio: {
+          id: "portfolio-onboarding",
+          holdings: [{
+            instrumentId: "AAPL",
+            quantity: "2",
+            cost: "140",
+          }],
+        },
       }),
       headers: { "Content-Type": "application/json" },
     }));
@@ -74,6 +82,8 @@ describe("/api/v1/onboarding/complete", () => {
     const profile = db.prepare("SELECT status, risk_level, investment_amount_decimal, preferences_json FROM user_profiles WHERE user_id=?").get(TEST_USER_ID) as Record<string, unknown>;
     const goal = db.prepare("SELECT name, target_amount_decimal FROM goals WHERE user_id=? AND status='active'").get(TEST_USER_ID) as Record<string, unknown>;
     const assessment = db.prepare("SELECT COUNT(*) AS count FROM risk_assessments WHERE user_id=?").get(TEST_USER_ID) as { count: number };
+    const holding = db.prepare("SELECT instrument_id, quantity_decimal, cost_decimal FROM holdings WHERE user_id=? AND portfolio_id=? AND status='active'").get(TEST_USER_ID, "portfolio-onboarding") as Record<string, unknown>;
+    const snapshot = db.prepare("SELECT total_market_value_decimal FROM portfolio_snapshots WHERE user_id=? AND portfolio_id=? ORDER BY created_at DESC LIMIT 1").get(TEST_USER_ID, "portfolio-onboarding") as Record<string, unknown>;
     db.close();
 
     expect(profile).toMatchObject({ status: "complete", risk_level: body.data.riskLevel, investment_amount_decimal: "50000" });
@@ -83,6 +93,8 @@ describe("/api/v1/onboarding/complete", () => {
     });
     expect(goal).toMatchObject({ name: "三年后购房首付", target_amount_decimal: "300000" });
     expect(assessment.count).toBe(1);
+    expect(holding).toMatchObject({ instrument_id: "AAPL", quantity_decimal: "2", cost_decimal: "140" });
+    expect(snapshot).toMatchObject({ total_market_value_decimal: "280" });
   });
 
   it("accepts browser-form numeric values and formatted money strings", async () => {
@@ -115,5 +127,29 @@ describe("/api/v1/onboarding/complete", () => {
 
     const body = await response.json();
     expect(response.status, JSON.stringify(body.error ?? body)).toBe(201);
+  });
+
+  it("lets an existing onboarded user complete only the missing portfolio", async () => {
+    const response = await POST(authenticatedRequest("http://localhost/api/v1/onboarding/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        portfolio: {
+          id: "portfolio-existing-user",
+          holdings: [{
+            instrumentId: "MSFT",
+            quantity: "3",
+            cost: "190",
+          }],
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    expect(response.status).toBe(201);
+    const db = getDatabase();
+    const holding = db.prepare("SELECT instrument_id, quantity_decimal, cost_decimal FROM holdings WHERE user_id=? AND portfolio_id=? AND status='active'")
+      .get(TEST_USER_ID, "portfolio-existing-user") as Record<string, unknown>;
+    db.close();
+    expect(holding).toMatchObject({ instrument_id: "MSFT", quantity_decimal: "3", cost_decimal: "190" });
   });
 });
