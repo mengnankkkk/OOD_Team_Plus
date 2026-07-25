@@ -8,10 +8,10 @@ import { AgentFindingSchema, AdvisorDecisionSchema, type AgentFinding, type Advi
 const ChiefAgentFindingSchema = z.object({
   agent: AgentFindingSchema.shape.agent.optional(),
   conclusion: z.string().optional(),
-  supportEvidence: z.array(z.unknown()).optional(),
-  counterEvidence: z.array(z.unknown()).optional(),
-  missingInformation: z.array(z.unknown()).optional(),
-  risks: z.array(z.unknown()).optional(),
+  supportEvidence: z.array(z.string()).optional(),
+  counterEvidence: z.array(z.string()).optional(),
+  missingInformation: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
   confidence: z.number().optional(),
   needsAnotherAgent: z.boolean().optional(),
   suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent.nullable().optional(),
@@ -25,11 +25,11 @@ const ChiefAdvisorDecisionSchema = z.object({
   summary: z.string().optional(),
   suitability: AdvisorDecisionSchema.shape.suitability.optional(),
   confidence: z.number().optional(),
-  rationales: z.array(z.unknown()).optional(),
-  counterEvidence: z.array(z.unknown()).optional(),
-  risks: z.array(z.unknown()).optional(),
+  rationales: z.array(z.string()).optional(),
+  counterEvidence: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
   portfolioImpact: z.string().optional(),
-  invalidationConditions: z.array(z.unknown()).optional(),
+  invalidationConditions: z.array(z.string()).optional(),
   compliance: z.object({
     approved: z.boolean().optional(),
     decision: AdvisorDecisionSchema.shape.compliance.shape.decision.optional(),
@@ -142,8 +142,8 @@ export async function runChiefAdvisor(input: {
   });
   const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
   const consumeDecisionObject = consumeObjectStream<ChiefAdvisorDecision>(decisionStream.objectStream, (partial) => {
-    latestDecisionPartial = { ...latestDecisionPartial, ...partial };
-    input.onStreamEvent?.({ type: "decision.object", partial });
+    latestDecisionPartial = { ...latestDecisionPartial, ...partial } as Partial<AdvisorDecision>;
+    input.onStreamEvent?.({ type: "decision.object", partial: partial as Partial<AdvisorDecision> });
   });
   const [decisionResult] = await Promise.allSettled([decisionStream.object, consumeDecisionText, consumeDecisionObject]);
   if (decisionResult.status === "rejected") throw decisionResult.reason;
