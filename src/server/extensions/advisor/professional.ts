@@ -394,7 +394,30 @@ async function researchInstrument(
   });
   persistSseEvent({ analysisId: rootRunId, type: "tool.started", payload: { toolName: sources.map((source) => source.method), childRunId, symbolCount: sources.length } });
   try {
-    const executions = await executePandaSources({ sources, agentRunId: childRunId, localRows: [], db });
+    let executions = await executePandaSources({ sources, agentRunId: childRunId, localRows: [], db });
+    // PandaData's real-time endpoint legitimately returns no rows outside a
+    // trading session. Use the latest official daily data as an explicit
+    // stale fallback so the advisor can explain the data state instead of
+    // treating an empty response as a successful quote.
+    const staleSources = sources.filter((source, index) => source.method === "get_stock_rt_daily" && executions[index]?.result.data.length === 0)
+      .map((source) => ({
+        ...source,
+        dataset: "MARKET_STOCK_DAILY" as const,
+        method: "get_stock_daily" as const,
+        parameters: {
+          symbol: source.parameters.symbol,
+          start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""),
+          end_date: end,
+          fields: source.parameters.fields,
+        },
+      }));
+    if (staleSources.length) {
+      const fallbackExecutions = await executePandaSources({ sources: staleSources, agentRunId: childRunId, localRows: [], db });
+      executions = executions.map((execution, index) => {
+        const fallback = staleSources.findIndex((source) => source.parameters.symbol === sources[index]?.parameters.symbol);
+        return execution.result.data.length === 0 && fallback >= 0 ? fallbackExecutions[fallback] : execution;
+      });
+    }
     const allRows = executions.flatMap((execution) => execution.result.data);
     const closes = allRows.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
     const latest = closes.at(-1) ?? null;
@@ -795,7 +818,8 @@ function normalizeSymbol(symbol: string): string {
 }
 
 function marketDataset(target: Instrument): PandaQuerySource["dataset"] {
-  if (target.asset_type.toUpperCase().includes("FUND") || target.asset_type.toUpperCase().includes("ETF")) return "MARKET_FUND_DAILY";
+  const symbol = target.symbol.toUpperCase();
+  if (target.asset_type.toUpperCase().includes("FUND") || target.asset_type.toUpperCase().includes("ETF") || /^(?:15|16|50|51|56)\d{4}(?:\.(?:SH|SZ|OF))?$/u.test(symbol)) return "MARKET_FUND_DAILY";
   if (target.asset_type.toUpperCase().includes("INDEX")) return "MARKET_INDEX_DAILY";
   if (target.market.toUpperCase() === "US") return "MARKET_US_DAILY";
   if (target.market.toUpperCase() === "HK") return "MARKET_HK_DAILY";

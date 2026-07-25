@@ -84,7 +84,9 @@ export async function callPandaData(
   try {
     const { stdout } = await execFileAsync(pythonPath, [...args, "--no-setup"], { env: process.env, timeout: timeoutMs });
     const rows = parseRows(stdout);
-    const asOfDate = newestDate(rows) ?? dateFromParams(validated);
+    // An empty response is not evidence for the requested date. This matters
+    // for real-time endpoints on weekends and exchange holidays.
+    const asOfDate = newestDate(rows) ?? (rows.length ? dateFromParams(validated) : null);
     const fresh = isFresh(asOfDate, method);
     return {
       data: rows,
