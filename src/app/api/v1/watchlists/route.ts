@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { domainResponse, invalid } from "@/server/extensions/watchlists/http";
-import { createWatchlist, listWatchlists } from "@/server/extensions/watchlists/service";
-import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
+import { createWatchlistInDb, listWatchlists } from "@/server/extensions/watchlists/service";
+import {
+  IdempotencyConflictError,
+  runIdempotentMutation,
+} from "@/server/extensions/middleware/idempotency";
 import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
 const CreateSchema = z.object({
@@ -18,19 +21,22 @@ export async function POST(request: NextRequest) {
   const parsed = CreateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return invalid("Invalid request", parsed.error.format());
   const { userId } = getRequestContext(request);
-  const idem = await beginIdempotentRequest(userId, "watchlist_create", key, parsed.data);
-  if (idem.existing?.conflict) {
-    return NextResponse.json(
-      { error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } },
-      { status: 409 },
-    );
-  }
-  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const payload = { data: createWatchlist(userId, parsed.data), meta: meta() };
-    await saveIdempotentResponse(userId, "watchlist_create", key, idem.requestHash, payload);
-    return NextResponse.json(payload, { status: 201 });
+    const result = runIdempotentMutation(
+      userId,
+      "watchlist_create",
+      key,
+      parsed.data,
+      (db) => ({ data: createWatchlistInDb(db, userId, parsed.data), meta: meta() }),
+    );
+    return NextResponse.json(result.value, { status: 201 });
   } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: { code: "IDEMPOTENCY_CONFLICT", message: error.message } },
+        { status: 409 },
+      );
+    }
     return domainResponse(error);
   }
 }

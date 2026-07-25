@@ -125,6 +125,38 @@ describe("watchlist item routes", () => {
     });
   });
 
+  it("accepts the legacy drawdown field and preserves compatibility aliases", async () => {
+    const request = () => authenticatedRequest(collectionUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          instrumentId: "SPY",
+          plannedHorizon: "2 年",
+          drawdownThresholdPct: 11,
+        }),
+        headers: { "Idempotency-Key": "legacy-drawdown-create" },
+      }, { userId });
+    const response = await POST(request(), context);
+    const replay = await POST(request(), context);
+    expect(response.status).toBe(201);
+    expect(replay.status).toBe(201);
+    expect((await replay.json()).data.id).toBe((await response.clone().json()).data.id);
+    const collection = await GET(authenticatedRequest(collectionUrl, {}, { userId }), context);
+    const item = (await collection.json()).data.items.find((value: { instrument: { id: string } }) =>
+      value.instrument.id === "SPY");
+    expect(item).toMatchObject({
+      name: "SPDR S&P 500 ETF",
+      symbol: "SPY",
+      planned_horizon: "2 年",
+      drawdown_threshold_bps: 1100,
+      row_version: 1,
+    });
+    const db = getDatabase();
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
+      WHERE watchlist_item_id=? AND condition_type='DRAWDOWN_REACH'`).get(item.id) as { count: number }).count)
+      .toBe(1);
+    db.close();
+  });
+
   it("edits reason, free-text horizon, and goal", async () => {
     const created = await POST(
       authenticatedRequest(collectionUrl, {

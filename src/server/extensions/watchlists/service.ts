@@ -15,6 +15,7 @@ import {
   requireInstrument,
   validateGoal,
   versionError,
+  type Db,
 } from "./service-support";
 import type {
   CreateWatchlistItemInput,
@@ -25,7 +26,14 @@ import type {
 } from "./types";
 import { WatchlistDomainError } from "./types";
 
-export { createWatchlist, deleteWatchlist, getWatchlist, listWatchlists, updateWatchlist } from "./list-service";
+export {
+  createWatchlist,
+  createWatchlistInDb,
+  deleteWatchlist,
+  getWatchlist,
+  listWatchlists,
+  updateWatchlist,
+} from "./list-service";
 
 export function listWatchlistItems(userId: string, watchlistId: string, limit: number): WatchlistItemsAggregate {
   return aggregateWatchlistCollection(userId, watchlistId, limit);
@@ -41,48 +49,63 @@ export function createWatchlistItem(
   input: CreateWatchlistItemInput,
 ): WatchlistItemBase {
   const db = getDatabase();
+  try {
+    let created: WatchlistItemBase | undefined;
+    db.transaction(() => {
+      created = createWatchlistItemInDb(db, userId, watchlistId, input);
+    })();
+    return created as WatchlistItemBase;
+  } finally {
+    db.close();
+  }
+}
+
+export function createWatchlistItemInDb(
+  db: Db,
+  userId: string,
+  watchlistId: string,
+  input: CreateWatchlistItemInput,
+): WatchlistItemBase {
   let itemId = "";
   try {
-    db.transaction(() => {
-      requireActiveWatchlist(db, userId, watchlistId);
-      requireInstrument(db, input.instrumentId);
-      validateGoal(db, userId, input.goalId);
-      const active = db.prepare(`SELECT id FROM watchlist_items
-        WHERE watchlist_id = ? AND instrument_id = ? AND status = 'active'`)
-        .get(watchlistId, input.instrumentId) as { id: string } | undefined;
-      if (active) throw duplicateItemError(watchlistId, input.instrumentId, active.id);
+    requireActiveWatchlist(db, userId, watchlistId);
+    requireInstrument(db, input.instrumentId);
+    validateGoal(db, userId, input.goalId);
+    const active = db.prepare(`SELECT id FROM watchlist_items
+      WHERE watchlist_id = ? AND instrument_id = ? AND status = 'active'`)
+      .get(watchlistId, input.instrumentId) as { id: string } | undefined;
+    if (active) throw duplicateItemError(watchlistId, input.instrumentId, active.id);
 
-      const now = isoNow();
-      const removed = db.prepare(`SELECT id FROM watchlist_items
-        WHERE watchlist_id = ? AND instrument_id = ? AND status = 'removed'
-        ORDER BY removed_at DESC, created_at DESC, id DESC LIMIT 1`)
-        .get(watchlistId, input.instrumentId) as { id: string } | undefined;
-      itemId = removed?.id ?? createId("watchitem");
-      if (removed) {
-        db.prepare(`UPDATE watchlist_items SET reason = ?, planned_horizon = ?, goal_id = ?, source_type = ?,
-          status = 'active', added_at = ?, removed_at = NULL, updated_at = ?, row_version = row_version + 1
-          WHERE id = ? AND status = 'removed'`)
-          .run(input.reason ?? null, input.plannedHorizon ?? null, input.goalId ?? null, input.source.toLowerCase(), now, now, itemId);
-      } else {
-        db.prepare(`INSERT INTO watchlist_items
-          (id, watchlist_id, instrument_id, reason, planned_horizon, goal_id, source_type,
-           status, added_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`)
-          .run(
-            itemId,
-            watchlistId,
-            input.instrumentId,
-            input.reason ?? null,
-            input.plannedHorizon ?? null,
-            input.goalId ?? null,
-            input.source.toLowerCase(),
-            now,
-            now,
-            now,
-          );
-      }
-      createInitialDrawdownCondition(db, userId, itemId, input, now);
-    })();
+    const now = isoNow();
+    const removed = db.prepare(`SELECT id FROM watchlist_items
+      WHERE watchlist_id = ? AND instrument_id = ? AND status = 'removed'
+      ORDER BY removed_at DESC, created_at DESC, id DESC LIMIT 1`)
+      .get(watchlistId, input.instrumentId) as { id: string } | undefined;
+    itemId = removed?.id ?? createId("watchitem");
+    if (removed) {
+      db.prepare(`UPDATE watchlist_items SET reason = ?, planned_horizon = ?, goal_id = ?, source_type = ?,
+        status = 'active', added_at = ?, removed_at = NULL, updated_at = ?, row_version = row_version + 1
+        WHERE id = ? AND status = 'removed'`)
+        .run(input.reason ?? null, input.plannedHorizon ?? null, input.goalId ?? null, input.source.toLowerCase(), now, now, itemId);
+    } else {
+      db.prepare(`INSERT INTO watchlist_items
+        (id, watchlist_id, instrument_id, reason, planned_horizon, goal_id, source_type,
+         status, added_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`)
+        .run(
+          itemId,
+          watchlistId,
+          input.instrumentId,
+          input.reason ?? null,
+          input.plannedHorizon ?? null,
+          input.goalId ?? null,
+          input.source.toLowerCase(),
+          now,
+          now,
+          now,
+        );
+    }
+    createInitialDrawdownCondition(db, userId, itemId, input, now);
     return readWatchlistItem(db, userId, itemId);
   } catch (error) {
     if (error instanceof WatchlistDomainError) throw error;
@@ -93,8 +116,6 @@ export function createWatchlistItem(
       if (existing) throw duplicateItemError(watchlistId, input.instrumentId, existing.id);
     }
     throw error;
-  } finally {
-    db.close();
   }
 }
 
@@ -140,11 +161,19 @@ export function moveWatchlistItem(
   version: number,
 ): WatchlistItemBase {
   const db = getDatabase();
+  let transactionStarted = false;
   try {
+    db.exec("BEGIN IMMEDIATE");
+    transactionStarted = true;
     const current = requireActiveItem(db, userId, itemId);
     assertVersion(current, version, "观察条目已被修改");
     requireActiveWatchlist(db, userId, targetWatchlistId);
-    if (current.watchlist_id === targetWatchlistId) return readWatchlistItem(db, userId, itemId);
+    if (current.watchlist_id === targetWatchlistId) {
+      const unchanged = readWatchlistItem(db, userId, itemId);
+      db.exec("COMMIT");
+      transactionStarted = false;
+      return unchanged;
+    }
     const duplicate = db.prepare(`SELECT id FROM watchlist_items
       WHERE watchlist_id = ? AND instrument_id = ? AND status = 'active'`)
       .get(targetWatchlistId, current.instrument_id) as { id: string } | undefined;
@@ -155,10 +184,27 @@ export function moveWatchlistItem(
         .run(targetWatchlistId, isoNow(), itemId, version);
       if (!result.changes) throw versionError(current.row_version, "观察条目已被修改");
     } catch (error) {
-      if (isUniqueError(error)) throw moveConflict(targetWatchlistId, current.instrument_id, "");
+      if (isUniqueError(error)) {
+        const existing = db.prepare(`SELECT id FROM watchlist_items
+          WHERE watchlist_id = ? AND instrument_id = ? AND status = 'active'`)
+          .get(targetWatchlistId, current.instrument_id) as { id: string } | undefined;
+        if (existing) throw moveConflict(targetWatchlistId, current.instrument_id, existing.id);
+      }
       throw error;
     }
-    return readWatchlistItem(db, userId, itemId);
+    const moved = readWatchlistItem(db, userId, itemId);
+    db.exec("COMMIT");
+    transactionStarted = false;
+    return moved;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // The transaction may already have been closed by SQLite.
+      }
+    }
+    throw error;
   } finally {
     db.close();
   }

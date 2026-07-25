@@ -37,4 +37,27 @@ describe("/api/v1/watchlist-items/[id]/move", () => {
     expect(response.status).toBe(200);
     expect((await response.json()).data).toMatchObject({ id: "wi-move", watchlistId: "wl-move-target", version: 2 });
   });
+
+  it("returns the conflicting target item id", async () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO watchlist_items
+      (id,watchlist_id,instrument_id,status,added_at,created_at,updated_at,row_version)
+      VALUES ('wi-move-existing','wl-move-target','AAPL','active',?,?,?,1)`).run(now, now, now);
+    db.close();
+
+    const response = await POST(
+      authenticatedRequest("http://localhost/api/v1/watchlist-items/wi-move/move", {
+        method: "POST",
+        body: JSON.stringify({ targetWatchlistId: "wl-move-target" }),
+        headers: { "If-Match": "1" },
+      }, { userId }),
+      { params: Promise.resolve({ id: "wi-move" }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatchObject({
+      code: "WATCHLIST_ITEM_MOVE_CONFLICT",
+      details: { existingItemId: "wi-move-existing" },
+    });
+  });
 });

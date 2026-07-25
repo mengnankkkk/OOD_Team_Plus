@@ -5,6 +5,7 @@ import {
   isUniqueError,
   readWatchlistSummary,
   requireWatchlist,
+  type Db,
   versionError,
 } from "./service-support";
 import type { WatchlistPatch, WatchlistSummary } from "./types";
@@ -15,6 +16,18 @@ export function createWatchlist(
   input: { name: string; description?: string | null },
 ): WatchlistSummary {
   const db = getDatabase();
+  try {
+    return createWatchlistInDb(db, userId, input);
+  } finally {
+    db.close();
+  }
+}
+
+export function createWatchlistInDb(
+  db: Db,
+  userId: string,
+  input: { name: string; description?: string | null },
+): WatchlistSummary {
   const now = isoNow();
   const id = createId("watchlist");
   try {
@@ -26,8 +39,6 @@ export function createWatchlist(
   } catch (error) {
     if (isUniqueError(error)) throw new WatchlistDomainError("RESOURCE_CONFLICT", "观察列表名称已存在", 409);
     throw error;
-  } finally {
-    db.close();
   }
 }
 
@@ -66,6 +77,12 @@ export function updateWatchlist(
   try {
     const current = requireWatchlist(db, userId, id);
     assertVersion(current, version, "观察列表已被修改");
+    if (current.status === "archived") {
+      const keys = Object.keys(input);
+      if (keys.length !== 1 || input.status !== "ACTIVE") {
+        throw new WatchlistDomainError("WATCHLIST_ARCHIVED", "归档列表不可修改", 409);
+      }
+    }
     const result = db.prepare(`UPDATE watchlists SET
       name = CASE WHEN ? THEN ? ELSE name END,
       description = CASE WHEN ? THEN ? ELSE description END,

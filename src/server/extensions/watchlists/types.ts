@@ -110,6 +110,11 @@ export type AgentConclusionAggregate = {
 export type WatchlistItemAggregate = {
   id: string;
   watchlistId: string;
+  name: string;
+  symbol: string;
+  row_version: number;
+  planned_horizon: string | null;
+  drawdown_threshold_bps: number | null;
   instrument: {
     id: string;
     symbol: string;

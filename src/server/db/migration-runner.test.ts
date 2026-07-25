@@ -69,6 +69,8 @@ describe("database migration guard", () => {
       .run("wl_legacy", "legacy-user", "持仓观测", now, now);
     db.prepare("INSERT INTO watchlists (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'archived', ?, ?)")
       .run("wl_archived", "legacy-user", "已归档观察", now, now);
+    db.prepare("INSERT INTO watchlists (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+      .run("wl_secondary", "legacy-user", "次要观察", now, now);
     db.prepare(`INSERT INTO watchlist_items
       (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
@@ -94,6 +96,14 @@ describe("database migration guard", () => {
     db.prepare(`INSERT INTO watchlist_items
       (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("wi_secondary", "wl_secondary", "AAPL", "same symbol other list", "长期", now, now, now, 1500);
+    db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("wi_paused", "wl_legacy", "SPY", "paused rule", "长期", now, now, now, 1000);
+    db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
       .run("wi_archived", "wl_archived", "SPY", "archived list", "长期", now, now, now, 1000);
     db.prepare(`INSERT INTO watchlist_items
       (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, removed_at, created_at, updated_at, drawdown_threshold_bps)
@@ -103,6 +113,14 @@ describe("database migration guard", () => {
       (id, user_id, instrument_id, condition_type, threshold_decimal, status, created_at, updated_at)
       VALUES (?, ?, ?, 'DRAWDOWN_REACH', ?, 'active', ?, ?)`)
       .run("condition_existing", "legacy-user", "AAPL", "0.15", now, now);
+    db.prepare(`INSERT INTO observation_conditions
+      (id, user_id, instrument_id, condition_type, threshold_decimal, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'DRAWDOWN_REACH', ?, 'paused', ?, ?)`)
+      .run("condition_paused", "legacy-user", "SPY", "0.10", now, now);
+    db.prepare(`INSERT INTO observation_conditions
+      (id, user_id, holding_id, instrument_id, condition_type, threshold_decimal, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'DRAWDOWN_REACH', ?, 'active', ?, ?)`)
+      .run("condition_holding", "legacy-user", "holding-legacy", "MSFT", "0.12", now, now);
 
     prepareDatabase(db as never, ":memory:");
 
@@ -116,12 +134,17 @@ describe("database migration guard", () => {
       window_days: number | null;
     }>;
 
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({
       id: "condition_existing",
       threshold_decimal: "0.15",
-      watchlist_item_id: null,
-      window_days: null,
+      watchlist_item_id: "wi_legacy",
+      window_days: 20,
+    });
+    expect(rows[1]).toMatchObject({
+      threshold_decimal: "0.15",
+      watchlist_item_id: "wi_secondary",
+      window_days: 20,
     });
 
     const duplicate = db.prepare("SELECT status, removed_at, row_version FROM watchlist_items WHERE id = ?")
@@ -149,6 +172,17 @@ describe("database migration guard", () => {
       threshold_decimal: "0.12",
       window_days: 20,
     }]);
+    expect(db.prepare(`SELECT watchlist_item_id,status,window_days FROM observation_conditions
+      WHERE id='condition_paused'`).get()).toEqual({
+      watchlist_item_id: "wi_paused",
+      status: "paused",
+      window_days: 20,
+    });
+    expect(db.prepare(`SELECT holding_id,watchlist_item_id FROM observation_conditions
+      WHERE id='condition_holding'`).get()).toEqual({
+      holding_id: "holding-legacy",
+      watchlist_item_id: null,
+    });
     expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
       WHERE watchlist_item_id = ?`).get("wi_archived") as { count: number }).count).toBe(0);
     expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
@@ -220,20 +254,16 @@ function createLegacy0015WatchlistSchema(db: Database.Database): void {
     CREATE TABLE rss_items (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL, guid TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL);
   `);
 
-  const migrationDirectory = join(process.cwd(), "src", "server", "db", "migrations");
-  const migrations = readdirSync(migrationDirectory)
+  const migrations = readdirSync(join(process.cwd(), "src", "server", "db", "migrations"))
     .filter((name) => /^\d{4}_.+\.sql$/u.test(name) && name < "0016_")
     .sort((left, right) => left.localeCompare(right))
     .map((name) => {
-      const sql = readFileSync(join(migrationDirectory, name), "utf8");
+      const sql = readFileSync(join(process.cwd(), "src", "server", "db", "migrations", name), "utf8");
       return { name, version: Number(name.slice(0, 4)), sql, checksum: createHash("sha256").update(sql).digest("hex") };
     });
 
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-    name TEXT PRIMARY KEY,
-    version INTEGER NOT NULL,
-    checksum TEXT NOT NULL,
-    applied_at TEXT NOT NULL
+    name TEXT PRIMARY KEY, version INTEGER NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
   )`);
   const record = db.prepare("INSERT INTO schema_migrations (name, version, checksum, applied_at) VALUES (?, ?, ?, ?)");
   for (const migration of migrations) record.run(migration.name, migration.version, migration.checksum, "2026-07-25T00:00:00.000Z");

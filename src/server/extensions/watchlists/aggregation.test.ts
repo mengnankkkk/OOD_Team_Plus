@@ -119,6 +119,53 @@ describe("watchlist aggregation", () => {
     expect(item.latestAgentConclusion).toBeNull();
     expect(item.lastCheckedAt).toBeNull();
   });
+
+  it("derives the compatibility drawdown alias from the structured rule", () => {
+    const db = getDatabase();
+    db.prepare("UPDATE watchlist_items SET drawdown_threshold_bps=2500 WHERE id='aggregation-held'").run();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,
+       severity,window_days,config_json,created_at,updated_at)
+      VALUES ('aggregation-drawdown',?,'AAPL','DRAWDOWN_REACH','0.12','active','aggregation-held',
+        'attention',20,'{}',?,?)`).run(USER_ID, NOW_ISO, NOW_ISO);
+    db.close();
+
+    const item = aggregateWatchlistItems(USER_ID, WATCHLIST_ID, 20)
+      .find((value) => value.id === "aggregation-held");
+
+    expect(item?.drawdown_threshold_bps).toBe(1200);
+  });
+
+  it("does not revive a legacy drawdown threshold after the structured rule is deleted", () => {
+    const db = getDatabase();
+    db.prepare("UPDATE watchlist_items SET drawdown_threshold_bps=2500 WHERE id='aggregation-held'").run();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,
+       severity,window_days,config_json,created_at,updated_at)
+      VALUES ('aggregation-deleted-drawdown',?,'AAPL','DRAWDOWN_REACH','0.12','deleted',
+        'aggregation-held','attention',20,'{}',?,?)`).run(USER_ID, NOW_ISO, NOW_ISO);
+    db.close();
+
+    const item = aggregateWatchlistItems(USER_ID, WATCHLIST_ID, 20)
+      .find((value) => value.id === "aggregation-held");
+
+    expect(item?.drawdown_threshold_bps).toBeNull();
+  });
+
+  it("does not present a paused drawdown rule as an active compatibility threshold", () => {
+    const db = getDatabase();
+    db.prepare("UPDATE watchlist_items SET drawdown_threshold_bps=2500 WHERE id='aggregation-held'").run();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,
+       severity,window_days,config_json,created_at,updated_at)
+      VALUES ('aggregation-paused-drawdown',?,'AAPL','DRAWDOWN_REACH','0.12','paused',
+        'aggregation-held','attention',20,'{}',?,?)`).run(USER_ID, NOW_ISO, NOW_ISO);
+    db.close();
+
+    const item = aggregateWatchlistItems(USER_ID, WATCHLIST_ID, 20)
+      .find((value) => value.id === "aggregation-held");
+    expect(item?.drawdown_threshold_bps).toBeNull();
+  });
 });
 
 type Db = ReturnType<typeof getDatabase>;
@@ -206,9 +253,7 @@ function risingRiskPrices(): number[] {
     106, 112, 101, 115, 98, 117, 96, 120, 94, 110];
 }
 
-function stablePrices(length: number): number[] {
-  return Array.from({ length }, (_, index) => 100 + index * 0.2);
-}
+function stablePrices(length: number): number[] { return Array.from({ length }, (_, index) => 100 + index * 0.2); }
 
 function stableRiskPoints(recentScale: number) {
   const prices = Array.from({ length: 20 }, () => 100);

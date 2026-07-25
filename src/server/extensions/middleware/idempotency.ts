@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 import { createId, getDatabase, isoNow } from "@/server/http/context";
 
+type Db = ReturnType<typeof getDatabase>;
+
 export interface IdempotencyRecord {
   ownerKey: string;
   routeCode: string;
@@ -10,6 +12,75 @@ export interface IdempotencyRecord {
   responseJson: string;
   createdAt: string;
   conflict?: boolean;
+}
+
+export class IdempotencyConflictError extends Error {
+  constructor() {
+    super("Idempotency-Key was already used with a different request");
+    this.name = "IdempotencyConflictError";
+  }
+}
+
+export function runIdempotentMutation<T>(
+  ownerKey: string,
+  routeCode: string,
+  idempotencyKey: string,
+  requestBody: unknown,
+  mutate: (db: Db) => T,
+): { value: T; replayed: boolean } {
+  const db = getDatabase();
+  const requestHash = hashIdempotencyRequest(requestBody);
+  let transactionStarted = false;
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    transactionStarted = true;
+    const existing = db.prepare(`SELECT request_hash, response_json
+      FROM idempotency_records
+      WHERE user_id = ? AND operation = ? AND idempotency_key = ?`)
+      .get(ownerKey, routeCode, idempotencyKey) as {
+        request_hash?: string;
+        response_json?: string;
+      } | undefined;
+    if (existing) {
+      if (!existing.response_json || existing.request_hash !== requestHash) {
+        throw new IdempotencyConflictError();
+      }
+      const value = JSON.parse(existing.response_json) as T;
+      db.exec("COMMIT");
+      transactionStarted = false;
+      return { value, replayed: true };
+    }
+
+    const value = mutate(db);
+    const responseJson = JSON.stringify(value);
+    db.prepare(`INSERT INTO idempotency_records
+      (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        createId("idem"),
+        ownerKey,
+        routeCode,
+        idempotencyKey,
+        safeResponseResource(responseJson),
+        responseJson,
+        requestHash,
+        isoNow(),
+      );
+    db.exec("COMMIT");
+    transactionStarted = false;
+    return { value, replayed: false };
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // The transaction may already have been closed by SQLite.
+      }
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
 }
 
 export async function checkIdempotency(ownerKey: string, routeCode: string, idempotencyKey: string, requestHash?: string): Promise<IdempotencyRecord | null> {

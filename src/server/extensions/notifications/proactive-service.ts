@@ -106,7 +106,23 @@ function loadSyncContext(userId: string) {
   const db = getDatabase();
   const holding = db.prepare("SELECT portfolio_id FROM holdings WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 1").get(userId) as { portfolio_id?: string } | undefined;
   const state = db.prepare("SELECT last_market_refresh_at FROM notification_sync_states WHERE user_id=?").get(userId) as { last_market_refresh_at?: string } | undefined;
-  const watchlistTargets = db.prepare(`SELECT wi.id,wi.instrument_id,wi.reason,wi.planned_horizon,wi.drawdown_threshold_bps,
+  const watchlistTargets = db.prepare(`SELECT wi.id,wi.instrument_id,wi.reason,wi.planned_horizon,
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM observation_conditions existing
+          WHERE existing.watchlist_item_id=wi.id
+            AND existing.condition_type='DRAWDOWN_REACH'
+        )
+        THEN (
+          SELECT CAST(ROUND(CAST(active.threshold_decimal AS REAL) * 10000) AS INTEGER)
+          FROM observation_conditions active
+          WHERE active.watchlist_item_id=wi.id
+            AND active.condition_type='DRAWDOWN_REACH'
+            AND active.status='active'
+          ORDER BY active.created_at,active.id LIMIT 1
+        )
+        ELSE wi.drawdown_threshold_bps
+      END AS drawdown_threshold_bps,
       i.symbol,i.name,i.market,i.asset_type
     FROM watchlist_items wi JOIN watchlists w ON w.id=wi.watchlist_id JOIN instruments i ON i.id=wi.instrument_id
     WHERE w.user_id=? AND w.status='active' AND wi.status='active' ORDER BY wi.added_at DESC`).all(userId) as WatchlistTarget[];

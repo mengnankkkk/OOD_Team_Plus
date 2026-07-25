@@ -21,18 +21,37 @@ describe("/api/v1/watchlists", () => {
   });
 
   it("POST returns 201 for a valid body", async () => {
-    const res = await POST(
-      authenticatedRequest("http://localhost/api/v1/watchlists", {
+    const request = () => authenticatedRequest("http://localhost/api/v1/watchlists", {
         method: "POST",
         body: JSON.stringify({ name: "My list", description: "Tracking" }),
         headers: { "Idempotency-Key": "watchlist-key-1" },
-      }, { userId }),
-    );
+      }, { userId });
+    const res = await POST(request());
+    const replay = await POST(request());
 
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.data.name).toBe("My list");
     expect(body.data.status).toBe("active");
+    expect(replay.status).toBe(201);
+    expect((await replay.json()).data.id).toBe(body.data.id);
+  });
+
+  it("returns 409 when an idempotency key is reused with another request", async () => {
+    const first = await POST(authenticatedRequest("http://localhost/api/v1/watchlists", {
+      method: "POST",
+      body: JSON.stringify({ name: "First list" }),
+      headers: { "Idempotency-Key": "watchlist-conflict-key" },
+    }, { userId }));
+    const conflict = await POST(authenticatedRequest("http://localhost/api/v1/watchlists", {
+      method: "POST",
+      body: JSON.stringify({ name: "Another list" }),
+      headers: { "Idempotency-Key": "watchlist-conflict-key" },
+    }, { userId }));
+
+    expect(first.status).toBe(201);
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error.code).toBe("IDEMPOTENCY_CONFLICT");
   });
 
   it("GET returns an empty list and bounded pagination", async () => {

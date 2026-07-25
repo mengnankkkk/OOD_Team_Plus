@@ -31,6 +31,7 @@ type ItemRow = InstrumentRow & {
   row_version: number;
   goal_id: string | null;
   goal_name: string | null;
+  drawdown_threshold_bps: number | null;
 };
 type ItemCounts = {
   activeConditionCount: number;
@@ -100,9 +101,15 @@ export function summarizeWatchlistItems(items: WatchlistItemAggregate[]): Watchl
 
 function aggregateRow(db: Db, userId: string, row: ItemRow): WatchlistItemAggregate {
   const counts = readItemCounts(db, userId, row.item_id);
+  const drawdownThresholdBps = readLegacyDrawdownThresholdBps(db, row);
   return {
     id: row.item_id,
     watchlistId: row.watchlist_id,
+    name: row.name,
+    symbol: row.symbol,
+    row_version: Number(row.row_version),
+    planned_horizon: row.planned_horizon,
+    drawdown_threshold_bps: drawdownThresholdBps,
     instrument: {
       id: row.id,
       symbol: row.symbol,
@@ -134,12 +141,23 @@ function readItemRows(db: Db, userId: string, watchlistId: string, limit: number
 
 function itemSelect(): string {
   return `SELECT wi.id AS item_id,wi.watchlist_id,wi.reason,wi.planned_horizon,wi.source_type,
-      wi.row_version,wi.goal_id,g.name AS goal_name,
+      wi.row_version,wi.goal_id,wi.drawdown_threshold_bps,g.name AS goal_name,
       i.id,i.symbol,i.name,i.market,i.asset_type,i.sector
     FROM watchlist_items wi
     JOIN watchlists w ON w.id = wi.watchlist_id
     JOIN instruments i ON i.id = wi.instrument_id
     LEFT JOIN goals g ON g.id = wi.goal_id AND g.user_id = w.user_id`;
+}
+
+function readLegacyDrawdownThresholdBps(db: Db, row: ItemRow): number | null {
+  const condition = db.prepare(`SELECT status,threshold_decimal FROM observation_conditions
+    WHERE watchlist_item_id = ? AND condition_type = 'DRAWDOWN_REACH'
+    ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at, id LIMIT 1`)
+    .get(row.item_id) as { status: string; threshold_decimal: string } | undefined;
+  if (condition) return condition.status === "active"
+    ? Math.round(Number(condition.threshold_decimal) * 10_000)
+    : null;
+  return row.drawdown_threshold_bps == null ? null : Number(row.drawdown_threshold_bps);
 }
 
 function readItemCounts(db: Db, userId: string, itemId: string): ItemCounts {

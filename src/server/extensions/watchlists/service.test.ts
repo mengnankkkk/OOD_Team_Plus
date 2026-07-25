@@ -101,10 +101,26 @@ describe("watchlist domain service", () => {
 
   it("moves an item and rejects a target-list duplicate", () => {
     const item = createWatchlistItem(USER_ID, "wl-source", { instrumentId: "AAPL", source: "USER" });
-    createWatchlistItem(USER_ID, "wl-target", { instrumentId: "AAPL", source: "USER" });
+    const duplicate = createWatchlistItem(USER_ID, "wl-target", { instrumentId: "AAPL", source: "USER" });
 
     expect(() => moveWatchlistItem(USER_ID, item.id, "wl-target", item.version))
-      .toThrowError(expect.objectContaining({ code: "WATCHLIST_ITEM_MOVE_CONFLICT" }));
+      .toThrowError(expect.objectContaining({
+        code: "WATCHLIST_ITEM_MOVE_CONFLICT",
+        details: expect.objectContaining({ existingItemId: duplicate.id }),
+      }));
+  });
+
+  it("rejects ordinary edits on archived lists but allows restoration", () => {
+    expect(() => updateWatchlist(USER_ID, "wl-archived", { name: "不应修改" }, 1))
+      .toThrowError(expect.objectContaining({ code: "WATCHLIST_ARCHIVED" }));
+    expect(updateWatchlist(USER_ID, "wl-archived", { status: "ACTIVE" }, 1))
+      .toMatchObject({ status: "active", version: 2 });
+  });
+
+  it("rejects moving an item into an archived list", () => {
+    const item = createWatchlistItem(USER_ID, "wl-source", { instrumentId: "MSFT", source: "USER" });
+    expect(() => moveWatchlistItem(USER_ID, item.id, "wl-archived", item.version))
+      .toThrowError(expect.objectContaining({ code: "WATCHLIST_ARCHIVED" }));
   });
 
   it("updates item metadata and pauses conditions when removed", () => {

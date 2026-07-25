@@ -75,6 +75,121 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_item_instruments_unique
 CREATE INDEX IF NOT EXISTS idx_rss_item_instruments_instrument
   ON rss_item_instruments(instrument_id, created_at);
 
+WITH legacy_condition_matches AS (
+  SELECT
+    existing.id AS condition_id,
+    item.id AS item_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY existing.id
+      ORDER BY item.created_at, item.id
+    ) AS match_rank
+  FROM observation_conditions AS existing
+  JOIN watchlists AS watchlist
+    ON watchlist.user_id = existing.user_id
+   AND watchlist.status = 'active'
+  JOIN watchlist_items AS item
+    ON item.watchlist_id = watchlist.id
+   AND item.instrument_id = existing.instrument_id
+   AND item.status = 'active'
+  WHERE existing.watchlist_item_id IS NULL
+    AND existing.holding_id IS NULL
+    AND existing.condition_type = 'DRAWDOWN_REACH'
+    AND existing.status IN ('active', 'paused')
+    AND item.drawdown_threshold_bps IS NOT NULL
+    AND CAST(existing.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
+    AND COALESCE(existing.window_days, 20) = 20
+)
+UPDATE observation_conditions
+SET
+  watchlist_item_id = (
+    SELECT item_id
+    FROM legacy_condition_matches
+    WHERE condition_id = observation_conditions.id
+      AND match_rank = 1
+  ),
+  window_days = COALESCE(window_days, 20)
+WHERE id IN (
+  SELECT condition_id
+  FROM legacy_condition_matches
+  WHERE match_rank = 1
+);
+
+WITH clone_candidates AS (
+  SELECT
+    item.id AS item_id,
+    item.instrument_id,
+    item.created_at AS item_created_at,
+    item.updated_at AS item_updated_at,
+    existing.user_id,
+    existing.threshold_decimal,
+    existing.status,
+    existing.severity,
+    existing.config_json,
+    ROW_NUMBER() OVER (
+      PARTITION BY item.id
+      ORDER BY
+        CASE existing.status WHEN 'active' THEN 0 ELSE 1 END,
+        existing.created_at,
+        existing.id
+    ) AS candidate_rank
+  FROM observation_conditions AS existing
+  JOIN watchlists AS watchlist
+    ON watchlist.user_id = existing.user_id
+   AND watchlist.status = 'active'
+  JOIN watchlist_items AS item
+    ON item.watchlist_id = watchlist.id
+   AND item.instrument_id = existing.instrument_id
+   AND item.status = 'active'
+  WHERE existing.watchlist_item_id IS NOT NULL
+    AND existing.holding_id IS NULL
+    AND existing.watchlist_item_id != item.id
+    AND existing.condition_type = 'DRAWDOWN_REACH'
+    AND existing.status IN ('active', 'paused')
+    AND item.drawdown_threshold_bps IS NOT NULL
+    AND CAST(existing.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
+    AND COALESCE(existing.window_days, 20) = 20
+    AND NOT EXISTS (
+      SELECT 1
+      FROM observation_conditions AS linked
+      WHERE linked.watchlist_item_id = item.id
+        AND linked.condition_type = 'DRAWDOWN_REACH'
+        AND linked.status IN ('active', 'paused')
+        AND CAST(linked.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
+        AND COALESCE(linked.window_days, 20) = 20
+    )
+)
+INSERT OR IGNORE INTO observation_conditions (
+  id,
+  user_id,
+  instrument_id,
+  condition_type,
+  threshold_decimal,
+  status,
+  version,
+  created_at,
+  updated_at,
+  watchlist_item_id,
+  severity,
+  window_days,
+  config_json
+)
+SELECT
+  'condition_watchlist_' || item_id,
+  user_id,
+  instrument_id,
+  'DRAWDOWN_REACH',
+  threshold_decimal,
+  status,
+  1,
+  item_created_at,
+  item_updated_at,
+  item_id,
+  severity,
+  20,
+  config_json
+FROM clone_candidates
+WHERE candidate_rank = 1;
+
 INSERT OR IGNORE INTO observation_conditions (
   id,
   user_id,
@@ -112,16 +227,9 @@ WHERE item.status = 'active'
   AND NOT EXISTS (
     SELECT 1
     FROM observation_conditions AS existing
-    WHERE (
-        existing.watchlist_item_id = item.id
-        OR (
-          existing.watchlist_item_id IS NULL
-          AND existing.user_id = watchlist.user_id
-          AND existing.instrument_id = item.instrument_id
-        )
-      )
+    WHERE existing.watchlist_item_id = item.id
       AND existing.condition_type = 'DRAWDOWN_REACH'
-      AND existing.status = 'active'
+      AND existing.status IN ('active', 'paused')
       AND CAST(existing.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
       AND COALESCE(existing.window_days, 20) = 20
   );

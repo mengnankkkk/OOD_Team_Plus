@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { domainResponse, invalid } from "@/server/extensions/watchlists/http";
-import { createWatchlistItem, listWatchlistItems } from "@/server/extensions/watchlists/service";
-import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
+import { createWatchlistItemInDb, listWatchlistItems } from "@/server/extensions/watchlists/service";
+import {
+  IdempotencyConflictError,
+  runIdempotentMutation,
+} from "@/server/extensions/middleware/idempotency";
 import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
 const CreateItemSchema = z.object({
@@ -13,7 +16,11 @@ const CreateItemSchema = z.object({
   goalId: z.string().trim().min(1).nullable().optional(),
   source: z.enum(["USER", "AGENT", "IMPORT"]).default("USER"),
   initialDrawdownThresholdPct: z.number().min(1).max(90).nullable().optional(),
-});
+  drawdownThresholdPct: z.number().min(1).max(90).nullable().optional(),
+}).transform(({ drawdownThresholdPct, ...input }) => ({
+  ...input,
+  initialDrawdownThresholdPct: input.initialDrawdownThresholdPct ?? drawdownThresholdPct,
+}));
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -25,19 +32,22 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   const { userId } = getRequestContext(request);
   const routeCode = `watchlist_item_create:${id}`;
-  const idem = await beginIdempotentRequest(userId, routeCode, key, parsed.data);
-  if (idem.existing?.conflict) {
-    return NextResponse.json(
-      { error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } },
-      { status: 409 },
-    );
-  }
-  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const payload = { data: createWatchlistItem(userId, id, parsed.data), meta: meta() };
-    await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
-    return NextResponse.json(payload, { status: 201 });
+    const result = runIdempotentMutation(
+      userId,
+      routeCode,
+      key,
+      parsed.data,
+      (db) => ({ data: createWatchlistItemInDb(db, userId, id, parsed.data), meta: meta() }),
+    );
+    return NextResponse.json(result.value, { status: 201 });
   } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: { code: "IDEMPOTENCY_CONFLICT", message: error.message } },
+        { status: 409 },
+      );
+    }
     return domainResponse(error);
   }
 }

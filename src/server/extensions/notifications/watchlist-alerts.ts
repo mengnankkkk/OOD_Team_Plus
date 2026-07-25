@@ -41,17 +41,19 @@ export function createWatchlistNotifications(userId: string, targets: WatchlistT
         });
       }
     }
-    const peak = points.slice(0, 20).reduce((value, point) => Decimal.max(value, point.close), latest.close);
-    const drawdown = peak.gt(0) ? latest.close.div(peak).minus(1) : new Decimal(0);
-    const threshold = new Decimal(target.drawdown_threshold_bps ?? 1_000).div(10_000).neg();
-    if (drawdown.lte(threshold)) {
-      created += insertNotification(db, {
-        userId, severity: drawdown.lte(threshold.mul(1.5)) ? "important" : "attention", title: `${target.name} 触及自选回撤线`,
-        body: `最新收盘价较近 20 个交易日高点回撤 ${formatPercent(drawdown.toNumber(), false)}，你的提醒阈值是 ${formatPercent(threshold.toNumber(), false)}。`,
-        sourceType: "WATCHLIST_DRAWDOWN", sourceId: target.id, groupKey: `watchlist:${target.id}:drawdown`,
-        dedupeKey: `${userId}:watchlist-drawdown:${target.id}:${latest.date}`, dataAsOf: latest.date,
-        metadata: { ...metadataBase, rule: "WATCHLIST_DRAWDOWN", metricValue: drawdown.toNumber(), threshold: threshold.toNumber(), currentValue: latest.close.toNumber(), peakValue: peak.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "近 20 日回撤", drawdown.toNumber(), latest.date, target.reason) },
-      });
+    if (target.drawdown_threshold_bps != null) {
+      const peak = points.slice(0, 20).reduce((value, point) => Decimal.max(value, point.close), latest.close);
+      const drawdown = peak.gt(0) ? latest.close.div(peak).minus(1) : new Decimal(0);
+      const threshold = new Decimal(target.drawdown_threshold_bps).div(10_000).neg();
+      if (drawdown.lte(threshold)) {
+        created += insertNotification(db, {
+          userId, severity: drawdown.lte(threshold.mul(1.5)) ? "important" : "attention", title: `${target.name} 触及自选回撤线`,
+          body: `最新收盘价较近 20 个交易日高点回撤 ${formatPercent(drawdown.toNumber(), false)}，你的提醒阈值是 ${formatPercent(threshold.toNumber(), false)}。`,
+          sourceType: "WATCHLIST_DRAWDOWN", sourceId: target.id, groupKey: `watchlist:${target.id}:drawdown`,
+          dedupeKey: `${userId}:watchlist-drawdown:${target.id}:${latest.date}`, dataAsOf: latest.date,
+          metadata: { ...metadataBase, rule: "WATCHLIST_DRAWDOWN", metricValue: drawdown.toNumber(), threshold: threshold.toNumber(), currentValue: latest.close.toNumber(), peakValue: peak.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "近 20 日回撤", drawdown.toNumber(), latest.date, target.reason) },
+        });
+      }
     }
   }
   db.close();
