@@ -207,6 +207,26 @@ describe("debate agent coercion", () => {
     expect(analytical.bullStrongestPoint).toBe("The recommendation section discusses holding-period risk.");
   });
 
+  it("parses leading advice prefixes without changing attributed or quoted analysis", () => {
+    const directives = coerceDebateJudgement({
+      bullStrongestPoint: "I recommend that you buy AAPL.",
+      bearStrongestPoint: "I recommend you trade AAPL.",
+      keyDisagreement: "My recommendation is to hold AAPL.",
+    });
+    const safe = coerceDebateJudgement({
+      bullStrongestPoint: "The analyst said to buy AAPL after earnings.",
+      bearStrongestPoint: '"Buy AAPL" is a quoted user claim.',
+      keyDisagreement: "The recommendation section discusses holding-period risk.",
+    });
+
+    expect(directives.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.keyDisagreement).toMatch(/evidence|research/i);
+    expect(safe.bullStrongestPoint).toBe("The analyst said to buy AAPL after earnings.");
+    expect(safe.bearStrongestPoint).toBe('"Buy AAPL" is a quoted user claim.');
+    expect(safe.keyDisagreement).toBe("The recommendation section discusses holding-period risk.");
+  });
+
   it("retries one structured attempt before returning the successful result", async () => {
     let attempts = 0;
 
