@@ -18,12 +18,20 @@ export function parseBranchScenarioModelPlan(
   let lastError: unknown;
   for (const candidate of [completed, partial, mergeDefined(partial, completed)]) {
     try {
-      return BranchScenarioModelPlanSchema.parse(normalizeModelPlan(candidate));
+      return BranchScenarioModelPlanSchema.parse(normalizeModelPlan(stripModelOwnedFields(candidate)));
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError;
+}
+
+function stripModelOwnedFields(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = { ...(value as Record<string, unknown>) };
+  delete result.provider;
+  delete result.label;
+  return result;
 }
 
 function normalizeModelPlan(value: unknown): unknown {
@@ -42,10 +50,21 @@ function normalizeModelOption(value: unknown): unknown {
     : [];
   return {
     ...option,
-    strategy: normalizeStrategy(option.strategy, trades),
+    strategy: normalizeScenarioStrategy(option.strategy, trades),
     trades,
     targetAllocations,
+    rationale: normalizeList(option.rationale, "基于当前分支上下文生成的模型候选"),
+    counterEvidence: normalizeList(option.counterEvidence, "市场变化可能使当前方案失效"),
+    risks: normalizeList(option.risks, "候选结果仅用于模拟，不代表未来收益"),
+    assumptions: normalizeList(option.assumptions, "价格由服务端冻结并用于比较"),
+    invalidationConditions: normalizeList(option.invalidationConditions, "风险画像、资金用途或市场数据发生变化"),
   };
+}
+
+function normalizeList(value: unknown, fallback: string): string[] {
+  if (!Array.isArray(value)) return [fallback];
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8);
+  return items.length ? items : [fallback];
 }
 
 function normalizeModelTrade(value: unknown): unknown {
@@ -89,7 +108,7 @@ function deepMergePartial(previous: unknown, incoming: unknown): unknown {
   return incoming;
 }
 
-function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] | unknown {
+export function normalizeScenarioStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] {
   const strategy = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/gu, "_");
   if (["HOLD", "WAIT", "WATCH", "NO_CHANGE", "UNCHANGED"].includes(strategy) || /保持|观察|不变/u.test(strategy)) return "HOLD";
   if (["BALANCED", "BALANCE", "REBALANCE", "REBALANCING"].includes(strategy) || /平衡|再配置/u.test(strategy)) return "BALANCED";
@@ -105,5 +124,5 @@ function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOpt
   if (actions.includes("BUY") && actions.includes("SELL")) return "BALANCED";
   if (actions.every((action) => action === "SELL")) return "DEFENSIVE";
   if (actions.every((action) => action === "BUY")) return "GROWTH";
-  return value;
+  return "HOLD";
 }

@@ -1,4 +1,5 @@
 import { Agent } from "@mastra/core/agent";
+import Decimal from "decimal.js";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
 
@@ -11,12 +12,13 @@ import {
   type BranchScenarioOption,
   type BranchScenarioPlan,
 } from "./scenario-contracts";
-import { mergeBranchScenarioPartial, parseBranchScenarioModelPlan } from "./scenario-model-plan";
+import { mergeBranchScenarioPartial, normalizeScenarioStrategy, parseBranchScenarioModelPlan } from "./scenario-model-plan";
 
 export type BranchScenarioAgentResult = {
   provider: BranchScenarioPlan["provider"];
   plan: BranchScenarioPlan;
   delegatedAgents: string[];
+  fallbackReason?: "MODEL_NOT_CONFIGURED" | "MODEL_OUTPUT_INVALID";
 };
 
 export async function runBranchScenarioAgent(
@@ -30,7 +32,7 @@ export async function runBranchScenarioAgent(
   if (!process.env.DEEPSEEK_API_KEY?.trim()) {
     const plan = deterministicFallback(input);
     callbacks.onAgentCompleted?.("DETERMINISTIC_FALLBACK", "模型未配置，使用可解释的确定性候选方案");
-    return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"] };
+    return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"], fallbackReason: "MODEL_NOT_CONFIGURED" };
   }
 
   try {
@@ -46,8 +48,9 @@ export async function runBranchScenarioAgent(
       provider: "CHIEF_ADVISOR",
       options: modelPlan.options.map((option, index) => ({
         ...option,
-        label: scenarioLabel(option.strategy, index),
-        trades: option.trades.filter((trade) => Number(trade.quantity) > 0),
+        strategy: normalizeScenarioStrategy(option.strategy, option.trades),
+        label: scenarioLabel(normalizeScenarioStrategy(option.strategy, option.trades), index),
+        trades: normalizeModelTrades(option.trades),
       })),
     });
     for (const role of ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "SCENARIO_PLANNER", "COMPLIANCE_REVIEWER"]) {
@@ -61,7 +64,7 @@ export async function runBranchScenarioAgent(
   } catch (error) {
     callbacks.onAgentCompleted?.("CHIEF_ADVISOR", `模型输出不可用，已降级：${safeMessage(error)}`);
     const plan = deterministicFallback(input);
-    return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"] };
+    return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"], fallbackReason: "MODEL_OUTPUT_INVALID" };
   }
 }
 
@@ -216,6 +219,26 @@ function buildPrompt(input: BranchScenarioAgentInput): string {
 function scenarioLabel(strategy: BranchScenarioOption["strategy"], index: number): string {
   const title = strategy === "HOLD" ? "保持观察" : strategy === "BALANCED" ? "风险预算再平衡" : strategy === "DEFENSIVE" ? "压力约束降险" : "增长情景";
   return `${String.fromCharCode(65 + index)} · ${title}`;
+}
+
+export function normalizeModelTrades(
+  trades: BranchScenarioModelPlan["options"][number]["trades"],
+): Array<{ instrumentId: string; action: "BUY" | "SELL"; quantity: string }> {
+  const grouped = new Map<string, { instrumentId: string; action: "BUY" | "SELL"; quantity: Decimal }>();
+  for (const trade of trades) {
+    const quantity = new Decimal(String(trade.quantity));
+    if (!quantity.isFinite() || !quantity.gt(0)) continue;
+    const key = `${trade.instrumentId}:${trade.action}`;
+    const current = grouped.get(key);
+    grouped.set(key, current
+      ? { ...current, quantity: current.quantity.plus(quantity) }
+      : { instrumentId: trade.instrumentId, action: trade.action, quantity });
+  }
+  return [...grouped.values()].map((trade) => ({
+    instrumentId: trade.instrumentId,
+    action: trade.action,
+    quantity: trade.quantity.toDecimalPlaces(12).toFixed().replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1"),
+  }));
 }
 
 function safeMessage(error: unknown): string {

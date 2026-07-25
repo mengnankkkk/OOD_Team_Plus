@@ -83,7 +83,7 @@ export async function generateCandidates(
   activeBranchId?: string,
   userId?: string,
   hooks: CandidateGenerationHooks = {},
-): Promise<{ candidates: SimulationCandidate[]; priceManifest: PriceManifest; provider: BranchScenarioPlan["provider"]; delegatedAgents: string[] }> {
+): Promise<{ candidates: SimulationCandidate[]; priceManifest: PriceManifest; provider: BranchScenarioPlan["provider"]; delegatedAgents: string[]; fallbackReason?: string }> {
   const db = getDatabase();
   const rows = (activeBranchId
     ? db.prepare(`SELECT h.instrument_id,h.quantity_decimal,h.price_decimal,h.market_value_decimal,i.symbol,i.name,i.asset_type,i.sector
@@ -145,6 +145,7 @@ export async function generateCandidates(
   ];
   let provider: BranchScenarioPlan["provider"] = "DETERMINISTIC_FALLBACK";
   let delegatedAgents = ["DETERMINISTIC_FALLBACK"];
+  let fallbackReason: string | undefined;
   let candidates: SimulationCandidate[];
   const scenario = await runBranchScenarioAgent({
     objective,
@@ -157,6 +158,7 @@ export async function generateCandidates(
   }, hooks);
   provider = scenario.provider;
   delegatedAgents = scenario.delegatedAgents;
+  fallbackReason = scenario.fallbackReason;
 
   if (provider === "CHIEF_ADVISOR") {
     const missingInstrumentIds = referencedInstrumentIds(scenario.plan.options)
@@ -209,12 +211,13 @@ export async function generateCandidates(
       hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", "所有模型候选均不可执行，已降级为确定性方案");
       provider = "DETERMINISTIC_FALLBACK";
       delegatedAgents = ["DETERMINISTIC_FALLBACK"];
+      fallbackReason = "SCENARIO_VALIDATION_FAILED";
       candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
     }
   } else {
     candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
   }
-  return { candidates, priceManifest, provider, delegatedAgents };
+  return { candidates, priceManifest, provider, delegatedAgents, fallbackReason };
 }
 
 export function normalizeScenarioOption(
@@ -223,25 +226,32 @@ export function normalizeScenarioOption(
 ): SimulationCandidate {
   const quantities = new Map(context.holdings.map((holding) => [holding.instrumentId, decimal(holding.quantity)]));
   let cash = nonNegative(context.parentCash);
-  const trades = option.trades.map((trade) => {
+  const normalizedTrades = [...option.trades].sort((left, right) => left.action === right.action ? 0 : left.action === "SELL" ? -1 : 1);
+  const trades = normalizedTrades.flatMap((trade) => {
     if (!context.allowedInstrumentIds.has(trade.instrumentId) || !context.priceManifest.prices[trade.instrumentId]) {
       throw new Error(`SCENARIO_UNKNOWN_INSTRUMENT:${trade.instrumentId}`);
     }
-    const quantity = positiveDecimal(trade.quantity, `scenarioQuantity:${trade.instrumentId}`);
+    let quantity = positiveDecimal(trade.quantity, `scenarioQuantity:${trade.instrumentId}`);
     const price = decimal(context.priceManifest.prices[trade.instrumentId]);
-    const notional = quantity.mul(price);
-    const fee = notional.mul(decimal(context.priceManifest.feeRate ?? "0.001"));
+    const feeRate = decimal(context.priceManifest.feeRate ?? "0.001");
     const current = quantities.get(trade.instrumentId) ?? new Decimal(0);
     if (trade.action === "SELL") {
-      if (current.lt(quantity)) throw new Error(`SCENARIO_INSUFFICIENT_HOLDING:${trade.instrumentId}`);
+      quantity = Decimal.min(quantity, current).toDecimalPlaces(8, Decimal.ROUND_DOWN);
+      if (!quantity.gt(0)) return [];
+      const notional = quantity.mul(price);
       quantities.set(trade.instrumentId, current.minus(quantity));
+      const fee = notional.mul(feeRate);
       cash = cash.plus(notional.minus(fee));
     } else {
-      if (cash.lt(notional.plus(fee))) throw new Error(`SCENARIO_INSUFFICIENT_CASH:${trade.instrumentId}`);
+      const maxQuantity = cash.div(price.mul(new Decimal(1).plus(feeRate))).toDecimalPlaces(8, Decimal.ROUND_DOWN);
+      quantity = Decimal.min(quantity, maxQuantity);
+      if (!quantity.gt(0)) return [];
+      const notional = quantity.mul(price);
+      const fee = notional.mul(feeRate);
       quantities.set(trade.instrumentId, current.plus(quantity));
       cash = cash.minus(notional.plus(fee));
     }
-    return { instrumentId: trade.instrumentId, action: trade.action, quantity: clean(quantity), price: clean(price) };
+    return [{ instrumentId: trade.instrumentId, action: trade.action, quantity: clean(quantity), price: clean(price) }];
   });
   const rows: HoldingRow[] = context.holdings.map((holding) => ({
     instrument_id: holding.instrumentId,

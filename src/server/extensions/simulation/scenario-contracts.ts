@@ -50,16 +50,29 @@ export const BranchScenarioPlanSchema = z.object({
 const BranchScenarioModelTradeSchema = z.object({
   instrumentId: z.string().min(1).max(120),
   action: z.enum(["BUY", "SELL"]),
-  quantity: decimalString,
-}).strict();
+  quantity: z.union([decimalString, z.number().finite()]),
+});
+
+export const BranchScenarioModelOptionDraftSchema = z.object({
+  description: z.string().min(1).max(800).default("模型候选方案"),
+  strategy: z.string().min(1).max(80).default("HOLD"),
+  trades: z.array(BranchScenarioModelTradeSchema).max(30).default([]),
+  targetAllocations: z.array(z.object({
+    instrumentId: z.string().min(1).max(120),
+    weight: z.union([decimalString, z.number().finite()]),
+  })).max(50).default([]),
+  rationale: z.array(z.string().min(1)).max(3).default(["基于当前分支上下文生成的模型候选"]),
+  counterEvidence: z.array(z.string().min(1)).max(3).default(["市场变化可能使当前方案失效"]),
+  risks: z.array(z.string().min(1)).max(3).default(["候选结果仅用于模拟，不代表未来收益"]),
+  assumptions: z.array(z.string().min(1)).max(8).default(["价格由服务端冻结并用于比较"]),
+  invalidationConditions: z.array(z.string().min(1)).max(6).default(["风险画像、资金用途或市场数据发生变化"]),
+});
 
 export const BranchScenarioModelPlanSchema = z.object({
-  options: z.array(BranchScenarioOptionBaseSchema.omit({ label: true }).extend({
-    trades: z.array(BranchScenarioModelTradeSchema).max(30),
-  })).min(1).max(5),
-  delegatedAgents: z.array(z.string().min(1).max(80)).max(12),
+  options: z.array(BranchScenarioModelOptionDraftSchema).min(1).max(5),
+  delegatedAgents: z.array(z.string().min(1).max(80)).max(12).default([]),
   modelSummary: z.string().max(1000).optional(),
-}).strict();
+});
 
 export const BranchScenarioContextSchema = z.object({
   objective: z.string().min(1).max(2000),

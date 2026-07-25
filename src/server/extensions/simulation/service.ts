@@ -188,7 +188,7 @@ async function runOptionGeneration(input: {
         optionIds.push(optionId);
         db.prepare("INSERT INTO simulation_options (id, batch_id, workspace_id, sequence_no, label, description_text, trades_json, analysis_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(optionId, input.batchId, input.workspaceId, candidate.sequenceNo, candidate.label, candidate.description, json(candidate.trades), json({ ...candidate.analysis, targetAllocations: candidate.targetAllocations, tradeIntent: candidate.tradeIntent, provider: generated.provider, delegatedAgents: generated.delegatedAgents }), completedAt);
       }
-      db.prepare("UPDATE agent_runs SET status='completed', completed_at=?, model_provider=?, model_name=?, output_summary=?, result_json=? WHERE id=? AND user_id=?").run(completedAt, generated.provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null, `${generated.candidates.length} options generated`, json({ batchId: input.batchId, provider: generated.provider, optionCount: generated.candidates.length, priceManifestSha256: generated.priceManifest.sha256 }), input.analysisId, input.userId);
+      db.prepare("UPDATE agent_runs SET status='completed', completed_at=?, model_provider=?, model_name=?, output_summary=?, result_json=? WHERE id=? AND user_id=?").run(completedAt, generated.provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null, `${generated.candidates.length} options generated`, json({ batchId: input.batchId, provider: generated.provider, fallbackReason: generated.fallbackReason ?? null, optionCount: generated.candidates.length, priceManifestSha256: generated.priceManifest.sha256 }), input.analysisId, input.userId);
     })();
     db.close();
     persistSseEvent({ analysisId: input.analysisId, type: "branch.options.created", payload: { workspaceId: input.workspaceId, branchId: input.branchId, batchId: input.batchId, optionIds, provider: generated.provider } });
@@ -212,12 +212,13 @@ export function listOptions(userId: string, workspaceId: string, batchId?: strin
   if (!workspace) return null;
   const db = getDatabase();
   const batch = (batchId
-    ? db.prepare("SELECT b.*,r.status AS run_status,r.model_provider FROM simulation_option_batches b LEFT JOIN agent_runs r ON r.id=b.agent_run_id WHERE b.id = ? AND b.workspace_id = ?").get(batchId, workspaceId)
-    : db.prepare("SELECT b.*,r.status AS run_status,r.model_provider FROM simulation_option_batches b LEFT JOIN agent_runs r ON r.id=b.agent_run_id WHERE b.workspace_id = ? AND b.branch_id = ? ORDER BY b.created_at DESC LIMIT 1").get(workspaceId, workspace.activeBranchId)) as Row | undefined;
+    ? db.prepare("SELECT b.*,r.status AS run_status,r.model_provider,r.result_json AS run_result_json FROM simulation_option_batches b LEFT JOIN agent_runs r ON r.id=b.agent_run_id WHERE b.id = ? AND b.workspace_id = ?").get(batchId, workspaceId)
+    : db.prepare("SELECT b.*,r.status AS run_status,r.model_provider,r.result_json AS run_result_json FROM simulation_option_batches b LEFT JOIN agent_runs r ON r.id=b.agent_run_id WHERE b.workspace_id = ? AND b.branch_id = ? ORDER BY b.created_at DESC LIMIT 1").get(workspaceId, workspace.activeBranchId)) as Row | undefined;
   if (!batch) { db.close(); return { batch: null, items: [] }; }
   const items = db.prepare("SELECT * FROM simulation_options WHERE batch_id = ? ORDER BY sequence_no").all(batch.id) as Row[];
   db.close();
-  return { batch, items: items.map((item) => ({ id: item.id, label: item.label, summary: item.description_text, trades: parseJson(item.trades_json as string, []), analysis: parseJson(item.analysis_json as string, {}) })), analysisId: batch.agent_run_id, provider: normalizeProvider(batch.model_provider) };
+  const result = parseJson<{ fallbackReason?: string }>(String(batch.run_result_json ?? "{}"), {});
+  return { batch, items: items.map((item) => ({ id: item.id, label: item.label, summary: item.description_text, trades: parseJson(item.trades_json as string, []), analysis: parseJson(item.analysis_json as string, {}) })), analysisId: batch.agent_run_id, provider: normalizeProvider(batch.model_provider), fallbackReason: result.fallbackReason };
 }
 
 export function executeOption(userId: string, workspaceId: string, input: { parentBranchId: string; optionId: string; name: string }) {

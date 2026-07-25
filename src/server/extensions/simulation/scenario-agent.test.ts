@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BranchScenarioOptionSchema,
   BranchScenarioPlanSchema,
-} from "./scenario-contracts";
-import { runBranchScenarioAgent } from "./scenario-agent";
+  } from "./scenario-contracts";
+import { normalizeModelTrades, runBranchScenarioAgent } from "./scenario-agent";
 
 const baseInput = {
   objective: "降低组合集中度",
@@ -28,6 +28,14 @@ beforeEach(() => {
 });
 
 describe("branch scenario contracts", () => {
+  it("normalizes zero and duplicate model trade intents before strict publication", () => {
+    expect(normalizeModelTrades([
+      { instrumentId: "instrument_a", action: "BUY", quantity: 1 },
+      { instrumentId: "instrument_a", action: "BUY", quantity: "2.5" },
+      { instrumentId: "instrument_a", action: "BUY", quantity: 0 },
+    ])).toEqual([{ instrumentId: "instrument_a", action: "BUY", quantity: "3.5" }]);
+  });
+
   it("accepts a structured plan without model-owned execution prices", () => {
     const plan = BranchScenarioPlanSchema.parse({
       provider: "CHIEF_ADVISOR",
@@ -69,6 +77,7 @@ describe("branch scenario contracts", () => {
     const result = await runBranchScenarioAgent(baseInput);
 
     expect(result.provider).toBe("DETERMINISTIC_FALLBACK");
+    expect(result.fallbackReason).toBe("MODEL_NOT_CONFIGURED");
     expect(result.plan.options).toHaveLength(3);
     expect(result.plan.options.map((option) => option.strategy)).toEqual(["HOLD", "BALANCED", "DEFENSIVE"]);
     expect(result.delegatedAgents).toContain("DETERMINISTIC_FALLBACK");

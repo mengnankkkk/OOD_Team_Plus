@@ -60,8 +60,8 @@ describe("candidate generator scenario normalization", () => {
     })).toThrow("SCENARIO_UNKNOWN_INSTRUMENT");
   });
 
-  it("rejects oversells before the deterministic engine runs", () => {
-    expect(() => normalizeScenarioOption({
+  it("clamps oversells to the available holding before execution", () => {
+    const candidate = normalizeScenarioOption({
       ...baseOption,
       trades: [{ instrumentId: "a", action: "SELL", quantity: "3" }],
     }, {
@@ -70,7 +70,29 @@ describe("candidate generator scenario normalization", () => {
       holdings: [{ instrumentId: "a", quantity: "2", marketValue: "200" }],
       allowedInstrumentIds: new Set(["a", "b"]),
       priceManifest: manifest,
-    })).toThrow("SCENARIO_INSUFFICIENT_HOLDING");
+    });
+
+    expect(candidate.trades).toEqual([{ instrumentId: "a", action: "SELL", quantity: "2", price: "100" }]);
+  });
+
+  it("executes sells before buys and clamps buys to available simulated cash", () => {
+    const candidate = normalizeScenarioOption({
+      ...baseOption,
+      trades: [
+        { instrumentId: "b", action: "BUY", quantity: "10" },
+        { instrumentId: "a", action: "SELL", quantity: "1" },
+      ],
+    }, {
+      objective: "降低集中度",
+      parentCash: "0",
+      holdings: [{ instrumentId: "a", quantity: "2", marketValue: "200" }],
+      allowedInstrumentIds: new Set(["a", "b"]),
+      priceManifest: manifest,
+    });
+
+    expect(candidate.trades.map((trade) => trade.action)).toEqual(["SELL", "BUY"]);
+    expect(Number(candidate.trades[1]?.quantity)).toBeGreaterThan(0);
+    expect(Number(candidate.trades[1]?.quantity)).toBeLessThan(2);
   });
 
   it("fetches a missing frozen fund price from the market data source", async () => {

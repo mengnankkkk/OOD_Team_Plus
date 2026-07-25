@@ -212,6 +212,7 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(completed.data.status).toBe("SUCCEEDED");
     expect(completed.data.items).toHaveLength(3);
     expect(completed.data.provider).toBe("DETERMINISTIC_FALLBACK");
+    expect(completed.data.fallbackReason).toBe("MODEL_NOT_CONFIGURED");
     const eventTypes = getSseEvents(completed.data.analysis.analysisId).map((event) => event.type);
     expect(eventTypes).toEqual(expect.arrayContaining(["run.started", "agent.started", "branch.options.created", "run.completed"]));
   });
