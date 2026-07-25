@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
+import DebateCharacterStage, { type DebateCharacterRole } from "@/features/workbench/components/DebateCharacterStage";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSearchParams } from "@/features/frontend-migration/router";
 import { useNavigate } from "@/features/frontend-migration/router";
@@ -85,7 +86,7 @@ const ACTION_TOOLS = [
 ];
 
 type AdvisorMode = "normal" | "debate";
-type DebateRole = "user" | "bull" | "bear";
+type DebateRole = "user" | "bull" | "bear" | "judge";
 type DebateMessage = {
   id: string;
   turnId: number;
@@ -470,8 +471,14 @@ const AdvisorPage = () => {
         { id: `debate-bull-${turnId}`, turnId, role: "bull", content: buildDebateReply("bull", text) },
         { id: `debate-bear-${turnId}`, turnId, role: "bear", content: buildDebateReply("bear", text) },
       ]);
-      setDebateResponding(false);
-      debateReplyTimerRef.current = null;
+      debateReplyTimerRef.current = setTimeout(() => {
+        setDebateMessages((items) => [
+          ...items,
+          { id: `debate-judge-${turnId}`, turnId, role: "judge", content: buildDebateReply("judge", text) },
+        ]);
+        setDebateResponding(false);
+        debateReplyTimerRef.current = null;
+      }, 1100);
     }, 650);
   };
 
@@ -923,13 +930,15 @@ const AdvisorPage = () => {
 function buildDebateReply(role: Exclude<DebateRole, "user">, text: string): string {
   const topic = text.length > 28 ? `${text.slice(0, 28)}...` : text;
   if (role === "bull") return `看多观点：围绕“${topic}”，先找增长、现金流和可执行路径，若目标明确可以分步推进。`;
-  return `看空观点：围绕“${topic}”，先检查流动性、回撤和信息缺口，避免在证据不足时过早行动。`;
+  if (role === "bear") return `看空观点：围绕“${topic}”，先检查流动性、回撤和信息缺口，避免在证据不足时过早行动。`;
+  return `评委结论：针对“${topic}”，保留看多方的分步执行思路，同时采纳看空方的风险边界；先用小规模、可撤回的行动验证关键假设，再决定是否扩大投入。`;
 }
 
 function getDebateRoleLabel(role: DebateRole): string {
   if (role === "user") return "用户形象";
   if (role === "bull") return "看多agent";
-  return "看空agent";
+  if (role === "bear") return "看空agent";
+  return "评委";
 }
 
 function DebateRoundtable({
@@ -950,6 +959,18 @@ function DebateRoundtable({
   const userMessage = currentTurnMessages.find((message) => message.role === "user") ?? null;
   const bullMessage = currentTurnMessages.find((message) => message.role === "bull") ?? null;
   const bearMessage = currentTurnMessages.find((message) => message.role === "bear") ?? null;
+  const judgeMessage = currentTurnMessages.find((message) => message.role === "judge") ?? null;
+  const latestRole = currentTurnMessages.at(-1)?.role;
+  const activeCharacterRoles: DebateCharacterRole[] = responding
+    ? bullMessage || bearMessage
+      ? ["bull", "bear"]
+      : ["user"]
+    : latestRole === "judge"
+      ? ["moderator"]
+      : latestRole
+        ? [latestRole]
+        : ["moderator"];
+  const agentsAreClashing = responding && Boolean(bullMessage || bearMessage) && !judgeMessage;
 
   return (
     <div className="debate-room flex min-h-0 flex-1 flex-col bg-white">
@@ -962,10 +983,16 @@ function DebateRoundtable({
           height={1183}
           priority
         />
+        <DebateCharacterStage activeRoles={activeCharacterRoles} clash={agentsAreClashing} />
+        {judgeMessage ? (
+          <DebateBubble role="judge" message={judgeMessage.content} />
+        ) : responding && bullMessage && bearMessage ? (
+          <DebateBubble role="judge" message="评委正在汇总双方观点..." muted />
+        ) : null}
         {userMessage ? <DebateBubble role="user" message={userMessage.content} /> : null}
         {bullMessage ? <DebateBubble role="bull" message={bullMessage.content} /> : null}
         {bearMessage ? <DebateBubble role="bear" message={bearMessage.content} /> : null}
-        {responding ? (
+        {responding && !bullMessage && !bearMessage ? (
           <>
             <DebateBubble role="bull" message="看多agent 正在组织观点..." muted />
             <DebateBubble role="bear" message="看空agent 正在准备反方逻辑..." muted />
