@@ -132,7 +132,7 @@ function normalizeDate(value: unknown): string | null {
 
 function isFresh(asOfDate: string | null, method: PandaDataMethod): boolean {
   if (!asOfDate) return false;
-  const days = /detail|fina_reports/.test(method) ? 540 : 30;
+  const days = /detail|fina_reports/.test(method) ? 540 : method === "get_stock_rt_daily" ? 3 : 30;
   const age = Date.now() - Date.parse(`${asOfDate}T00:00:00Z`);
   return age >= 0 && age <= days * 86_400_000;
 }

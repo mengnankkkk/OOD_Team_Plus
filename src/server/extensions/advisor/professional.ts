@@ -48,10 +48,11 @@ type Instrument = { id: string; symbol: string; name: string; asset_type: string
 
 type ResearchState = {
   dataState: DataState;
-  execution: PandaSourceExecution | null;
+  executions: PandaSourceExecution[];
   closes: Decimal[];
   latest: Decimal | null;
   asOfDate: string | null;
+  quotes: Array<{ symbol: string; latest: string | null; asOfDate: string | null; method: string }>;
 };
 
 type RoleRunResult = {
@@ -94,7 +95,7 @@ export async function runProfessionalAdvisor(input: {
   const targetSymbol = input.targetSymbol ?? extractSymbol(input.content);
   const target = targetSymbol ? findInstrumentBySymbol(instruments, targetSymbol) : null;
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
-  const requiredRoles = rolesFor(intent, Boolean(target), input.content);
+  const requiredRoles = rolesFor(intent, Boolean(target), holdings.length > 0, input.content);
   const findings: AgentFinding[] = [];
   const roleRunIds = new Map<ProfessionalAgentRole, string>();
 
@@ -107,10 +108,10 @@ export async function runProfessionalAdvisor(input: {
   try {
     registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
 
-    let research: ResearchState = { dataState: target ? "UNAVAILABLE" : "NOT_REQUIRED", execution: null, closes: [], latest: null, asOfDate: null };
+    let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] };
     if (requiredRoles.includes("DATA_RESEARCH")) {
       registerFinding(await runRole(db, input, "DATA_RESEARCH", async (childRunId) => {
-        const result = await researchInstrument(db, input.analysisId, childRunId, target);
+        const result = await researchInstrument(db, input.analysisId, childRunId, target, holdings);
         research = result.state;
         return result.finding;
       }, { emitEvents: false }));
@@ -196,7 +197,7 @@ export async function runProfessionalAdvisor(input: {
     const recommendation = target
       ? buildRecommendationDraft({ status, candidate, target, holding: targetHolding, profile, research, snapshot })
       : null;
-    persistFindings(db, input.userId, input.analysisId, findings, research.execution);
+    persistFindings(db, input.userId, input.analysisId, findings, research.executions);
     db.prepare("UPDATE agent_runs SET model_provider=?,model_name=?,output_summary=?,compliance_json=? WHERE id=?")
       .run(provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null,
         candidate.summary, json({ status, approved: status === "ACTIVE", simulationOnly: true }), input.analysisId);
@@ -348,9 +349,17 @@ async function researchInstrument(
   rootRunId: string,
   childRunId: string,
   target: Instrument | null,
+  holdings: Holding[],
 ): Promise<{ finding: AgentFinding; state: ResearchState }> {
-  if (!target) return {
-    state: { dataState: "UNAVAILABLE", execution: null, closes: [], latest: null, asOfDate: null },
+  const instruments = target ? [target] : holdings.map((holding) => ({
+    id: holding.instrument_id,
+    symbol: holding.symbol,
+    name: holding.name,
+    asset_type: holding.asset_type,
+    market: marketForSymbol(holding.symbol),
+  }));
+  if (!instruments.length) return {
+    state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] },
     finding: AgentFindingSchema.parse({
       agent: "DATA_RESEARCH", conclusion: "未识别到可研究标的", supportEvidence: [], counterEvidence: ["没有明确标的时不能形成个股买卖结论"],
       missingInformation: ["instrument"], risks: ["标的歧义可能导致错误数据关联"], confidence: 0.2, needsAnotherAgent: false,
@@ -359,27 +368,42 @@ async function researchInstrument(
   const end = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const startDate = new Date();
   startDate.setUTCDate(startDate.getUTCDate() - 180);
-  const source: PandaQuerySource = {
-    dataset: marketDataset(target),
-    method: marketMethod(target),
-    parameters: { symbol: [target.symbol], start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""), end_date: end, fields: ["symbol", "date", "open", "high", "low", "close", "volume", "amount"] },
-    columns: ["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
-    joinKeys: ["symbol", "date"],
-    assetType: target.asset_type.toUpperCase(),
-  };
-  persistSseEvent({ analysisId: rootRunId, type: "tool.started", payload: { toolName: source.method, childRunId } });
-  try {
-    const [execution] = await executePandaSources({ sources: [source], agentRunId: childRunId, localRows: [], db });
-    const closes = execution.result.data.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
-    const latest = closes.at(-1) ?? null;
-    const dataState: DataState = execution.result.fresh && execution.result.liveCallSucceeded ? "LIVE_FRESH" : "STALE";
-    persistSseEvent({ analysisId: rootRunId, type: "tool.completed", payload: { toolName: source.method, childRunId, rowCount: execution.result.data.length, dataState } });
+  const sources = instruments.map((instrument): PandaQuerySource => {
+    const method = marketMethod(instrument);
+    const realtime = method === "get_stock_rt_daily";
+    const columns = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "num_trades"];
     return {
-      state: { dataState, execution, closes, latest, asOfDate: execution.result.asOfDate },
+      dataset: marketDataset(instrument),
+      method,
+      parameters: realtime
+        ? { symbol: [instrument.symbol], fields: columns }
+        : { symbol: [instrument.symbol], start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""), end_date: end, fields: columns },
+      columns,
+      joinKeys: ["symbol", "date"],
+      assetType: instrument.asset_type.toUpperCase(),
+    };
+  });
+  persistSseEvent({ analysisId: rootRunId, type: "tool.started", payload: { toolName: sources.map((source) => source.method), childRunId, symbolCount: sources.length } });
+  try {
+    const executions = await executePandaSources({ sources, agentRunId: childRunId, localRows: [], db });
+    const allRows = executions.flatMap((execution) => execution.result.data);
+    const closes = allRows.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
+    const latest = closes.at(-1) ?? null;
+    const dataState: DataState = executions.every((execution) => execution.result.fresh && execution.result.liveCallSucceeded) ? "LIVE_FRESH" : "STALE";
+    const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
+    const quotes = executions.map((execution) => ({
+      symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
+      latest: execution.result.data.map((row) => decimal(row.close)).find((value): value is Decimal => value !== null)?.toString() ?? null,
+      asOfDate: execution.result.asOfDate,
+      method: execution.source.method,
+    }));
+    persistSseEvent({ analysisId: rootRunId, type: "tool.completed", payload: { toolName: sources.map((source) => source.method), childRunId, rowCount: allRows.length, dataState, symbolCount: executions.length } });
+    return {
+      state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH",
-        conclusion: `${target.symbol} 已完成 ${execution.result.data.length} 条真实市场数据研究，状态为 ${dataState}`,
-        supportEvidence: [latest ? `最新收盘价：${latest.toString()}` : "市场接口已完成 live call", `数据日期：${execution.result.asOfDate ?? "未知"}`],
+        conclusion: `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
+        supportEvidence: [latest ? `最新价格样本：${latest.toString()}` : "市场接口已完成 live call", `数据日期：${asOfDates.at(-1) ?? "未知"}`, ...quotes.map((quote) => `${quote.symbol}: ${quote.latest ?? "无价格"} (${quote.method})`)],
         counterEvidence: [dataState === "LIVE_FRESH" ? "历史价格不能保证未来走势" : "数据已过期，禁止生成 ACTIVE 建议"],
         missingInformation: latest ? [] : ["close"],
         risks: ["短期价格和成交量可能快速变化", "财务或估值字段缺失时不会推导替代值"],
@@ -389,11 +413,11 @@ async function researchInstrument(
       }),
     };
   } catch {
-    persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: source.method, childRunId, code: "PANDADATA_UNAVAILABLE" } });
+    persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: sources.map((source) => source.method), childRunId, code: "PANDADATA_UNAVAILABLE" } });
     return {
-      state: { dataState: "UNAVAILABLE", execution: null, closes: [], latest: null, asOfDate: null },
+      state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] },
       finding: AgentFindingSchema.parse({
-        agent: "DATA_RESEARCH", conclusion: `${target.symbol} 的 PandaData live call 不可用，保留建议方向但强制降级`, supportEvidence: [],
+        agent: "DATA_RESEARCH", conclusion: `${target?.symbol ?? instruments.map((instrument) => instrument.symbol).join("、")} 的 PandaData live call 不可用，保留建议方向但强制阻断`, supportEvidence: [],
         counterEvidence: ["认证、网络、SDK 或上游服务失败，dry-run 不能作为真实行情"], missingInformation: [],
         risks: ["缺少新鲜行情时参考区间和触发价不可执行"], confidence: 0.2, needsAnotherAgent: true, suggestedNextAgent: "COMPLIANCE_REVIEWER",
       }),
@@ -507,6 +531,7 @@ export function enforcePublicationStatus(input: {
   marketDataRequired: boolean;
 }): PublicationStatus {
   if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
+  if (input.marketDataRequired && input.dataState !== "LIVE_FRESH") return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
   const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
@@ -589,8 +614,9 @@ function buildRecommendationDraft(input: {
   };
 }
 
-function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], execution: PandaSourceExecution | null): void {
-  const sourceId = execution ? "source-pandadata-api" : "source-derived-engine";
+function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], executions: PandaSourceExecution[]): void {
+  const sourceId = executions.length ? "source-pandadata-api" : "source-derived-engine";
+  const marketExecutions = executions;
   for (const finding of findings) {
     const child = db.prepare("SELECT id FROM agent_runs WHERE root_run_id=? AND agent_type=? ORDER BY created_at DESC LIMIT 1").get(rootRunId, finding.agent.toLowerCase()) as { id?: string } | undefined;
     for (const [stance, statements] of [["support", finding.supportEvidence], ["counter", finding.counterEvidence], ["missing", finding.missingInformation]] as const) {
@@ -604,6 +630,8 @@ function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, roo
           stance, finding.confidence >= 0.75 ? "high" : finding.confidence >= 0.4 ? "medium" : "low", finding.agent, statement, statement,
           finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", now,
         );
+        const execution = marketExecutions.find((candidate) => candidate.result.data.some((row) => String(row.symbol ?? "").toUpperCase() === String(statement.match(/\b\d{6}\.(?:SH|SZ|OF)\b/u)?.[0] ?? "").toUpperCase()))
+          ?? marketExecutions[0];
         db.prepare(`INSERT INTO evidence_source_links
           (id,evidence_id,data_source_id,tool_call_id,market_snapshot_id,source_locator,excerpt,created_at)
           VALUES (?,?,?,?,?,?,?,?)`).run(
@@ -641,13 +669,16 @@ function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | un
   ].filter((value): value is string => Boolean(value));
 }
 
-function rolesFor(intent: AdvisorIntent, hasTarget: boolean, content: string): ProfessionalAgentRole[] {
+function rolesFor(intent: AdvisorIntent, hasTarget: boolean, hasHoldings: boolean, content: string): ProfessionalAgentRole[] {
   if (requestsFullAgentLoop(content)) {
     return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
   }
   if (intent === "BUY" || intent === "SELL") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
-  if (intent === "DIAGNOSIS") return ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
-  return hasTarget
+  if (intent === "DIAGNOSIS") {
+    const roles: ProfessionalAgentRole[] = ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+    return hasTarget || hasHoldings ? ["PROFILE_CONTEXT", "DATA_RESEARCH", ...roles.slice(1)] : roles;
+  }
+  return hasTarget || hasHoldings
     ? ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"]
     : ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
 }
@@ -684,6 +715,7 @@ function chiefPrompt(question: string, profile: Profile | undefined, holdings: H
     `持仓摘要：${json(holdings.map((holding) => ({ symbol: holding.symbol, weightBps: holding.weight_bps, marketValue: holding.market_value_decimal })))}`,
     `目标标的：${json(target)}`,
     `数据状态：${research.dataState}，数据日期：${research.asOfDate ?? "未知"}`,
+    `实时/行情数据摘要：${json(research.quotes)}`,
     `确定性节点发现：${json(findings)}`,
     "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。",
   ].join("\n");
@@ -748,18 +780,24 @@ function marketDataset(target: Instrument): PandaQuerySource["dataset"] {
   if (target.asset_type.toUpperCase().includes("INDEX")) return "MARKET_INDEX_DAILY";
   if (target.market.toUpperCase() === "US") return "MARKET_US_DAILY";
   if (target.market.toUpperCase() === "HK") return "MARKET_HK_DAILY";
-  return "MARKET_STOCK_DAILY";
+  return "MARKET_STOCK_RT_DAILY";
 }
 
 function marketMethod(target: Instrument): PandaQuerySource["method"] {
   const dataset = marketDataset(target);
   switch (dataset) {
+    case "MARKET_STOCK_RT_DAILY": return "get_stock_rt_daily";
     case "MARKET_FUND_DAILY": return "get_fund_daily";
     case "MARKET_INDEX_DAILY": return "get_index_daily";
     case "MARKET_US_DAILY": return "get_us_daily";
     case "MARKET_HK_DAILY": return "get_hk_daily";
     default: return "get_stock_daily";
   }
+}
+
+function marketForSymbol(symbol: string): string {
+  const suffix = symbol.toUpperCase().split(".").at(-1);
+  return suffix === "US" ? "US" : suffix === "HK" ? "HK" : suffix === "SH" || suffix === "SZ" || suffix === "OF" ? suffix : "UNKNOWN";
 }
 
 function normalizeHorizon(value: unknown): "SHORT" | "MEDIUM" | "LONG" {

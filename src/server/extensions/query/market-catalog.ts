@@ -4,6 +4,7 @@ import type { QueryPlan, QuerySource } from "./types";
 
 export const MARKET_DATASETS = {
   MARKET_STOCK_DAILY: { method: "get_stock_daily", assetType: "STOCK" },
+  MARKET_STOCK_RT_DAILY: { method: "get_stock_rt_daily", assetType: "STOCK" },
   MARKET_FUND_DAILY: { method: "get_fund_daily", assetType: "FUND" },
   MARKET_INDEX_DAILY: { method: "get_index_daily", assetType: "INDEX" },
   MARKET_US_DAILY: { method: "get_us_daily", assetType: "STOCK" },
