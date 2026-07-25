@@ -2,9 +2,11 @@
 
 ## Agent
 
-- Name: Factor Research Agent
+- Name: Money Whisperer Chief Advisor
 - Team: OOD Team Plus
-- Summary: Handles natural-language investment research tasks through an A2A Remote Agent endpoint, reusing the local advisor workflow, semantic catalog, portfolio snapshots, and research/backtest tooling.
+- Summary: Money Whisperer's primary multi-agent financial research and advisory agent. It coordinates user profiling, evidence-backed research, portfolio risk diagnosis, scenario reasoning, recommendation drafting, and compliance-gated explanations.
+
+The product is research- and simulation-only. It does not connect to brokers or place real orders.
 
 ## Endpoints
 
@@ -39,5 +41,43 @@ The service returns an A2A task object with `status.state`, an explainable markd
 
 ## Skills
 
-- Data Skills: `semantic_catalog`, `pandadata_research`, `portfolio_snapshot`, `market_observability`
-- Research Skills: `factor_analysis`, `strategy_backtest`, `portfolio_risk_review`, `compliance_review`
+- `chief_advisor_conversation`: natural-language orchestration through the Chief Advisor and professional specialist agents.
+- `profile_and_goal_planning`: risk profile, investment goals, constraints, liquidity needs, and missing information.
+- `evidence_backed_research`: instrument, market, event, and data-freshness research.
+- `portfolio_risk_diagnosis`: holdings, concentration, drawdown, exposure, and stress-case analysis.
+- `recommendation_and_compliance`: research-only recommendations with supporting/counter evidence and publication gating.
+
+## Product Capability Surface
+
+The A2A endpoint is the conversational gateway. The following product workflows are also represented in the Agent Card; some are exposed through the workbench and dedicated `/api/v1` endpoints:
+
+- `advisor_chat`: main Chief Advisor conversation experience.
+- `debate_mode`: bull-versus-bear discussion comparing evidence, assumptions, counterarguments, and open questions.
+- `scenario_simulation`: frozen-snapshot branch simulation with hold, rebalance, and defensive alternatives.
+- `evidence_lab`: evidence packs, data snapshots, research metrics, counter evidence, and provenance.
+- `research_search`: web, MCP, knowledge-base, and RSS-backed research with citations.
+- `semantic_query_and_artifacts`: read-only semantic queries and Markdown/chart artifacts.
+- `portfolio_and_goal_management`: profiles, goals, holdings, snapshots, and recommendation decisions.
+- `monitoring_and_alerts`: watch conditions, portfolio alerts, notifications, and preferences.
+
+## Internal Agent Architecture
+
+```text
+A2A Agent Card
+  -> POST /api/a2a/message-send
+  -> handleSendMessage
+  -> runConversationAgent
+  -> runProfessionalAdvisor
+  -> Chief Advisor
+       -> Profile Context
+       -> Data Research
+       -> Portfolio Risk
+       -> Recommendation
+       -> Compliance Reviewer
+       -> Explanation Report
+       -> Scenario Planner
+  -> server-side publication gate
+  -> A2A task: completed / input-required / failed
+```
+
+The publication gate can produce `ACTIVE`, `DEGRADED`, or `BLOCKED` outcomes. Product-specific workflows may persist their own analysis and SSE state behind the dedicated APIs.

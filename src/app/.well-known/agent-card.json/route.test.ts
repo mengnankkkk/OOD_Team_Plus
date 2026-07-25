@@ -8,7 +8,7 @@ describe("A2A agent card route", () => {
     vi.unstubAllEnvs();
   });
 
-  it("publishes the message endpoint through the agent card URL", async () => {
+  it("describes the Chief Advisor and the product capability surface", async () => {
     vi.stubEnv("APP_ORIGIN", "https://agents.example.com/");
 
     const response = await GET(new NextRequest("https://ignored.example/.well-known/agent-card.json"));
@@ -18,7 +18,7 @@ describe("A2A agent card route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(body).toMatchObject({
-      name: "Factor Research Agent",
+      name: "Money Whisperer Chief Advisor",
       url: serviceEndpoint,
       preferredTransport: "JSONRPC",
       provider: {
@@ -35,8 +35,24 @@ describe("A2A agent card route", () => {
       metadata: {
         agentCardUrl: "https://agents.example.com/.well-known/agent-card.json",
         serviceEndpoint,
+        agentArchitecture: {
+          rootAgent: "professional-chief-advisor",
+          conversationEntrypoint: "runConversationAgent",
+        },
+        productCapabilities: expect.arrayContaining([
+          expect.objectContaining({ id: "debate_mode", access: "workbench" }),
+          expect.objectContaining({ id: "scenario_simulation", access: "workbench_api" }),
+          expect.objectContaining({ id: "evidence_lab", access: "workbench_api" }),
+        ]),
       },
     });
+    expect(body.skills.map((skill: { id: string }) => skill.id)).toEqual([
+      "chief_advisor_conversation",
+      "profile_and_goal_planning",
+      "evidence_backed_research",
+      "portfolio_risk_diagnosis",
+      "recommendation_and_compliance",
+    ]);
     expect(body.securityRequirements).toEqual([{ bearerAuth: [] }]);
     expect(body.security).toEqual([{ bearerAuth: [] }]);
   });
