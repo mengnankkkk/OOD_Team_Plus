@@ -173,6 +173,40 @@ describe("debate agent coercion", () => {
     expect(judgement.bearStrongestPoint).toBe('The user said "Buy AAPL now".');
   });
 
+  it("neutralizes judge recommendation directives while preserving attributed analysis", () => {
+    const directives = coerceDebateJudgement({
+      userClaim: 'The user said "Recommendation: Buy AAPL."',
+      bullStrongestPoint: "Recommendation: Buy AAPL.",
+      bearStrongestPoint: "Action: Sell AAPL.",
+      keyDisagreement: "Hold AAPL.",
+      whyNotFinal: "Trade AAPL.",
+      suggestedNextPrompts: [
+        "I recommend buying AAPL.",
+        "I recommend selling AAPL.",
+        "I recommend holding AAPL.",
+      ],
+      complianceNote: "I recommend trading AAPL.",
+    });
+    const shouldDirectives = coerceDebateJudgement({
+      bullStrongestPoint: "You should hold AAPL.",
+      bearStrongestPoint: "You should trade AAPL.",
+    });
+    const analytical = coerceDebateJudgement({
+      bullStrongestPoint: "The recommendation section discusses holding-period risk.",
+    });
+
+    expect(directives.userClaim).toBe('The user said "Recommendation: Buy AAPL."');
+    expect(directives.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.keyDisagreement).toMatch(/evidence|research/i);
+    expect(directives.whyNotFinal).toMatch(/evidence|research/i);
+    expect(directives.suggestedNextPrompts.every((prompt) => /evidence|research/i.test(prompt))).toBe(true);
+    expect(directives.complianceNote).toMatch(/research and simulation/i);
+    expect(shouldDirectives.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(shouldDirectives.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(analytical.bullStrongestPoint).toBe("The recommendation section discusses holding-period risk.");
+  });
+
   it("retries one structured attempt before returning the successful result", async () => {
     let attempts = 0;
 

@@ -177,8 +177,10 @@ function neutralizeJudgeNarrative(value: string, fallback: string): string {
 
 function hasLeadingTradeCommand(value: string): boolean {
   const text = value.trimStart();
-  return /^(?:immediately\s+)?(?:buy|sell|exit)(?:\s|[.!?]|$)/iu.test(text)
-    || /^(?:you\s+)?(?:should|must)\s+(?:buy|sell|exit)(?:\s|[.!?]|$)/iu.test(text)
+  return /^(?:recommendation|action)\s*:\s*(?:buy|sell|exit|hold|trade)(?:\s|[.!?]|$)/iu.test(text)
+    || /^(?:immediately\s+)?(?:buy|sell|exit|hold|trade)(?:\s|[.!?]|$)/iu.test(text)
+    || /^(?:you\s+)?(?:should|must)\s+(?:buy|sell|exit|hold|trade)(?:\s|[.!?]|$)/iu.test(text)
+    || /^i\s+recommend\s+(?:buying|selling|holding|trading)\s+/iu.test(text)
     || /^(?:(?:立即|马上)\s*)?(?:买入|卖出|加仓|减仓)(?:\s|[A-Za-z0-9]|[。.!！]|$)/u.test(text)
     || /^(?:应该|必须)\s*(?:买入|卖出|加仓|减仓)(?:\s|[A-Za-z0-9]|[。.!！]|$)/u.test(text);
 }
