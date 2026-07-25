@@ -168,7 +168,7 @@ function EvidenceColumn({ title, tone, rows, empty }: { title: string; tone: "su
                 <span className="border border-border px-2 py-1 text-[10px] text-muted-foreground">{qualityLabel(item.quality)}</span>
               </div>
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>数据时间：{dateLabel(item.dataAsOf)}</span>
+                <span>{timeLabel(item.timeBasis, item.stance)}：{dateLabel(item.dataAsOf)}</span>
                 {item.confidenceBps != null ? <span>证据完整度：{Math.round(number(item.confidenceBps) / 100)}%</span> : null}
               </div>
               <SourceList sources={asRows(item.sources)} />
@@ -192,7 +192,7 @@ function SourceList({ sources }: { sources: Row[] }) {
             <span className="font-mono">{text(source.reference, "未提供来源定位")}</span>
             {source.freshness ? <StatusBadge value={source.freshness} /> : null}
           </div>
-          <p className="mt-1 text-muted-foreground">数据时间：{dateLabel(source.dataAsOf)}</p>
+          <p className="mt-1 text-muted-foreground">{timeLabel(source.timeBasis)}：{dateLabel(source.dataAsOf)}</p>
           {source.excerpt ? <p className="mt-1 leading-5 text-muted-foreground">{text(source.excerpt)}</p> : null}
         </li>
       ))}
@@ -334,9 +334,19 @@ function agentLabel(value: unknown) {
 }
 
 function dateLabel(value: unknown) {
-  if (!value) return "未提供数据时间";
+  if (!value) return "时间未记录";
   const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN");
+}
+
+function timeLabel(basis: unknown, stance?: unknown) {
+  const normalized = upper(basis);
+  if (normalized === "MARKET_DATA") return "市场数据截至";
+  if (normalized === "SOURCE_VERIFIED") return "行情核验时间";
+  if (normalized === "PORTFOLIO_SNAPSHOT") return "组合快照截至";
+  if (normalized === "PROFILE_SNAPSHOT") return "画像核验时间";
+  if (upper(stance) === "MISSING") return "缺口识别时间";
+  return "证据生成时间";
 }
 
 function shortId(value: unknown) {

@@ -15,6 +15,7 @@ import {
   type ProfessionalAgentRole,
 } from "./professional-contracts";
 import { runFinancialPlanningAdvisor } from "./planning-advisor";
+import { observedAtForFinding } from "./evidence-observation-time";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
 import type { AdvisorWorkflow, RecommendationDraft } from "./types";
 
@@ -1090,18 +1091,35 @@ export function buildPortfolioRecommendationDraft(input: {
 
 function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], executions: PandaSourceExecution[]): void {
   const marketExecutions = executions;
+  const marketDataAsOf = executions
+    .map((execution) => execution.result.asOfDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null;
+  const portfolioSnapshot = db.prepare("SELECT as_of FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1")
+    .get(userId) as { as_of?: string } | undefined;
+  const riskAssessment = db.prepare("SELECT created_at FROM risk_assessments WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
+    .get(userId) as { created_at?: string } | undefined;
   for (const finding of findings) {
     const child = db.prepare("SELECT id FROM agent_runs WHERE root_run_id=? AND agent_type=? ORDER BY created_at DESC LIMIT 1").get(rootRunId, finding.agent.toLowerCase()) as { id?: string } | undefined;
     for (const [stance, statements] of [["support", finding.supportEvidence], ["counter", finding.counterEvidence], ["missing", finding.missingInformation]] as const) {
       for (const statement of statements) {
         const evidenceId = createId("evidence");
         const now = isoNow();
+        const observedAt = observedAtForFinding({
+          agent: finding.agent,
+          stance,
+          generatedAt: now,
+          marketDataAsOf,
+          portfolioSnapshotAsOf: portfolioSnapshot?.as_of ?? null,
+          profileAsOf: riskAssessment?.created_at ?? null,
+        });
         db.prepare(`INSERT INTO evidence_items
-          (id,user_id,recommendation_id,agent_run_id,kind,stance,quality,title,summary,statement,source,is_material,created_at)
-          VALUES (?,?,NULL,?,?,?,?,?,?,?,?,1,?)`).run(
+          (id,user_id,recommendation_id,agent_run_id,kind,stance,quality,title,summary,statement,source,observed_at,is_material,created_at)
+          VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,1,?)`).run(
           evidenceId, userId, child?.id ?? rootRunId, stance === "missing" ? "missing_data" : finding.agent === "DATA_RESEARCH" ? "market_fact" : "model_inference",
           stance, finding.confidence >= 0.75 ? "high" : finding.confidence >= 0.4 ? "medium" : "low", finding.agent, statement, statement,
-          finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", now,
+          finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", observedAt, now,
         );
         const sources = finding.agent === "DATA_RESEARCH"
           ? marketExecutions.length ? marketExecutions : [null]
