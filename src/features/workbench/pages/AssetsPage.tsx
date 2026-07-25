@@ -373,7 +373,7 @@ function FinancialHealthReport({ metrics, loading }: { metrics: ReturnType<typeo
   const drawdown = Math.round((metrics?.drawdown ?? 0) * 100);
   const goalCoverage = metrics?.goalCoverage == null ? "目标资料不足" : `${Math.round(metrics.goalCoverage * 100)}%`;
   const concentration = topAllocation ? `${topAllocation.label} ${Math.round(topAllocation.ratio * 100)}%` : "暂无配置数据";
-  const riskTone = (metrics?.concentration.topClassRatio ?? 0) > 0.4 || (metrics?.drawdown ?? 0) > 0.2 ? "需要关注" : "整体可控";
+  const riskTone = (metrics?.drawdown ?? 0) > 0.2 ? "需要关注" : "整体可控";
 
   return (
     <section className="paper-card p-6">
@@ -390,7 +390,7 @@ function FinancialHealthReport({ metrics, loading }: { metrics: ReturnType<typeo
         <div className="border border-border p-3"><p className="text-xs text-muted-foreground">目标覆盖</p><p className="mt-1 font-semibold">{goalCoverage}</p></div>
       </div>
       <p className="mt-5 text-sm leading-6 text-muted-foreground">
-        系统按当前持仓、资产类别、目标和风险档案即时生成健康判断。若集中度超过 40% 或回撤超过 20%，资产页会直接提示需要复核的风险来源。
+        系统按当前持仓、资产类别、目标和风险档案即时生成健康判断。资产类别占比用于说明组合的主要风险来源；若估算回撤超过 20%，资产页会提示复核相关风险。
       </p>
     </section>
   );

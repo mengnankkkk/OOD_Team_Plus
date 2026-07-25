@@ -1,7 +1,7 @@
 import type { HealthMetrics as HealthMetricsData } from "@/types/app/asset";
-import { ASSET_CLASS_LABEL } from "@/types/app/asset";
 import type { UserProfile } from "@/types/app/user";
 import { Loader } from "@/components/ui/loader";
+import { getConcentrationInsight } from "@/lib/financialHealth";
 
 interface HealthMetricsProps {
   metrics: HealthMetricsData | null;
@@ -18,8 +18,9 @@ const HealthMetrics = ({ metrics, profile, loading }: HealthMetricsProps) => {
   const emergencyAlert = emergencyValue !== null && emergencyValue < emergencyTarget;
 
   const topClassRatio = metrics?.concentration.topClassRatio ?? 0;
-  const concentrationAlert = topClassRatio > 0.4;
-  const topClassLabel = metrics?.concentration.topClass ? ASSET_CLASS_LABEL[metrics.concentration.topClass] : "—";
+  const concentrationInsight = metrics
+    ? getConcentrationInsight({ concentration: metrics.concentration })
+    : { label: "资产类别占比", note: "暂无足够持仓数据" };
 
   const savingsRate = metrics?.savingsRate ?? null;
   const drawdown = metrics?.drawdown ?? null;
@@ -38,10 +39,10 @@ const HealthMetrics = ({ metrics, profile, loading }: HealthMetricsProps) => {
       alert: savingsRate !== null && savingsRate < 0.15,
     },
     {
-      label: `${topClassLabel}集中度`,
+      label: concentrationInsight.label,
       value: percent(topClassRatio),
-      note: concentrationAlert ? `超过 40% 上限 ${Math.round((topClassRatio - 0.4) * 100)}%` : "在你的风险预算内",
-      alert: concentrationAlert,
+      note: concentrationInsight.note,
+      alert: false,
     },
     {
       label: "组合估算最大回撤",

@@ -1,5 +1,6 @@
 import type { HealthMetrics } from "@/types/app/asset";
 import { Loader } from "@/components/ui/loader";
+import { getConcentrationInsight } from "@/lib/financialHealth";
 
 interface AllocationPanelProps {
   metrics: HealthMetrics | null;
@@ -21,7 +22,7 @@ const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
     return <section className="paper-card grid min-h-36 place-items-center p-6"><Loader label="加载资产配置…" /></section>;
   }
   const allocation = metrics?.allocation ?? [];
-  if (!allocation.length) {
+  if (!metrics || !allocation.length) {
     return (
       <section className="paper-card p-6">
         <p className="eyebrow">资产配置</p>
@@ -30,13 +31,12 @@ const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
       </section>
     );
   }
-  const topClassRatio = metrics?.concentration.topClassRatio ?? 0;
-  const alert = topClassRatio > 0.4;
+  const insight = getConcentrationInsight({ concentration: metrics.concentration });
 
   return (
     <section className="paper-card p-6">
       <div className="flex items-center justify-between">
-        <div><p className="eyebrow">资产配置</p><h2 className="mt-2 text-lg font-semibold">{alert ? "风险集中在单一赛道" : "配置比例概览"}</h2></div>
+        <div><p className="eyebrow">资产配置</p><h2 className="mt-2 text-lg font-semibold">配置比例概览</h2></div>
         <span className="judge-note">{allocation.length} 类资产</span>
       </div>
       <div className="mt-8 flex h-5 overflow-hidden border border-foreground">
@@ -47,11 +47,9 @@ const AllocationPanel = ({ metrics, loading }: AllocationPanelProps) => {
           <div key={a.assetClass}><p className="text-xs text-muted-foreground">{a.label}</p><p className="mt-1 font-mono text-xl font-semibold">{Math.round(a.ratio * 100)}%</p></div>
         ))}
       </div>
-      {alert && (
-        <div className="mt-6 border border-destructive border-l-4 bg-destructive/5 px-4 py-3 text-sm">
-          <strong>同一动因：</strong>{metrics?.concentration.topClass && `${allocation[0]?.label}` } 集中度 {Math.round(topClassRatio * 100)}%，超过 40% 上限。
-        </div>
-      )}
+      <div className="mt-6 border border-border border-l-4 border-l-primary bg-muted/30 px-4 py-3 text-sm">
+        {insight.note}
+      </div>
     </section>
   );
 };

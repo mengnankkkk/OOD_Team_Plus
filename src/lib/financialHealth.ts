@@ -15,6 +15,43 @@ const assumedDrawdownByClass: Record<AssetClass, number> = {
   other: 0.1,
 };
 
+export interface ConcentrationInsight {
+  label: string;
+  note: string;
+}
+
+export function getConcentrationInsight(metrics: Pick<HealthMetrics, "concentration">): ConcentrationInsight {
+  const { topClass, topClassRatio, topIndustry, topIndustryRatio } = metrics.concentration;
+  if (!topClass) {
+    return { label: "资产类别占比", note: "暂无足够持仓数据" };
+  }
+
+  const classLabel = ASSET_CLASS_LABEL[topClass];
+  const ratio = `${Math.round(topClassRatio * 100)}%`;
+  const industryContext = topIndustry
+    ? `其中${topIndustry}行业占总资产${Math.round(topIndustryRatio * 100)}%`
+    : null;
+
+  if (EQUITY_LIKE.includes(topClass)) {
+    return {
+      label: `${classLabel}占比`,
+      note: `当前${classLabel}占总资产${ratio}%，组合表现会更多受权益市场波动影响${industryContext ? `，${industryContext}` : ""}。请结合资金用途和风险承受能力判断是否适合。`,
+    };
+  }
+
+  if (CASH_LIKE.includes(topClass)) {
+    return {
+      label: `${classLabel}占比`,
+      note: `当前${classLabel}占总资产${ratio}%，组合以低波动资产为主。请结合资金用途和投资期限判断是否需要提高资金使用效率。`,
+    };
+  }
+
+  return {
+    label: `${classLabel}占比`,
+    note: `当前${classLabel}占总资产${ratio}%，是组合的主要资产类别。是否需要调整要结合资金用途、投资期限和风险承受能力判断。`,
+  };
+}
+
 export function computeHealthMetrics(holdings: Holding[], profile: UserProfile | null, goals: UserGoal[]): HealthMetrics {
   const totalAssets = holdings.reduce((sum, h) => sum + h.marketValue, 0);
 
