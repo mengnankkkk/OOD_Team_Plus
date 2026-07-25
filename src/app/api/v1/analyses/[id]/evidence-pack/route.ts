@@ -39,14 +39,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const evidenceLinks = evidence.length ? db.prepare(`SELECT esl.*,ds.code AS source_code,ds.name AS source_name,
       ms.as_of AS snapshot_as_of,ms.freshness_status,ms.quality_status AS snapshot_quality,ms.source_method,
       msm.metric_code AS linked_metric_code,msm.value_decimal AS linked_value_decimal,msm.value_text AS linked_value_text
-    FROM evidence_source_links esl JOIN data_sources ds ON ds.id=esl.data_source_id
+    FROM evidence_source_links esl LEFT JOIN data_sources ds ON ds.id=esl.data_source_id
     LEFT JOIN market_snapshots ms ON ms.id=esl.market_snapshot_id
     LEFT JOIN market_snapshot_metrics msm ON msm.id=esl.market_snapshot_metric_id
     WHERE esl.evidence_id IN (${evidence.map(() => "?").join(",")}) ORDER BY esl.created_at,esl.id`)
     .all(...evidence.map((item) => item.id)) as Row[] : [];
   const snapshotIds = [...new Set(evidenceLinks.map((item) => item.market_snapshot_id).filter(Boolean))];
   const marketSnapshots = snapshotIds.length ? db.prepare(`SELECT ms.*,i.symbol,i.name AS instrument_name,ds.code AS source_code,ds.name AS source_name
-    FROM market_snapshots ms JOIN instruments i ON i.id=ms.instrument_id JOIN data_sources ds ON ds.id=ms.data_source_id
+    FROM market_snapshots ms JOIN instruments i ON i.id=ms.instrument_id LEFT JOIN data_sources ds ON ds.id=ms.data_source_id
     WHERE ms.id IN (${snapshotIds.map(() => "?").join(",")}) ORDER BY ms.as_of,ms.id`).all(...snapshotIds) as Row[] : [];
   const conflicts = db.prepare("SELECT * FROM agent_conflicts WHERE root_run_id=? ORDER BY created_at,id").all(id) as Row[];
   db.close();
@@ -184,13 +184,20 @@ function formatEvidenceSource(item: Row) {
 
 function summarizeFreshness(snapshots: Row[], skillRuns: Row[]) {
   const dates = snapshots.map((item) => String(item.as_of ?? "")).filter(Boolean).sort();
-  const hasStale = snapshots.some((item) => String(item.freshness_status).toLowerCase() === "stale")
-    || skillRuns.some((item) => String(item.quality_status).toLowerCase() === "stale");
+  const latestByInstrument = new Map<string, Row>();
+  for (const snapshot of snapshots) {
+    const key = String(snapshot.instrument_id ?? snapshot.symbol ?? snapshot.id);
+    const current = latestByInstrument.get(key);
+    if (!current || String(snapshot.as_of ?? "") > String(current.as_of ?? "")) latestByInstrument.set(key, snapshot);
+  }
+  const latestSnapshots = [...latestByInstrument.values()];
+  const hasStale = latestSnapshots.some((item) => String(item.freshness_status).toLowerCase() === "stale");
   const hasFailed = skillRuns.some((item) => String(item.status).toLowerCase() === "failed");
+  const hasStaleSkillOnly = !snapshots.length && skillRuns.some((item) => String(item.quality_status).toLowerCase() === "stale");
   return {
     marketDataAsOf: dates.at(-1) ?? null,
     financialReportPeriod: null,
-    status: snapshots.length ? hasStale ? "STALE" : "FRESH" : hasFailed ? "UNAVAILABLE" : "NOT_REQUIRED",
+    status: snapshots.length ? hasStale ? "STALE" : "FRESH" : hasFailed ? "UNAVAILABLE" : hasStaleSkillOnly ? "STALE" : "NOT_REQUIRED",
   };
 }
 

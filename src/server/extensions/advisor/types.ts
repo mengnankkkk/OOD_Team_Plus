@@ -44,7 +44,7 @@ export interface AdvisorContext {
 }
 
 export interface RecommendationDraft {
-  instrumentId: string;
+  instrumentId: string | null;
   symbol: string;
   action: "WATCH" | "TRIAL_BUY" | "SCALE_IN" | "HOLD" | "STOP_ADDING" | "SCALE_OUT" | "EXIT";
   suitability: "HIGH" | "MEDIUM" | "LOW";

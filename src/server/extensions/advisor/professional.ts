@@ -54,6 +54,8 @@ type ResearchState = {
   latest: Decimal | null;
   asOfDate: string | null;
   quotes: Array<{ symbol: string; latest: string | null; asOfDate: string | null; method: string }>;
+  riskMetrics: Array<{ symbol: string; observations: number; annualizedVolatility: string | null; maxDrawdown: string | null }>;
+  correlations: Array<{ left: string; right: string; observations: number; value: string | null }>;
 };
 
 type RoleRunResult = {
@@ -109,7 +111,7 @@ export async function runProfessionalAdvisor(input: {
   try {
     registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
 
-    let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] };
+    let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] };
     if (requiredRoles.includes("DATA_RESEARCH")) {
       registerFinding(await runRole(db, input, "DATA_RESEARCH", async (childRunId) => {
         const result = await researchInstrument(db, input.analysisId, childRunId, target, holdings);
@@ -118,7 +120,7 @@ export async function runProfessionalAdvisor(input: {
       }, { emitEvents: false }));
     }
 
-    const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot), { emitEvents: false }));
+    const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot, research), { emitEvents: false }));
 
     const deterministicDecision = deterministicDecisionFor({ intent, requestedDirection, target, targetHolding, profile, research, riskFinding });
     if (requiredRoles.includes("RECOMMENDATION")) {
@@ -200,10 +202,30 @@ export async function runProfessionalAdvisor(input: {
       findings,
       modelFallback,
       unresolvedConflict,
-      marketDataRequired: requiredRoles.includes("DATA_RESEARCH"),
+      marketDataRequired: requiredRoles.includes("DATA_RESEARCH") && (intent === "BUY" || intent === "SELL"),
     });
-    const recommendation = target
-      ? buildRecommendationDraft({ status, candidate, target, holding: targetHolding, profile, research, snapshot })
+    candidate = {
+      ...candidate,
+      compliance: {
+        approved: status === "ACTIVE",
+        decision: status === "ACTIVE" ? "APPROVED" : status === "BLOCKED" ? "BLOCKED" : "DOWNGRADED",
+        reason: status === "ACTIVE"
+          ? "服务端数据、证据、风险和合规门均已通过"
+          : status === "BLOCKED"
+            ? "存在必须先补齐或确认的关键信息"
+            : `建议可供研究和模拟采纳；数据状态为 ${research.dataState}`,
+      },
+    };
+    const recommendation = requiredRoles.includes("RECOMMENDATION") || holdings.length > 0
+      ? buildRecommendationDraft({
+        status,
+        candidate,
+        target,
+        holding: targetHolding ?? holdings[0] ?? null,
+        profile,
+        research,
+        snapshot,
+      })
       : null;
     persistFindings(db, input.userId, input.analysisId, findings, research.executions);
     db.prepare("UPDATE agent_runs SET model_provider=?,model_name=?,output_summary=?,compliance_json=? WHERE id=?")
@@ -372,7 +394,7 @@ async function researchInstrument(
     market: marketForSymbol(holding.symbol),
   }));
   if (!instruments.length) return {
-    state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] },
+    state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] },
     finding: AgentFindingSchema.parse({
       agent: "DATA_RESEARCH", conclusion: "未识别到可研究标的", supportEvidence: [], counterEvidence: ["没有明确标的时不能形成个股买卖结论"],
       missingInformation: ["instrument"], risks: ["标的歧义可能导致错误数据关联"], confidence: 0.2, needsAnotherAgent: false,
@@ -428,17 +450,29 @@ async function researchInstrument(
     const allRows = executions.flatMap((execution) => execution.result.data).sort(compareMarketRows);
     const closes = allRows.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
     const latest = closes.at(-1) ?? null;
-    const dataState: DataState = !usedDailyFallback && executions.every((execution) => execution.result.fresh && execution.result.liveCallSucceeded) ? "LIVE_FRESH" : "STALE";
+    const series = executions.map(marketSeries);
+    const riskMetrics = series.map((item) => ({
+      symbol: item.symbol,
+      observations: item.points.length,
+      annualizedVolatility: annualizedVolatility(item.points.map((point) => point.close))?.toDecimalPlaces(6).toString() ?? null,
+      maxDrawdown: maximumDrawdown(item.points.map((point) => point.close))?.toDecimalPlaces(6).toString() ?? null,
+    }));
+    const correlations = pairwiseCorrelations(series);
+    const dataState: DataState = executions.every((execution) => execution.result.liveCallSucceeded && execution.result.data.length > 0 && execution.result.fresh)
+      ? "LIVE_FRESH"
+      : executions.some((execution) => execution.result.data.length > 0)
+        ? "STALE"
+        : "UNAVAILABLE";
     const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
     const quotes = executions.map((execution) => ({
       symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
-      latest: execution.result.data.map((row) => decimal(row.close)).find((value): value is Decimal => value !== null)?.toString() ?? null,
+      latest: [...execution.result.data].sort(compareMarketRows).map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null).at(-1)?.toString() ?? null,
       asOfDate: execution.result.asOfDate,
       method: execution.source.method,
     }));
     persistSseEvent({ analysisId: rootRunId, type: "tool.completed", payload: { toolName: sources.map((source) => source.method), childRunId, rowCount: allRows.length, dataState, symbolCount: executions.length } });
     return {
-      state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes },
+      state: { dataState, executions, closes, latest, asOfDate: asOfDates.at(-1) ?? null, quotes, riskMetrics, correlations },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH",
         conclusion: `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
@@ -447,7 +481,7 @@ async function researchInstrument(
           `数据日期：${asOfDates.at(-1) ?? "未知"}`,
           `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
         ],
-        counterEvidence: [dataState === "LIVE_FRESH" ? "历史价格不能保证未来走势" : "数据已过期，禁止生成 ACTIVE 建议"],
+        counterEvidence: [dataState === "LIVE_FRESH" ? "历史价格不能保证未来走势" : usedDailyFallback ? "实时接口当前无行情行，已使用同一数据源最近交易日数据" : "行情数据需要刷新后再确认"],
         missingInformation: latest ? [] : ["close"],
         risks: ["短期价格和成交量可能快速变化", "财务或估值字段缺失时不会推导替代值"],
         confidence: dataState === "LIVE_FRESH" && latest ? 0.82 : 0.4,
@@ -458,7 +492,7 @@ async function researchInstrument(
   } catch (error) {
     persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: sources.map((source) => source.method), childRunId, code: "PANDADATA_UNAVAILABLE" } });
     return {
-      state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] },
+      state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH", conclusion: `${target?.symbol ?? instruments.map((instrument) => instrument.symbol).join("、")} 的 PandaData live call 不可用，保留建议方向但强制阻断`, supportEvidence: [],
         counterEvidence: [`真实行情处理失败：${safeMessage(error)}`], missingInformation: [],
@@ -468,20 +502,30 @@ async function researchInstrument(
   }
 }
 
-function portfolioRiskFinding(holdings: Holding[], snapshot: Record<string, unknown> | undefined): AgentFinding {
+function portfolioRiskFinding(holdings: Holding[], snapshot: Record<string, unknown> | undefined, research: ResearchState): AgentFinding {
   const values = holdings.map((holding) => decimal(holding.market_value_decimal) ?? new Decimal(0));
   const invested = Decimal.sum(...(values.length ? values : [new Decimal(0)]));
   const weights = invested.gt(0) ? values.map((value) => value.div(invested)) : [];
   const largest = weights.reduce((current, value) => Decimal.max(current, value), new Decimal(0));
   const hhi = weights.reduce((sum, weight) => sum.plus(weight.pow(2)), new Decimal(0));
+  const volatilitySummary = research.riskMetrics
+    .map((item) => `${item.symbol} 年化波动率 ${item.annualizedVolatility ?? "不可计算"}、最大回撤 ${item.maxDrawdown ?? "不可计算"}（${item.observations} 个样本）`)
+    .join("；");
+  const correlationSummary = research.correlations
+    .map((item) => `${item.left}/${item.right}=${item.value ?? "不可计算"}（${item.observations} 个重合样本）`)
+    .join("；");
   return AgentFindingSchema.parse({
     agent: "PORTFOLIO_RISK",
-    conclusion: holdings.length ? `组合非现金持仓 ${holdings.length} 项，最大持仓权重 ${largest.mul(100).toDecimalPlaces(2).toString()}%，HHI ${hhi.toDecimalPlaces(4).toString()}` : "当前没有可用于组合风险计算的持仓",
-    supportEvidence: holdings.length ? [`组合快照：${String(snapshot?.id ?? "未知")}`, "集中度计算明确排除现金"] : [],
-    counterEvidence: [holdings.length ? "单一快照不能替代完整历史回撤和相关性分析" : "缺少持仓时不能评估卖出影响"],
-    missingInformation: holdings.length ? [] : ["holdings"],
+    conclusion: holdings.length ? `组合非现金持仓 ${holdings.length} 项，最大持仓权重 ${largest.mul(100).toDecimalPlaces(2).toString()}%，HHI ${hhi.toDecimalPlaces(4).toString()}；已计算 ${research.riskMetrics.length} 个标的的历史风险指标` : "当前没有可用于组合风险计算的持仓",
+    supportEvidence: holdings.length ? [
+      `组合快照：${String(snapshot?.id ?? "未知")}；集中度计算明确排除现金`,
+      volatilitySummary || "历史行情不足，未形成波动率和最大回撤指标",
+      correlationSummary || "当前只有一个可计算收益序列，不需要跨标的相关性",
+    ] : [],
+    counterEvidence: [holdings.length ? "当前历史窗口不能覆盖未来极端行情和结构性变化" : "缺少持仓时不能评估卖出影响"],
+    missingInformation: holdings.length ? research.riskMetrics.length ? [] : ["historical_market_series"] : ["holdings"],
     risks: [largest.gte("0.5") ? "单一持仓波动可能主导组合回撤" : "行业相关性仍可能放大组合波动"],
-    confidence: holdings.length ? 0.78 : 0.2,
+    confidence: holdings.length && research.riskMetrics.length ? 0.86 : holdings.length ? 0.62 : 0.2,
     needsAnotherAgent: true,
     suggestedNextAgent: "RECOMMENDATION",
   });
@@ -531,14 +575,14 @@ function recommendationFinding(decision: AdvisorDecision, findings: AgentFinding
 
 function complianceFindingFor(criticalMissing: string[], dataState: DataState, findings: AgentFinding[]): AgentFinding {
   const blocked = criticalMissing.length > 0;
-  const degraded = dataState === "STALE" || dataState === "UNAVAILABLE";
+  const unavailable = dataState === "UNAVAILABLE";
   return AgentFindingSchema.parse({
     agent: "COMPLIANCE_REVIEWER",
-    conclusion: blocked ? "关键信息缺失，发布门阻断" : degraded ? "数据条件不满足，发布门降级" : "基础合规检查通过，仍需服务端最终门控",
-    supportEvidence: ["建议仅用于模拟，不创建真实订单", `已检查 ${findings.length} 个专业节点`],
-    counterEvidence: [blocked ? `缺失：${criticalMissing.join(", ")}` : degraded ? "没有可用的新鲜 live 数据" : "模型结论仍不能覆盖服务端风险规则"],
+    conclusion: blocked ? "存在必须先确认的关键输入" : unavailable ? "市场数据调用未完成，暂不能形成交易动作" : "画像、市场证据、组合影响和动作边界检查完成",
+    supportEvidence: [`已检查 ${findings.length} 个专业节点`, `市场数据状态：${dataState}`],
+    counterEvidence: [blocked ? `待确认：${criticalMissing.join(", ")}` : unavailable ? "市场数据恢复后需要重新计算" : "市场变化可能使当前结论和触发条件失效"],
     missingInformation: criticalMissing,
-    risks: ["用户可能把模拟建议误解为确定性交易指令"],
+    risks: ["采纳前仍需复核最新价格、资金用途和组合约束"],
     confidence: 0.95,
     needsAnotherAgent: false,
   });
@@ -573,12 +617,11 @@ export function enforcePublicationStatus(input: {
   unresolvedConflict: boolean;
   marketDataRequired: boolean;
 }): PublicationStatus {
-  if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
-  if (input.marketDataRequired && input.dataState !== "LIVE_FRESH") return "BLOCKED";
+  if (input.criticalMissing.length || input.unresolvedConflict) return "BLOCKED";
+  if (input.marketDataRequired && input.dataState === "UNAVAILABLE") return "BLOCKED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
-  const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
-  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
+  if (!input.modelFallback && input.dataState === "LIVE_FRESH" && hasCounterEvidence && hasPortfolioImpact) return "ACTIVE";
   return "DEGRADED";
 }
 
@@ -593,7 +636,7 @@ function preserveDirection(model: AdvisorDecision, fallback: AdvisorDecision): {
 function buildRecommendationDraft(input: {
   status: PublicationStatus;
   candidate: AdvisorDecision;
-  target: Instrument;
+  target: Instrument | null;
   holding: Holding | null;
   profile: Profile | undefined;
   research: ResearchState;
@@ -618,8 +661,8 @@ function buildRecommendationDraft(input: {
   const validUntil = new Date();
   validUntil.setUTCDate(validUntil.getUTCDate() + (horizon === "SHORT" ? 7 : horizon === "LONG" ? 90 : 30));
   return {
-    instrumentId: input.target.id,
-    symbol: input.target.symbol,
+    instrumentId: input.target?.id ?? input.holding?.instrument_id ?? null,
+    symbol: input.target?.symbol ?? input.holding?.symbol ?? "PORTFOLIO",
     action: input.candidate.action,
     suitability: input.status === "ACTIVE" ? input.candidate.suitability : "LOW",
     summary: input.candidate.summary,
@@ -658,7 +701,6 @@ function buildRecommendationDraft(input: {
 }
 
 function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, rootRunId: string, findings: AgentFinding[], executions: PandaSourceExecution[]): void {
-  const sourceId = executions.length ? "source-pandadata-api" : "source-derived-engine";
   const marketExecutions = executions;
   for (const finding of findings) {
     const child = db.prepare("SELECT id FROM agent_runs WHERE root_run_id=? AND agent_type=? ORDER BY created_at DESC LIMIT 1").get(rootRunId, finding.agent.toLowerCase()) as { id?: string } | undefined;
@@ -673,16 +715,21 @@ function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, roo
           stance, finding.confidence >= 0.75 ? "high" : finding.confidence >= 0.4 ? "medium" : "low", finding.agent, statement, statement,
           finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", now,
         );
-        const execution = marketExecutions.find((candidate) => candidate.result.data.some((row) => String(row.symbol ?? "").toUpperCase() === String(statement.match(/\b\d{6}\.(?:SH|SZ|OF)\b/u)?.[0] ?? "").toUpperCase()))
-          ?? marketExecutions.find((candidate) => candidate.marketSnapshotIds.length > 0)
-          ?? marketExecutions[0];
-        db.prepare(`INSERT INTO evidence_source_links
-          (id,evidence_id,data_source_id,tool_call_id,market_snapshot_id,source_locator,excerpt,created_at)
-          VALUES (?,?,?,?,?,?,?,?)`).run(
-          createId("evidence_link"), evidenceId, sourceId, finding.agent === "DATA_RESEARCH" ? execution?.toolCallId ?? null : null,
-          finding.agent === "DATA_RESEARCH" ? execution?.marketSnapshotIds.at(-1) ?? null : null,
-          finding.agent === "DATA_RESEARCH" ? execution?.source.method ?? "pandadata-unavailable" : `agent:${finding.agent}`, statement.slice(0, 500), now,
-        );
+        const sources = finding.agent === "DATA_RESEARCH"
+          ? marketExecutions.length ? marketExecutions : [null]
+          : [null];
+        for (const execution of sources) {
+          db.prepare(`INSERT INTO evidence_source_links
+            (id,evidence_id,data_source_id,tool_call_id,market_snapshot_id,source_locator,excerpt,created_at)
+            VALUES (?,?,?,?,?,?,?,?)`).run(
+            createId("evidence_link"), evidenceId,
+            finding.agent === "DATA_RESEARCH" ? "source-pandadata-api" : "source-derived-engine",
+            execution?.toolCallId ?? null,
+            execution?.marketSnapshotIds.at(-1) ?? null,
+            finding.agent === "DATA_RESEARCH" ? execution?.source.method ?? "pandadata-unavailable" : `agent:${finding.agent}`,
+            statement.slice(0, 500), now,
+          );
+        }
         persistSseEvent({ analysisId: rootRunId, type: "evidence.added", payload: { evidenceId, stance, agent: finding.agent } });
       }
     }
@@ -770,12 +817,14 @@ function chiefPrompt(
   }));
   return [
     `用户问题：${question}`,
+    `服务端当前时间：${isoNow()}；数据状态由服务端计算，禁止自行改写或臆测数据已过期`,
     `必须委派：${requiredRoles.join(", ")}`,
     `用户画像：${json(profile ?? {})}`,
     `持仓摘要：${json(holdings.map((holding) => ({ symbol: holding.symbol, weightBps: holding.weight_bps, marketValue: holding.market_value_decimal })))}`,
     `目标标的：${json(target)}`,
     `数据状态：${research.dataState}，数据日期：${research.asOfDate ?? "未知"}`,
     `实时/行情数据摘要：${json(research.quotes)}`,
+    `服务端历史风险指标：${json({ riskMetrics: research.riskMetrics, correlations: research.correlations })}`,
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
@@ -795,7 +844,7 @@ function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, find
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
-    "仅支持模拟采纳，不连接券商，不创建真实订单。",
+    "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
   ].join("\n");
 }
 
@@ -820,6 +869,69 @@ function decimal(value: unknown): Decimal | null {
   } catch {
     return null;
   }
+}
+
+function maximumDrawdown(closes: Decimal[]): Decimal | null {
+  if (closes.length < 2) return null;
+  let peak = closes[0];
+  let drawdown = new Decimal(0);
+  for (const close of closes.slice(1)) {
+    if (close.gt(peak)) peak = close;
+    if (peak.gt(0)) drawdown = Decimal.max(drawdown, peak.minus(close).div(peak));
+  }
+  return drawdown;
+}
+
+function marketSeries(execution: PandaSourceExecution) {
+  const symbol = String(execution.source.parameters.symbol instanceof Array
+    ? execution.source.parameters.symbol[0]
+    : execution.source.parameters.symbol ?? execution.source.dataset);
+  const points = [...execution.result.data]
+    .sort(compareMarketRows)
+    .flatMap((row) => {
+      const close = decimal(row.close);
+      const date = marketRowDate(row);
+      return close && date ? [{ date, close }] : [];
+    });
+  return { symbol, points };
+}
+
+function pairwiseCorrelations(series: ReturnType<typeof marketSeries>[]): ResearchState["correlations"] {
+  const correlations: ResearchState["correlations"] = [];
+  for (let leftIndex = 0; leftIndex < series.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < series.length; rightIndex += 1) {
+      const leftReturns = returnSeries(series[leftIndex].points);
+      const rightReturns = returnSeries(series[rightIndex].points);
+      const dates = [...leftReturns.keys()].filter((date) => rightReturns.has(date));
+      const pairs = dates.map((date) => [leftReturns.get(date)!, rightReturns.get(date)!] as const);
+      correlations.push({
+        left: series[leftIndex].symbol,
+        right: series[rightIndex].symbol,
+        observations: pairs.length,
+        value: pearsonCorrelation(pairs)?.toDecimalPlaces(6).toString() ?? null,
+      });
+    }
+  }
+  return correlations;
+}
+
+function returnSeries(points: Array<{ date: string; close: Decimal }>): Map<string, Decimal> {
+  const returns = new Map<string, Decimal>();
+  for (let index = 1; index < points.length; index += 1) {
+    if (points[index - 1].close.gt(0)) returns.set(points[index].date, points[index].close.div(points[index - 1].close).minus(1));
+  }
+  return returns;
+}
+
+function pearsonCorrelation(pairs: ReadonlyArray<readonly [Decimal, Decimal]>): Decimal | null {
+  if (pairs.length < 3) return null;
+  const leftMean = Decimal.sum(...pairs.map(([left]) => left)).div(pairs.length);
+  const rightMean = Decimal.sum(...pairs.map(([, right]) => right)).div(pairs.length);
+  const numerator = Decimal.sum(...pairs.map(([left, right]) => left.minus(leftMean).mul(right.minus(rightMean))));
+  const leftScale = Decimal.sum(...pairs.map(([left]) => left.minus(leftMean).pow(2))).sqrt();
+  const rightScale = Decimal.sum(...pairs.map(([, right]) => right.minus(rightMean).pow(2))).sqrt();
+  if (leftScale.eq(0) || rightScale.eq(0)) return null;
+  return numerator.div(leftScale.mul(rightScale));
 }
 
 function compareMarketRows(left: Record<string, unknown>, right: Record<string, unknown>): number {

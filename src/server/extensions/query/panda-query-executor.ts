@@ -135,8 +135,9 @@ async function executeOne(source: PandaQuerySource, agentRunId: string, db: Sqli
 function persistMarketSnapshots(db: SqliteDb, source: PandaQuerySource, result: PandaDataResult, dataSourceId: string): string[] {
   const createdAt = new Date().toISOString();
   const snapshotIds: string[] = [];
+  const rows = [...result.data].sort((left, right) => snapshotDate(left, result).localeCompare(snapshotDate(right, result)));
   const transaction = db.transaction(() => {
-    for (const row of result.data.slice(0, 10_000)) {
+    for (const row of rows.slice(0, 10_000)) {
       const symbol = rowSymbol(row);
       if (!symbol) continue;
       const instrumentId = ensureInstrument(db, symbol, source.assetType);
@@ -163,6 +164,10 @@ function persistMarketSnapshots(db: SqliteDb, source: PandaQuerySource, result: 
   });
   transaction();
   return [...new Set(snapshotIds)];
+}
+
+function snapshotDate(row: Record<string, unknown>, result: PandaDataResult): string {
+  return normalizeDate(row.date ?? row.trade_date ?? result.asOfDate) ?? "";
 }
 
 function ensureInstrument(db: SqliteDb, symbol: string, assetType: string): string {

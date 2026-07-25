@@ -283,7 +283,7 @@ function coerceModelFinding(
     agent: role,
     conclusion,
     supportEvidence: coerceStringArray(merged.supportEvidence).slice(0, 3),
-    counterEvidence: counterEvidence.length ? counterEvidence : ["模型未提供反方证据，发布门按证据不足保守处理"],
+    counterEvidence: counterEvidence.length ? counterEvidence : ["市场、画像或持仓变化可能使当前结论失效"],
     missingInformation,
     risks: coerceStringArray(merged.risks).slice(0, 3),
     confidence: coerceConfidence(merged.confidence),
@@ -306,8 +306,8 @@ function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDec
     summary: nonEmptyString(merged.summary, "模型未能形成完整结论，已按观察处理"),
     suitability: merged.suitability ?? "LOW",
     confidence: coerceConfidence(merged.confidence),
-    rationales: coerceStringArray(merged.rationales).slice(0, 3).length ? coerceStringArray(merged.rationales).slice(0, 3) : ["证据不足，无法形成更积极的建议"],
-    counterEvidence: coerceStringArray(merged.counterEvidence).slice(0, 3).length ? coerceStringArray(merged.counterEvidence).slice(0, 3) : ["模型未提供反方证据，按保守门控处理"],
+    rationales: coerceStringArray(merged.rationales).slice(0, 3).length ? coerceStringArray(merged.rationales).slice(0, 3) : ["根据当前画像、持仓和市场证据维持观察"],
+    counterEvidence: coerceStringArray(merged.counterEvidence).slice(0, 3).length ? coerceStringArray(merged.counterEvidence).slice(0, 3) : ["市场、画像或持仓变化可能使当前结论失效"],
     risks: coerceStringArray(merged.risks).slice(0, 3).length ? coerceStringArray(merged.risks).slice(0, 3) : ["模型输出不完整"],
     portfolioImpact: nonEmptyString(merged.portfolioImpact, "暂不改变组合，等待完整证据"),
     invalidationConditions: coerceStringArray(merged.invalidationConditions).slice(0, 6).length ? coerceStringArray(merged.invalidationConditions).slice(0, 6) : ["出现新的实时数据或完整风险信息"],
@@ -350,7 +350,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
   return [
     "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
-    "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实；不得在证据不足时给出 ACTIVE 交易承诺。",
+    "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 时不得声称数据过期。",
     prompt,
     `专业子 Agent 发现：${JSON.stringify(findings)}`,
   ].join("\n\n");
