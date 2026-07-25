@@ -5,30 +5,45 @@ import { authError } from "@/server/auth/http";
 import { createId, getDatabase, getRequestContext, isoNow, meta, parseJson } from "@/server/http/context";
 import { evaluateRiskAssessment, horizonFromAnswer, maxDrawdownFromAnswer } from "@/lib/risk-assessment";
 
-const decimalString = z.string().trim().min(1).refine((value) => /^\d+(\.\d{1,2})?$/u.test(value), "请输入有效金额");
+const decimalInput = z.union([z.string(), z.number()])
+  .transform(normalizeDecimalInput)
+  .refine((value) => /^\d+(\.\d{1,2})?$/u.test(value), "请输入有效金额");
+const optionalDecimalInput = z.preprocess(
+  (value) => value === "" || value === null || value === undefined ? undefined : value,
+  decimalInput.optional(),
+);
+const optionalAge = z.preprocess(
+  (value) => value === "" || value === null || value === undefined ? null : Number(value),
+  z.number().int().min(18).max(100).nullable().optional(),
+);
 
 const Schema = z.object({
   answers: z.record(z.string(), z.string()),
   profile: z.object({
     displayName: z.string().trim().max(60).optional(),
-    age: z.number().int().min(18).max(100).nullable().optional(),
+    age: optionalAge,
     household: z.string().trim().max(120).nullable().optional(),
-    monthlyIncome: decimalString,
-    monthlyExpense: decimalString,
-    liabilities: decimalString,
-    emergencyTargetMonths: z.number().int().min(1).max(36),
-    investmentAmount: decimalString,
+    monthlyIncome: decimalInput,
+    monthlyExpense: decimalInput,
+    liabilities: decimalInput,
+    emergencyTargetMonths: z.coerce.number().int().min(1).max(36),
+    investmentAmount: decimalInput,
     horizon: z.enum(["SHORT", "MEDIUM", "LONG"]).optional(),
-    maxDrawdown: decimalString.optional(),
+    maxDrawdown: optionalDecimalInput,
   }),
   goal: z.object({
     name: z.string().trim().min(1).max(120),
-    targetAmount: decimalString,
+    targetAmount: decimalInput,
     targetDate: z.string().trim().min(1),
     priority: z.enum(["1", "2", "3", "4", "5"]),
     assetPreference: z.enum(["STOCK", "SECTOR", "INDEX"]),
   }),
 });
+
+function normalizeDecimalInput(value: string | number): string {
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  return value.trim().replace(/[,\s，￥¥元]/gu, "");
+}
 
 export async function POST(req: NextRequest) {
   const parsed = Schema.safeParse(await req.json().catch(() => null));

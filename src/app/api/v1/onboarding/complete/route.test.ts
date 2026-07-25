@@ -80,4 +80,36 @@ describe("/api/v1/onboarding/complete", () => {
     expect(goal).toMatchObject({ name: "三年后购房首付", target_amount_decimal: "300000" });
     expect(assessment.count).toBe(1);
   });
+
+  it("accepts browser-form numeric values and formatted money strings", async () => {
+    const response = await POST(authenticatedRequest("http://localhost/api/v1/onboarding/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        answers,
+        profile: {
+          displayName: "格式化输入用户",
+          age: "28",
+          household: "",
+          monthlyIncome: "20,000.00",
+          monthlyExpense: "8,000",
+          liabilities: 0,
+          emergencyTargetMonths: "6",
+          investmentAmount: "50,000",
+          horizon: "LONG",
+          maxDrawdown: 0.2,
+        },
+        goal: {
+          name: "三年后购房首付",
+          targetAmount: "300,000",
+          targetDate: "2029-12-31",
+          priority: "1",
+          assetPreference: "INDEX",
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body.error ?? body)).toBe(201);
+  });
 });

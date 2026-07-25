@@ -63,6 +63,16 @@ const initialGoal: OnboardingGoal = {
 
 const selectClass = "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20";
 
+function normalizeMoney(value: string): string {
+  return value.trim().replace(/[,\s，￥¥元]/gu, "");
+}
+
+function isValidMoney(value: string, options: { allowZero?: boolean } = {}): boolean {
+  const normalized = normalizeMoney(value);
+  if (!/^\d+(\.\d{1,2})?$/u.test(normalized)) return false;
+  return options.allowZero ? Number(normalized) >= 0 : Number(normalized) > 0;
+}
+
 function Field({ label, htmlFor, required, children }: { label: string; htmlFor?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
@@ -161,7 +171,27 @@ export default function OnboardingGate() {
       toast.error(`请填写${missing[1]}`);
       return false;
     }
-    if (Number(profileForm.monthlyExpense) > Number(profileForm.monthlyIncome)) {
+    if (profileForm.age.trim()) {
+      const age = Number(profileForm.age);
+      if (!Number.isInteger(age) || age < 18 || age > 100) {
+        toast.error("请填写 18-100 之间的整数年龄");
+        return false;
+      }
+    }
+    const emergencyMonths = Number(profileForm.emergencyTargetMonths);
+    if (!Number.isInteger(emergencyMonths) || emergencyMonths < 1 || emergencyMonths > 36) {
+      toast.error("应急金覆盖月数需要在 1-36 之间");
+      return false;
+    }
+    if (!isValidMoney(profileForm.monthlyIncome) || !isValidMoney(profileForm.investmentAmount)) {
+      toast.error("月度收入和计划投资金额需要填写大于 0 的有效金额");
+      return false;
+    }
+    if (!isValidMoney(profileForm.monthlyExpense, { allowZero: true }) || !isValidMoney(profileForm.liabilities, { allowZero: true })) {
+      toast.error("月度必要支出和负债余额需要填写有效金额");
+      return false;
+    }
+    if (Number(normalizeMoney(profileForm.monthlyExpense)) > Number(normalizeMoney(profileForm.monthlyIncome))) {
       toast.error("月度必要支出不能高于月度收入，请确认后再继续");
       return false;
     }
@@ -175,6 +205,10 @@ export default function OnboardingGate() {
     }
     if (!goalForm.targetAmount.trim() || Number(goalForm.targetAmount) <= 0) {
       toast.error("请填写有效的目标金额");
+      return false;
+    }
+    if (!isValidMoney(goalForm.targetAmount)) {
+      toast.error("目标金额需要填写大于 0 的有效金额");
       return false;
     }
     if (!goalForm.targetDate) {
@@ -194,17 +228,17 @@ export default function OnboardingGate() {
           displayName: profileForm.displayName.trim() || undefined,
           age: profileForm.age ? Number(profileForm.age) : null,
           household: profileForm.household.trim() || null,
-          monthlyIncome: profileForm.monthlyIncome.trim(),
-          monthlyExpense: profileForm.monthlyExpense.trim(),
-          liabilities: profileForm.liabilities.trim(),
+          monthlyIncome: normalizeMoney(profileForm.monthlyIncome),
+          monthlyExpense: normalizeMoney(profileForm.monthlyExpense),
+          liabilities: normalizeMoney(profileForm.liabilities),
           emergencyTargetMonths: Number(profileForm.emergencyTargetMonths),
-          investmentAmount: profileForm.investmentAmount.trim(),
+          investmentAmount: normalizeMoney(profileForm.investmentAmount),
           horizon: profileForm.horizon,
           maxDrawdown: profileForm.maxDrawdown,
         },
         goal: {
           name: goalForm.name.trim(),
-          targetAmount: goalForm.targetAmount.trim(),
+          targetAmount: normalizeMoney(goalForm.targetAmount),
           targetDate: goalForm.targetDate,
           priority: goalForm.priority,
           assetPreference: goalForm.assetPreference,
