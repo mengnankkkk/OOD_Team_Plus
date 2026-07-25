@@ -71,6 +71,27 @@ describe("debate contracts", () => {
     expect(speech.arguments[0]?.counterEvidenceRefs).toEqual([]);
   });
 
+  it("rejects an advocate argument whose stance differs from the speech", () => {
+    expect(() => AdvocateSpeechSchema.parse({
+      stance: "bull",
+      headline: "Headline",
+      directResponseToUser: "Response",
+      arguments: [{
+        stance: "bear",
+        claim: "Claim",
+        plainLanguage: "Plain language",
+        assumption: "Assumption",
+        confidence: 0.5,
+        vulnerability: "Vulnerability",
+      }],
+      strongestAttackOnOpponent: "Attack",
+      admittedWeakness: "Weakness",
+      questionForOpponent: "Question",
+      plainLanguageSummary: "Summary",
+      suggestedUserFollowUp: "Follow up",
+    })).toThrow();
+  });
+
   it("parses a judgement with insufficient evidence and bounded follow-up prompts", () => {
     const judgement = DebateJudgementSchema.parse({
       userClaim: "The stock is an attractive buy today.",
@@ -114,6 +135,28 @@ describe("debate contracts", () => {
     });
   });
 
+  it("rejects invalid judge turn stance and type combinations", () => {
+    expect(() => DebateTurnSchema.parse({
+      speaker: "judge",
+      stance: "bull",
+      turnType: "opening",
+      content: "The judge supports the bull case.",
+      publicSummary: "Invalid judge turn.",
+    })).toThrow();
+  });
+
+  it("accepts an advocate turn when speaker, stance, and turn type align", () => {
+    const turn = DebateTurnSchema.parse({
+      speaker: "bull",
+      stance: "bull",
+      turnType: "support",
+      content: "The bull case remains supported by durable demand.",
+      publicSummary: "Bull support.",
+    });
+
+    expect(turn.structuredPayload).toEqual({});
+  });
+
   it("enforces argument confidence and a one-to-three argument range", () => {
     expect(() => DebateArgumentSchema.parse({
       stance: "bull",
@@ -134,6 +177,67 @@ describe("debate contracts", () => {
       questionForOpponent: "Question",
       plainLanguageSummary: "Summary",
       suggestedUserFollowUp: "Follow up",
+    })).toThrow();
+
+    const argument = {
+      stance: "bear" as const,
+      claim: "Claim",
+      plainLanguage: "Plain language",
+      assumption: "Assumption",
+      confidence: 0.5,
+      vulnerability: "Vulnerability",
+    };
+    expect(() => AdvocateSpeechSchema.parse({
+      stance: "bear",
+      headline: "Headline",
+      directResponseToUser: "Response",
+      arguments: [argument, argument, argument, argument],
+      strongestAttackOnOpponent: "Attack",
+      admittedWeakness: "Weakness",
+      questionForOpponent: "Question",
+      plainLanguageSummary: "Summary",
+      suggestedUserFollowUp: "Follow up",
+    })).toThrow();
+  });
+
+  it("enforces unique required agents and schedules only required agents", () => {
+    const basePlan = {
+      userDebateRole: "neutral",
+      userIntent: "ask_both",
+      motion: "The motion is debatable.",
+      roundFocus: "Compare both sides.",
+      needsFreshData: false,
+      reasonForFocus: "The user asked for a balanced review.",
+    };
+
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      requiredAgents: ["evidence", "bull", "bull"],
+      speakingOrder: ["evidence", "bull"],
+    })).toThrow();
+
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      requiredAgents: ["evidence", "bull"],
+      speakingOrder: ["evidence", "judge"],
+    })).toThrow();
+  });
+
+  it("rejects more than three suggested next prompts", () => {
+    expect(() => DebateJudgementSchema.parse({
+      userClaim: "Claim",
+      bullStrongestPoint: "Bull point",
+      bearStrongestPoint: "Bear point",
+      keyDisagreement: "Disagreement",
+      responseQuality: {
+        bull: "direct",
+        bear: "partial",
+      },
+      evidenceTilt: "balanced",
+      confidence: 0.5,
+      whyNotFinal: "More evidence is needed.",
+      suggestedNextPrompts: ["One", "Two", "Three", "Four"],
+      complianceNote: "Note",
     })).toThrow();
   });
 });

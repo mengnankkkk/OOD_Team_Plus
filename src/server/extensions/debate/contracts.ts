@@ -51,6 +51,16 @@ export const AdvocateSpeechSchema = z.object({
   questionForOpponent: z.string().min(1),
   plainLanguageSummary: z.string().min(1),
   suggestedUserFollowUp: z.string().min(1),
+}).superRefine((speech, context) => {
+  speech.arguments.forEach((argument, index) => {
+    if (argument.stance !== speech.stance) {
+      context.addIssue({
+        code: "custom",
+        path: ["arguments", index, "stance"],
+        message: "Argument stance must match advocate speech stance",
+      });
+    }
+  });
 });
 
 export const DebateJudgementSchema = z.object({
@@ -78,7 +88,27 @@ export const DebateRoundPlanSchema = z.object({
   speakingOrder: z.array(DebateAgentSchema).min(1),
   needsFreshData: z.boolean(),
   reasonForFocus: z.string().min(1),
+}).superRefine((plan, context) => {
+  if (new Set(plan.requiredAgents).size !== plan.requiredAgents.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredAgents"],
+      message: "Required agents must be unique",
+    });
+  }
+
+  plan.speakingOrder.forEach((agent, index) => {
+    if (!plan.requiredAgents.includes(agent)) {
+      context.addIssue({
+        code: "custom",
+        path: ["speakingOrder", index],
+        message: "Every speaking order entry must be a required agent",
+      });
+    }
+  });
 });
+
+const advocateTurnTypes = new Set(["opening", "support", "rebuttal", "cross_examination", "answer"]);
 
 export const DebateTurnSchema = z.object({
   speaker: DebateSpeakerSchema,
@@ -87,6 +117,55 @@ export const DebateTurnSchema = z.object({
   content: z.string().min(1),
   publicSummary: z.string().min(1),
   structuredPayload: z.record(z.string(), z.unknown()).default({}),
+}).superRefine((turn, context) => {
+  if (["judge", "evidence", "orchestrator"].includes(turn.speaker) && turn.stance !== "neutral") {
+    context.addIssue({
+      code: "custom",
+      path: ["stance"],
+      message: `${turn.speaker} turns must use neutral stance`,
+    });
+  }
+
+  if (turn.speaker === "judge" && turn.turnType !== "judge_summary") {
+    context.addIssue({
+      code: "custom",
+      path: ["turnType"],
+      message: "Judge turns must use judge_summary",
+    });
+  }
+
+  if (turn.speaker === "evidence" && turn.turnType !== "evidence_update") {
+    context.addIssue({
+      code: "custom",
+      path: ["turnType"],
+      message: "Evidence turns must use evidence_update",
+    });
+  }
+
+  if (turn.speaker === "orchestrator" && turn.turnType !== "opening") {
+    context.addIssue({
+      code: "custom",
+      path: ["turnType"],
+      message: "Orchestrator turns must use opening",
+    });
+  }
+
+  if (turn.speaker === "bull" || turn.speaker === "bear") {
+    if (turn.stance !== turn.speaker) {
+      context.addIssue({
+        code: "custom",
+        path: ["stance"],
+        message: "Advocate stance must match speaker",
+      });
+    }
+    if (!advocateTurnTypes.has(turn.turnType)) {
+      context.addIssue({
+        code: "custom",
+        path: ["turnType"],
+        message: "Advocate turns must use an advocate turn type",
+      });
+    }
+  }
 });
 
 export type DebateUserRole = z.infer<typeof DebateUserRoleSchema>;
