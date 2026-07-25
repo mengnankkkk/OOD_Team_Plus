@@ -23,14 +23,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
   if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   const db = getDatabase();
-  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND status='active'").get(id, userId) as Record<string, unknown> | undefined;
-  const snapshot = db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(userId) as { id?: string } | undefined;
-  db.close();
-  if (!recommendation || !snapshot?.id) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation or portfolio snapshot not found" } }, { status: 404 });
+  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND UPPER(status)='ACTIVE'").get(id, userId) as Record<string, unknown> | undefined;
+  if (!recommendation) {
+    db.close();
+    return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Active recommendation not found" } }, { status: 404 });
+  }
   const formatted = formatRecommendation(recommendation);
+  const provenance = formatted.provenance as Record<string, unknown>;
+  const recommendedSnapshotId = typeof provenance.snapshotId === "string" ? provenance.snapshotId : undefined;
+  const snapshot = (recommendedSnapshotId
+    ? db.prepare("SELECT id FROM portfolio_snapshots WHERE id=? AND user_id=?").get(recommendedSnapshotId, userId)
+    : db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(userId)) as { id?: string } | undefined;
+  db.close();
   const objectiveText = parsed.data.objective ?? `模拟采纳建议 ${formatted.action} 对组合的影响`;
   const label = compactLabel(parsed.data.label ?? `建议模拟：${formatted.summary ?? formatted.action}`);
-  const result = createWorkspace(userId, { label, objectiveText, portfolioSnapshotId: snapshot.id, conversationSessionId: String(recommendation.conversation_id ?? "") || undefined, recommendationId: id });
+  const result = createWorkspace(userId, { label, objectiveText, portfolioSnapshotId: snapshot?.id, conversationSessionId: String(recommendation.conversation_id ?? "") || undefined, recommendationId: id });
   const optionRun = generateOptions(userId, result.workspaceId, objectiveText);
   const payload = { data: { workspaceId: result.workspaceId, recommendationId: id, rootBranchId: result.branchId, activeBranchId: result.branchId, ordersCreated: false, next: { workspaceUrl: `/simulations?workspace=${encodeURIComponent(result.workspaceId)}`, optionsUrl: `/api/v1/simulation-workspaces/${result.workspaceId}/options` }, analysis: { analysisId: optionRun.analysisId, type: "BRANCH_OPTION_GENERATION", status: "QUEUED", streamUrl: `/api/v1/analyses/${optionRun.analysisId}/events` } }, meta: meta() };
   await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
