@@ -112,7 +112,14 @@ WHERE item.status = 'active'
   AND NOT EXISTS (
     SELECT 1
     FROM observation_conditions AS existing
-    WHERE existing.watchlist_item_id = item.id
+    WHERE (
+        existing.watchlist_item_id = item.id
+        OR (
+          existing.watchlist_item_id IS NULL
+          AND existing.user_id = watchlist.user_id
+          AND existing.instrument_id = item.instrument_id
+        )
+      )
       AND existing.condition_type = 'DRAWDOWN_REACH'
       AND existing.status = 'active'
       AND CAST(existing.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
