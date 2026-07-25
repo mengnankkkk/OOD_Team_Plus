@@ -65,7 +65,9 @@ describe("buildFinancialReportMarkdown", () => {
       [
         "建议状态：DEGRADED；建议动作：STOP_ADDING",
         "核心结论：当前应暂缓新增仓位并优先降低集中度",
+        "用户画像与投资目标依据：风险等级：R5；投资期限：LONG；偏好资产：INDEX",
         "数据研究：已完成 3 个持仓的真实市场数据研究，状态为 LATEST_TRADING_DAY",
+        "行情与技术观察：最新价格样本：37.05；行情证据：688256.SH=1225@2026-07-24 via get_stock_daily",
         "组合影响：新增标的会改变现金、集中度和压力损失",
         "风险复核：最大持仓权重 83.79%，HHI 0.7214",
         "合规结论：研究和模拟边界检查完成",
@@ -101,16 +103,23 @@ describe("buildFinancialReportMarkdown", () => {
     expect(markdown).toContain("**建议状态：** 谨慎参考");
     expect(markdown).toContain("**建议动作：** 停止加仓，先控制集中度");
     expect(markdown).toContain("简单说，先不要继续买入占比已经偏高的持仓");
-    expect(markdown).toContain("最近交易日收盘数据");
+    expect(markdown).toContain("行情数据截至：2026年7月25日");
     expect(markdown).toContain("集中度指标为 0.7214");
+    expect(markdown).toContain("风险等级：进取型");
+    expect(markdown).toContain("投资期限：长线");
+    expect(markdown).toContain("偏好资产：指数基金");
     expect(markdown).toContain("### 你的画像和目标");
     expect(markdown).toContain("### 组合事实");
     expect(markdown).toContain("### 行情与技术观察");
     expect(markdown).toContain("### 基本面与消息面");
     expect(markdown).toContain("### 反方证据");
     expect(markdown).toContain("### 为什么对应这个动作");
-    expect(markdown).toContain("本次未获得可用的基本面或消息面证据");
+    expect(markdown).toContain("本次资产报告流程未执行基本面和消息面检索");
     expect(markdown).toContain("| 证券代码 | 持仓名称 | 当前市值（元） | 浮动盈亏（元） | 组合占比 |");
+    expect(markdown).not.toContain("报告生成时读取到 1 项持仓快照");
+    expect(markdown).not.toContain("最新价格样本");
+    expect(markdown).not.toContain("行情证据：");
+    expect(markdown).not.toContain("已完成 3 个持仓的真实市场数据研究");
     expect(markdown).not.toContain("## 数据与风险");
     expect(markdown).not.toContain("## 你还可以查看");
     expect(markdown).not.toContain("DEGRADED");
@@ -128,7 +137,7 @@ describe("buildFinancialReportMarkdown", () => {
 
     expect(markdown).toContain("本次未获得可用的用户画像和投资目标证据");
     expect(markdown).toContain("本次未获得可用的行情或技术面证据");
-    expect(markdown).toContain("本次未获得可用的基本面或消息面证据");
+    expect(markdown).toContain("本次资产报告流程未执行基本面和消息面检索");
     expect(markdown).toContain("本次未获得可用的持仓明细");
     expect(markdown).not.toContain("## 数据与风险");
     expect(markdown).not.toContain("## 你还可以查看");

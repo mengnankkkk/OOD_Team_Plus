@@ -480,22 +480,23 @@ export function buildFinancialReportMarkdown(
     : fields.counterEvidence ? [fields.counterEvidence] : [];
   const invalidation = recommendation?.invalidation ?? "";
   const portfolioEvidence = [
-    rows.length ? `报告生成时读取到 ${rows.length} 项持仓快照，具体明细见下方附录。` : "本次未获得可用的持仓明细。",
+    rows.length ? "" : "本次未获得可用的持仓明细。",
     fields.portfolioFacts,
     fields.portfolioImpact,
     fields.risk ? translateRiskText(fields.risk) : "",
   ].filter(Boolean);
+  const formattedTechnical = formatMarketReportText(fields.technical);
+  const formattedResearch = formatMarketReportText(fields.research);
   const marketEvidence = [
-    fields.technical,
-    fields.research,
-    recommendation?.provenance && typeof recommendation.provenance.dataState === "string"
-      ? `数据状态：${recommendation.provenance.dataState}`
+    ...splitReportEvidence(formattedTechnical),
+    ...splitReportEvidence(formattedResearch),
+    !formattedTechnical && !formattedResearch && recommendation?.dataAsOf
+      ? `行情数据截至：${formatReportDate(recommendation.dataAsOf)}`
       : "",
-    recommendation?.dataAsOf ? `数据截至：${recommendation.dataAsOf}` : "",
   ].filter(Boolean);
   const fundamentalEvidence = fields.fundamental
-    ? [fields.fundamental]
-    : ["本次未获得可用的基本面或消息面证据，未将这类信息作为支持理由。"];
+    ? [translateFundamentalReportText(fields.fundamental)]
+    : ["本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。"];
   const actionEvidence = [
     ...reasons,
     fields.portfolioImpact ? `这项判断对组合的影响是：${fields.portfolioImpact}` : "",
@@ -647,7 +648,52 @@ function translateReportText(value: string): string {
     .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF")
     .replaceAll("FACTOR_RESEARCH", "因子研究")
     .replaceAll("STRATEGY_BACKTEST", "策略回测")
+    .replaceAll("instrumentPreference", "偏好资产")
+    .replaceAll("risk_level", "风险等级")
+    .replaceAll("investment_amount", "可投资金额")
+    .replaceAll("max_drawdown", "最大回撤")
+    .replaceAll("R1", "保守型")
+    .replaceAll("R2", "谨慎型")
+    .replaceAll("R3", "稳健型")
+    .replaceAll("R4", "成长型")
+    .replaceAll("R5", "进取型")
+    .replaceAll("SHORT", "短线")
+    .replaceAll("MEDIUM", "中线")
+    .replaceAll("LONG", "长线")
+    .replaceAll("INDEX", "指数基金")
+    .replaceAll("SECTOR_ETF", "行业 ETF")
+    .replaceAll("STOCK", "个股")
     .replaceAll("HHI", "集中度指标");
+}
+
+function formatMarketReportText(value: string): string {
+  if (
+    !value
+    || /已对\s*\d+\s*个持仓\/目标标的完成真实市场数据研究/u.test(value)
+    || /已完成\s*\d+\s*个持仓的真实市场数据研究/u.test(value)
+    || /最新价格样本|行情证据/u.test(value)
+  ) return "";
+  return translateReportText(value)
+    .replace(/最新价格样本[：:]\s*/u, "")
+    .replace(/行情证据[：:]\s*/u, "")
+    .replace(/数据日期[：:]\s*/u, "行情数据截至：")
+    .replace(/数据状态[：:]\s*(?:最近交易日收盘数据|最新实时行情|较旧行情|暂无可用行情)/u, "")
+    .replace(/\s*via\s+[a-z0-9_]+\s*/giu, " ")
+    .trim();
+}
+
+function formatReportDate(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/u);
+  return match ? `${match[1]}年${Number(match[2])}月${Number(match[3])}日` : value;
+}
+
+function splitReportEvidence(value: string): string[] {
+  return value.split(/[；;]/u).map((item) => item.trim()).filter(Boolean);
+}
+
+function translateFundamentalReportText(value: string): string {
+  return translateReportText(value)
+    .replace(/本次未获得可用的基本面或消息面证据[，,]\s*/u, "本次资产报告流程未执行基本面和消息面检索，因此");
 }
 
 function translateRiskText(value: string): string {
