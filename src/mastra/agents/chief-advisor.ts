@@ -37,6 +37,8 @@ const ChiefAdvisorDecisionSchema = z.object({
   }).optional(),
 });
 
+type ChiefAdvisorDecision = z.infer<typeof ChiefAdvisorDecisionSchema>;
+
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
   findings: AgentFinding[];
@@ -129,7 +131,7 @@ export async function runChiefAdvisor(input: {
   }
 
   let latestDecisionPartial: Partial<AdvisorDecision> = {};
-  const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
+  const decisionStream = await chief.stream<ChiefAdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 },
     structuredOutput: {
@@ -139,7 +141,7 @@ export async function runChiefAdvisor(input: {
     },
   });
   const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
-  const consumeDecisionObject = consumeObjectStream<AdvisorDecision>(decisionStream.objectStream, (partial) => {
+  const consumeDecisionObject = consumeObjectStream<ChiefAdvisorDecision>(decisionStream.objectStream, (partial) => {
     latestDecisionPartial = { ...latestDecisionPartial, ...partial };
     input.onStreamEvent?.({ type: "decision.object", partial });
   });
