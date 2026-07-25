@@ -82,7 +82,7 @@ const RecommendationCard = ({
       </div>
       <div className="mt-7 flex flex-wrap items-center gap-3 border-t border-border pt-6">
         <Button className="h-11 px-6" onClick={() => navigate(`/recommendations/${rec.id}${blocked ? "?tab=lab" : ""}`)}>{blocked ? "查看阻断原因" : "模拟采纳"} <ArrowRight /></Button>
-        <Button variant="outline" className="h-11" onClick={() => navigate(`/recommendations/${rec.id}?tab=evidence`)}>查看证据与反方观点</Button>
+        <Button variant="outline" className="h-11" onClick={() => navigate(`/recommendations/${rec.id}?tab=evidence`)}>查看多空辩论</Button>
         <AnimatedMenuButton
           className="h-11"
           onClick={onGenerate}

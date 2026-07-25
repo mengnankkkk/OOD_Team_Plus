@@ -112,7 +112,7 @@ const EvidenceLabPage = () => {
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2"><FlaskConical className="size-5 text-primary" /><p className="eyebrow">Evidence Lab</p></div>
+          <div className="flex items-center gap-2"><FlaskConical className="size-5 text-primary" /><p className="eyebrow">证据实验室</p></div>
           <h1 className="mt-2 text-3xl font-semibold">每一条建议的证据实验室</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">从 Agent 运行历史回到数据、工具、正反证据和合规结论，再决定补充信息、重新分析还是进入模拟。</p>
         </div>
@@ -162,7 +162,7 @@ const EvidenceLabPage = () => {
           {selectedRun ? (
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-y border-border py-3">
               <div>
-                <p className="text-xs text-muted-foreground">当前查看 · {selectedRun.type ?? selectedRun.triggerType}</p>
+                <p className="text-xs text-muted-foreground">当前查看 · {runTypeLabel(selectedRun.type ?? selectedRun.triggerType)}</p>
                 <p className="mt-1 font-mono text-xs">{selectedRun.id}</p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -210,6 +210,18 @@ function RunStatus({ status }: { status: AgentRun["status"] }) {
 function shortDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function runTypeLabel(value: string) {
+  const labels: Record<string, string> = {
+    CONVERSATION_AGENT: "对话理财分析",
+    DAILY_PORTFOLIO: "今日组合分析",
+    BRANCH_OPTION_GENERATION: "分支方案生成",
+    SIMULATION_WORKSPACE: "分支模拟",
+    ANALYSIS: "Agent 分析",
+  };
+  const normalized = value.toUpperCase();
+  return labels[normalized] ?? value.replaceAll("_", " ");
 }
 
 export default EvidenceLabPage;

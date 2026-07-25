@@ -130,4 +130,60 @@ describe("recommendation and evidence mapping", () => {
       missingEvidence: ["缺少可用市场行情。"],
     });
   });
+
+  it("maps simulation preview and multi-agent debate into report-friendly fields", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      analysisId: "analysis-preview",
+      analysis: { analysisId: "analysis-preview", type: "CONVERSATION_AGENT", status: "COMPLETED", createdAt: "2026-07-25T08:00:00.000Z" },
+      dataFreshness: { marketDataAsOf: "2026-07-25T08:00:00.000Z", status: "FRESH" },
+      evidence: [],
+      agentTrace: [],
+      toolCalls: [],
+      skillRuns: [],
+      pandadataProbes: [],
+      marketSnapshots: [],
+      conflicts: [],
+      recommendations: [{
+        id: "recommendation-preview",
+        summary: "分批减仓并保留观察",
+        reasons: ["组合 Agent 判断集中度偏高", "风险 Agent 认为回撤预算被挤压"],
+        counterEvidence: ["若科技股继续反弹，减仓会少获得部分收益"],
+        risks: ["执行节奏过快可能偏离目标配置"],
+      }],
+      compliance: { status: "PASSED" },
+      simulationPreview: {
+        source: "RECOMMENDATION_PREVIEW",
+        before: {
+          concentration: 0.82,
+          drawdown: 0.18,
+          emergency_months: 2.1,
+          totalAssets: 100000,
+          dataAsOf: "2026-07-25T08:00:00.000Z",
+        },
+        after: {
+          concentration: 0.58,
+          drawdown: 0.12,
+          emergency_months: 3.4,
+          totalAssets: 99800,
+          dataAsOf: "2026-07-25T08:00:00.000Z",
+        },
+      },
+      missingEvidence: [],
+      retry: { allowed: false, reason: null },
+      disclaimer: "仅用于研究。",
+    });
+
+    const pack = await getEvidenceForAnalysis("analysis-preview");
+
+    expect(pack?.simulationLog).toEqual([
+      expect.objectContaining({ concentration: 0.82, drawdown: 0.18, emergency_months: 2.1 }),
+      expect.objectContaining({ concentration: 0.58, drawdown: 0.12, emergency_months: 3.4 }),
+    ]);
+    expect(pack?.debate).toEqual({
+      conclusion: "分批减仓并保留观察",
+      bull: ["组合 Agent 判断集中度偏高", "风险 Agent 认为回撤预算被挤压"],
+      bear: ["若科技股继续反弹，减仓会少获得部分收益", "执行节奏过快可能偏离目标配置"],
+      source: "MULTI_AGENT_SYNTHESIS",
+    });
+  });
 });
