@@ -212,3 +212,12 @@ function speechContent(speech: AdvocateSpeech): string {
 function roleFrom(value: unknown): DebateUserRole {
   return value === "bull" || value === "bear" ? value : "neutral";
 }
+
+export function buildDebateChiefAdvisorPrompt(input: { motion: string; turns: Array<{ speaker: string; publicSummary: string }>; judgements: DebateJudgement[] }): string {
+  return [
+    `辩题：${input.motion}`,
+    `公开发言摘要：${JSON.stringify(input.turns.slice(-12))}`,
+    `裁判总结：${JSON.stringify(input.judgements.slice(-3))}`,
+    "请基于多空 Battle 的公开证据和裁判总结，生成模拟建议或阻断原因。不得将任一方胜负直接变成交易指令。",
+  ].join("\n");
+}

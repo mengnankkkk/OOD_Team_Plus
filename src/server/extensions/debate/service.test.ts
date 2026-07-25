@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedAuthenticatedUser, TEST_USER_ID } from "@tests/helpers/auth";
 import { getDatabase } from "@/server/http/context";
 
-import { continueDebate, startDebate } from "./service";
+import { buildDebateChiefAdvisorPrompt, continueDebate, startDebate } from "./service";
 
 let dbPath = "";
 
@@ -32,6 +32,27 @@ afterEach(() => {
 });
 
 describe("debate service", () => {
+  it("builds a publication-gate handoff prompt", () => {
+    const prompt = buildDebateChiefAdvisorPrompt({
+      motion: "是否加仓 510300",
+      turns: [{ speaker: "bull", publicSummary: "多方认为估值修复值得验证" }],
+      judgements: [{
+        userClaim: "用户想加仓",
+        bullStrongestPoint: "估值修复",
+        bearStrongestPoint: "趋势风险",
+        keyDisagreement: "估值是否便宜",
+        responseQuality: { bull: "direct", bear: "direct" },
+        evidenceTilt: "balanced",
+        confidence: 0.55,
+        whyNotFinal: "缺证据",
+        suggestedNextPrompts: ["继续追问"],
+        complianceNote: "仅研究",
+      }],
+    });
+
+    expect(prompt).toContain("不得将任一方胜负直接变成交易指令");
+  });
+
   it("starts a debate with user, evidence, bull, bear, and judge turns", async () => {
     const result = await startDebate({
       userId: TEST_USER_ID,
