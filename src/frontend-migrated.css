@@ -711,7 +711,7 @@
   .debate-character-moderator { left: 50%; top: 18%; }
   .debate-character-bull { left: 20%; top: 43%; }
   .debate-character-bear { left: 80%; top: 43%; }
-  .debate-character-user { left: 50%; top: 79%; }
+  .debate-character-user { left: 50%; top: 70%; }
   .debate-character-body {
     position: relative;
     display: block;
@@ -1099,7 +1099,7 @@
   .debate-character-moderator { top: 16%; }
   .debate-character-bull { left: 15%; top: 43%; }
   .debate-character-bear { left: 85%; top: 43%; }
-  .debate-character-user { top: 76%; }
+  .debate-character-user { top: 68%; }
   .debate-character-caption {
     padding: 3px 5px;
   }

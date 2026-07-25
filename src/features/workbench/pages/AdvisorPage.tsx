@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import NextImage from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import {
   deleteAdvisorSession,
@@ -242,7 +241,7 @@ const AdvisorPage = () => {
         composerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
       });
     }
-  }, [messages, sending]);
+  }, [advisorMode, debateMessages, debateResponding, messages, sending]);
 
   useEffect(() => () => {
     if (modeSwitchTimerRef.current) clearTimeout(modeSwitchTimerRef.current);
@@ -434,7 +433,11 @@ const AdvisorPage = () => {
       return;
     }
     if (tool.prompt) {
-      setDraft((current) => current.trim() ? current : tool.prompt);
+      if (advisorMode === "debate") {
+        setDebateDraft((current) => current.trim() ? current : tool.prompt);
+      } else {
+        setDraft((current) => current.trim() ? current : tool.prompt);
+      }
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
   };
@@ -458,25 +461,29 @@ const AdvisorPage = () => {
 
   const sendDebateMessage = () => {
     const text = debateDraft.trim();
-    if (!text || debateResponding) return;
+    if ((!text && !attachment) || debateResponding) return;
+    const composed = attachment
+      ? `[附件：${attachment.name}]${text ? `\n${text}` : ""}`
+      : text;
     const turnId = Date.now();
     setDebateDraft("");
+    setAttachment(null);
     setDebateResponding(true);
     setDebateMessages((items) => [
       ...items,
-      { id: `debate-user-${turnId}`, turnId, role: "user", content: text },
+      { id: `debate-user-${turnId}`, turnId, role: "user", content: composed },
     ]);
     if (debateReplyTimerRef.current) clearTimeout(debateReplyTimerRef.current);
     debateReplyTimerRef.current = setTimeout(() => {
       setDebateMessages((items) => [
         ...items,
-        { id: `debate-bull-${turnId}`, turnId, role: "bull", content: buildDebateReply("bull", text) },
-        { id: `debate-bear-${turnId}`, turnId, role: "bear", content: buildDebateReply("bear", text) },
+        { id: `debate-bull-${turnId}`, turnId, role: "bull", content: buildDebateReply("bull", composed) },
+        { id: `debate-bear-${turnId}`, turnId, role: "bear", content: buildDebateReply("bear", composed) },
       ]);
       debateReplyTimerRef.current = setTimeout(() => {
         setDebateMessages((items) => [
           ...items,
-          { id: `debate-judge-${turnId}`, turnId, role: "judge", content: buildDebateReply("judge", text) },
+          { id: `debate-judge-${turnId}`, turnId, role: "judge", content: buildDebateReply("judge", composed) },
         ]);
         setDebateResponding(false);
         debateReplyTimerRef.current = null;
@@ -485,6 +492,10 @@ const AdvisorPage = () => {
   };
 
   const emptyChatState = messages.length === 0 && !loadingHistory;
+  const composerDraft = advisorMode === "debate" ? debateDraft : draft;
+  const composerSending = advisorMode === "debate" ? debateResponding : sending;
+  const setComposerDraft = advisorMode === "debate" ? setDebateDraft : setDraft;
+  const handleComposerSend = advisorMode === "debate" ? sendDebateMessage : handleSend;
 
   return (
     <div className="relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
@@ -646,16 +657,13 @@ const AdvisorPage = () => {
         </header>
 
         {advisorMode === "debate" ? (
-          <DebateRoundtable
-            draft={debateDraft}
+          <DebateConversation
+            listRef={listRef}
             messages={debateMessages}
             responding={debateResponding}
-            onDraftChange={setDebateDraft}
-            onSubmit={sendDebateMessage}
           />
         ) : (
-          <>
-            <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
+          <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
           {loadingHistory ? (
             <div className="grid min-h-[360px] place-items-center text-sm text-muted-foreground md:h-full md:min-h-0">加载对话…</div>
           ) : emptyChatState ? (
@@ -758,9 +766,10 @@ const AdvisorPage = () => {
               )}
             </ul>
           )}
-        </div>
+          </div>
+        )}
 
-            <div className="px-3 sm:px-6">
+        <div className="px-3 sm:px-6">
           <div ref={composerRef} className="mx-auto mb-16 max-w-[1100px] md:mb-6">
             <div
               className="relative rounded-[28px] border bg-white p-3 shadow-[0_18px_48px_rgba(37,99,235,0.12)] transition-all hover:border-transparent hover:shadow-[0_18px_54px_rgba(37,99,235,0.22)]"
@@ -772,15 +781,15 @@ const AdvisorPage = () => {
             >
               <textarea
                 ref={textareaRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                value={composerDraft}
+                onChange={(e) => setComposerDraft(e.target.value)}
                 placeholder="发消息…"
                 rows={2}
                 className="w-full min-h-[52px] resize-none border-0 bg-transparent px-2 py-1 text-sm text-neutral-900 tracking-wide caret-blue-600 outline-none placeholder:text-neutral-400"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
-                    handleSend();
+                    handleComposerSend();
                   }
                 }}
               />
@@ -848,7 +857,7 @@ const AdvisorPage = () => {
                     if (f) {
                       setAttachment(f);
                       if (pendingUploadPrompt) {
-                        setDraft((current) => current.trim() ? current : pendingUploadPrompt);
+                        setComposerDraft((current) => current.trim() ? current : pendingUploadPrompt);
                       }
                       toast.info(`已选择文件：${f.name}`);
                     }
@@ -924,9 +933,9 @@ const AdvisorPage = () => {
                 <button
                   onClick={(ev) => {
                     ev.stopPropagation();
-                    handleSend();
+                    handleComposerSend();
                   }}
-                  disabled={sending || (!draft.trim() && !attachment)}
+                  disabled={composerSending || (!composerDraft.trim() && !attachment)}
                   className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="发送"
                 >
@@ -935,9 +944,7 @@ const AdvisorPage = () => {
               </div>
             </div>
           </div>
-            </div>
-          </>
-        )}
+        </div>
       </section>
     </div>
   );
@@ -957,18 +964,14 @@ function getDebateRoleLabel(role: DebateRole): string {
   return "评委";
 }
 
-function DebateRoundtable({
-  draft,
+function DebateConversation({
+  listRef,
   messages,
   responding,
-  onDraftChange,
-  onSubmit,
 }: {
-  draft: string;
+  listRef: React.RefObject<HTMLDivElement | null>;
   messages: DebateMessage[];
   responding: boolean;
-  onDraftChange: (value: string) => void;
-  onSubmit: () => void;
 }) {
   const currentTurnId = messages.at(-1)?.turnId ?? null;
   const currentTurnMessages = currentTurnId === null ? [] : messages.filter((message) => message.turnId === currentTurnId);
@@ -989,16 +992,8 @@ function DebateRoundtable({
   const agentsAreClashing = responding && Boolean(bullMessage || bearMessage) && !judgeMessage;
 
   return (
-    <div className="debate-room flex min-h-0 flex-1 flex-col bg-white">
+    <div ref={listRef} className="debate-room flex min-h-0 flex-1 flex-col bg-white">
       <div className="debate-stage relative min-h-[520px] flex-1 overflow-hidden">
-        <NextImage
-          className="roundtable-scene"
-          src="/debate-roundtable.jpg"
-          alt="圆桌会议"
-          width={1329}
-          height={1183}
-          priority
-        />
         <DebateCharacterStage activeRoles={activeCharacterRoles} clash={agentsAreClashing} />
         {judgeMessage ? (
           <DebateBubble role="judge" message={judgeMessage.content} />
@@ -1014,31 +1009,6 @@ function DebateRoundtable({
             <DebateBubble role="bear" message="看空agent 正在准备反方逻辑..." muted />
           </>
         ) : null}
-      </div>
-      <div className="debate-composer border-t border-neutral-200 bg-white px-4 py-4">
-        <div className="mx-auto flex w-full max-w-none items-center gap-3 rounded-full border border-neutral-300 bg-white px-4 py-2 shadow-sm">
-          <input
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                onSubmit();
-              }
-            }}
-            placeholder="输入要讨论的问题..."
-            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-neutral-950 outline-none placeholder:text-neutral-400"
-          />
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={!draft.trim() || responding}
-            className="grid size-10 shrink-0 place-items-center rounded-full bg-neutral-950 text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-35"
-            aria-label="发送圆桌消息"
-          >
-            <Send className="size-4" />
-          </button>
-        </div>
       </div>
     </div>
   );
