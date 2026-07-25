@@ -81,4 +81,15 @@ describe("/api/v1/profile", () => {
     expect(response.status).toBe(200);
     expect(body.data.onboardingCompleted).toBe(true);
   });
+
+  it("treats null suitability answers as incomplete", async () => {
+    const response = await GET(seedLegacyProfile({
+      instrumentPreference: null,
+      nearTermUse: null,
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.onboardingCompleted).toBe(false);
+  });
 });

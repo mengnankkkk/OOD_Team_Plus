@@ -104,29 +104,16 @@ describe("conversation advisor clarifications", () => {
     expect(body.error.code).toBe("RUN_ALREADY_ACTIVE");
   });
 
-  it("keeps open-ended normal conversations in guided intake without generating a recommendation", async () => {
+  it("lets complete-profile users ask open-ended questions in the advisor flow", async () => {
     createCompleteProfile();
     const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，也担心风险，想学理财", "guided-intake-message");
     const body = await response.json();
 
     expect(response.status).toBe(202);
     expect(body.data.analysis.status).toBe("COMPLETED");
-    expect(body.data.conversationKind).toBe("GUIDED_INTAKE");
-    expect(body.data.recommendationId).toBeNull();
-    expect(body.data.answer).toContain("普通模式会先把目标、资金用途和风险边界聊清楚");
-
-    const db = getDatabase();
-    const recommendationCount = db.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE user_id=?").get(TEST_USER_ID) as { count: number };
-    db.close();
-    expect(recommendationCount.count).toBe(0);
-
-    const followUp = await sendMessage("未来三年不用，我准备拿 5 万长期投资，最大回撤约 10%", "guided-intake-follow-up");
-    const followUpBody = await followUp.json();
-    expect(followUpBody.data.conversationKind).toBe("GUIDED_INTAKE");
-    expect(followUpBody.data.recommendationId).toBeNull();
-    expect(followUpBody.data.answer).toContain("我把你刚补充的内容接上了");
-    expect(followUpBody.data.answer).toContain("你更想优先实现哪个目标");
-    expect(followUpBody.data.answer).not.toContain("准备拿出多少作为可投资金额");
+    expect(body.data.conversationKind).toBe("DECISION");
+    expect(body.data.answer).not.toContain("请先完成投资画像");
+    expect(body.data.answer).toContain("核心结论");
 
     const planning = await sendMessage("帮我整理适合我的投资方案", "financial-plan-message");
     const planningBody = await planning.json();
@@ -134,6 +121,16 @@ describe("conversation advisor clarifications", () => {
     expect(planningBody.data.recommendationId).toBeNull();
     expect(planningBody.data.answer).toContain("资金分层");
     expect(planningBody.data.answer).toContain("执行顺序");
+  });
+
+  it("keeps incomplete open-ended questions in guided intake", async () => {
+    const response = await sendMessage("我最近总是担心波动", "guided-incomplete-message");
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(body.data.conversationKind).toBe("GUIDED_INTAKE");
+    expect(body.data.recommendationId).toBeNull();
+    expect(body.data.answer).toContain("接下来确认");
   });
 
   it("completes the daily portfolio workflow without creating a clarification", async () => {

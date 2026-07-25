@@ -94,6 +94,11 @@ type RoleRunResult = {
   finding: AgentFinding;
 };
 
+type ProfileCompleteness = {
+  complete: boolean;
+  missing: string[];
+};
+
 export type ProfessionalAdvisorResult = {
   kind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION";
   runId: string;
@@ -140,6 +145,7 @@ export async function runProfessionalAdvisor(input: {
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
   const dailyPortfolio = input.workflow === "DAILY_PORTFOLIO";
   const decisionProfile = dailyPortfolio ? profileWithDailyAssumptions(profile) : profile;
+  const profileCompleteness = profileCompletenessFor(decisionProfile, dailyPortfolio);
   const requiredRoles = rolesFor(intent, Boolean(target), holdings.length > 0, input.content);
   const findings: AgentFinding[] = [];
   const roleRunIds = new Map<ProfessionalAgentRole, string>();
@@ -180,7 +186,7 @@ export async function runProfessionalAdvisor(input: {
       };
     }
 
-    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content)) {
+    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content) && !profileCompleteness.complete) {
       return {
         kind: "GUIDED_INTAKE",
         runId: input.analysisId,
@@ -239,6 +245,20 @@ export async function runProfessionalAdvisor(input: {
       analysisId: input.analysisId,
       question: input.content,
     });
+    const chiefContext = buildChiefAdvisorContext({
+      input,
+      profile: decisionProfile,
+      profileCompleteness,
+      goals,
+      holdings,
+      snapshot,
+      target,
+      research,
+      findings,
+      requiredRoles,
+      semanticContext,
+      dailyPortfolio,
+    });
 
     let candidate = deterministicDecision;
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
@@ -261,6 +281,7 @@ export async function runProfessionalAdvisor(input: {
       try {
         const model = await runChiefAdvisor({
           prompt: chiefPrompt(input.content, decisionProfile, goals, holdings, snapshot, target, research, findings, requiredRoles, semanticContext, dailyPortfolio),
+          context: chiefContext,
           requiredAgents: requiredRoles,
           fallbackFindings: findings,
           onAgentStarted: (agent, label) => {
@@ -497,16 +518,74 @@ function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding
   return [...byAgent.values()];
 }
 
-function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
+function profileCompletenessFor(profile: Profile | undefined, allowAssumptions = false): ProfileCompleteness {
+  const missing = allowAssumptions ? [] : profileMissingInformation(profile);
+  return { complete: missing.length === 0, missing };
+}
+
+function profileMissingInformation(profile: Profile | undefined): string[] {
   const preferences = parsePreferences(profile?.preferences_json);
-  const missing = [
+  return [
     !profile?.risk_level ? "risk_level" : null,
     !profile?.investment_amount_decimal ? "investment_amount" : null,
     !profile?.horizon ? "horizon" : null,
     !profile?.max_drawdown_decimal ? "max_drawdown" : null,
-    preferences.instrumentPreference === undefined ? "instrument_preference" : null,
-    preferences.nearTermUse === undefined ? "near_term_use" : null,
+    preferences.instrumentPreference == null || preferences.instrumentPreference === "" ? "instrument_preference" : null,
+    preferences.nearTermUse == null ? "near_term_use" : null,
   ].filter((value): value is string => Boolean(value));
+}
+
+function buildChiefAdvisorContext(input: {
+  input: {
+    userId: string;
+    sessionId: string;
+    analysisId: string;
+    content: string;
+    workflow?: AdvisorWorkflow;
+  };
+  profile: Profile | undefined;
+  profileCompleteness: ProfileCompleteness;
+  goals: Goal[];
+  holdings: Holding[];
+  snapshot: Record<string, unknown> | undefined;
+  target: Instrument | null;
+  research: ResearchState;
+  findings: AgentFinding[];
+  requiredRoles: ProfessionalAgentRole[];
+  semanticContext: AdvisorSemanticToolsContext;
+  dailyPortfolio: boolean;
+}): Record<string, unknown> {
+  return {
+    workflow: input.dailyPortfolio ? "DAILY_PORTFOLIO" : "CONVERSATION",
+    userQuestion: input.input.content,
+    profile: input.profile ?? null,
+    profileCompleteness: input.profileCompleteness,
+    goals: input.goals,
+    holdings: input.holdings,
+    portfolioSnapshot: input.snapshot ?? null,
+    targetInstrument: input.target,
+    marketData: {
+      dataState: input.research.dataState,
+      asOfDate: input.research.asOfDate,
+      quotes: input.research.quotes,
+      riskMetrics: input.research.riskMetrics,
+      correlations: input.research.correlations,
+      study: input.research.study ?? null,
+    },
+    semanticTools: summarizeAdvisorSemanticToolsContext(input.semanticContext),
+    knownFacts: {
+      profileIsComplete: input.profileCompleteness.complete,
+      missingProfileFields: input.profileCompleteness.missing,
+      hasPortfolioSnapshot: Boolean(input.snapshot),
+      holdingCount: input.holdings.length,
+      requiredRoles: input.requiredRoles,
+    },
+    missingInformation: [...new Set(input.findings.flatMap((finding) => finding.missingInformation))],
+  };
+}
+
+function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
+  const missing = profileMissingInformation(profile);
   return AgentFindingSchema.parse({
     agent: "PROFILE_CONTEXT",
     conclusion: missing.length && !allowAssumptions
@@ -1217,15 +1296,7 @@ export function criticalMissingInformation(
 ): string[] {
   if (intent === "FACTOR_RESEARCH" || intent === "STRATEGY_BACKTEST") return target ? [] : ["instrument"];
   if (intent !== "BUY" && intent !== "SELL" && intent !== "DIAGNOSIS") return [];
-  const preferences = parsePreferences(profile?.preferences_json);
-  const profileMissing = [
-    !profile?.risk_level ? "risk_level" : null,
-    !profile?.investment_amount_decimal ? "investment_amount" : null,
-    !profile?.horizon ? "horizon" : null,
-    !profile?.max_drawdown_decimal ? "max_drawdown" : null,
-    preferences.instrumentPreference === undefined ? "instrument_preference" : null,
-    preferences.nearTermUse === undefined ? "near_term_use" : null,
-  ].filter((value): value is string => Boolean(value));
+  const profileMissing = profileMissingInformation(profile);
   const requiredProfileMissing = allowProfileAssumptions ? [] : profileMissing;
   if (intent === "DIAGNOSIS") return [...requiredProfileMissing, ...(!hasHoldings ? ["holdings"] : [])];
   return [
@@ -1307,6 +1378,7 @@ export function chiefPrompt(
 ): string {
   const cash = decimal(snapshot?.cash_decimal);
   const totalMarketValue = decimal(snapshot?.total_market_value_decimal);
+  const completeness = profileCompletenessFor(profile, dailyPortfolio);
   const marketFacts = research.executions.map(({ source, result }) => ({
     method: source.method,
     requestedSymbol: source.parameters.symbol,
@@ -1322,6 +1394,8 @@ export function chiefPrompt(
     `服务端当前时间：${isoNow()}；数据状态由服务端计算，禁止自行改写或臆测数据已过期`,
     `必须委派：${requiredRoles.join(", ")}`,
     `用户画像：${json(profile ?? {})}`,
+    `用户画像完整性：${json(completeness)}。complete=true 时这些画像字段已知，禁止重复要求用户补齐画像；应直接基于画像回答当前问题。`,
+    "普通模式路由要求：只有画像不完整且问题仍是开放式 GENERAL 时才继续澄清；画像完整后必须由 Chief Advisor 作为真正理财顾问回答。无标的的一般理财/资产配置/资金规划问题不得要求补充 instrument。",
     `用户目标：${json(goals)}`,
     `现金与组合快照：${json({
       snapshotId: snapshot?.id ?? null,
@@ -1351,7 +1425,7 @@ export function chiefPrompt(
     `真实行情明细（来自 PandaData，不是行数）：${json(marketFacts)}`,
     `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
-    "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。",
+    "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。请直接回答用户当前追问，不要固定回复“下一步先整理资金分层”。",
   ].join("\n");
 }
 
