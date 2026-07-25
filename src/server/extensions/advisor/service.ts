@@ -1,4 +1,3 @@
-/* eslint-disable max-lines */
 import { createArtifact } from "@/server/extensions/artifacts/service";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
@@ -33,6 +32,7 @@ type ConversationAgentResult = {
   answer: string | null;
   recommendationId: string | null;
   missingQuestions: string[];
+  conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION" | null;
   dataQueryId: string | null;
   debateSuggestion: DebateSuggestion | null;
   clarificationId?: string;
@@ -74,6 +74,7 @@ export function startConversationAgent(input: AdvisorRunInput) {
       answer: null,
       recommendationId: null,
       missingQuestions: [],
+      conversationKind: null,
       dataQueryId: null,
       debateSuggestion: null,
     },
@@ -171,7 +172,16 @@ export async function runAdvisorPublicationGate(input: {
 
 async function executePreparedConversationAgent(input: AdvisorRunInput, prepared: PreparedNewRun) {
   const { analysisId, userMessageId, outputMode } = prepared;
-  persistSseEvent({ analysisId, type: "agent.started", payload: { type: "CONVERSATION_AGENT", conversationId: input.sessionId, outputMode } });
+  persistSseEvent({
+    analysisId,
+    type: "agent.started",
+    payload: {
+      type: "CONVERSATION_AGENT",
+      conversationId: input.sessionId,
+      outputMode,
+      workflow: input.workflow ?? "CONVERSATION",
+    },
+  });
 
   try {
     const context = loadAdvisorContext(input.userId);
@@ -180,9 +190,13 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
       sessionId: input.sessionId,
       analysisId,
       content: input.content,
+      workflow: input.workflow,
     });
-    const missingQuestions = clarificationQuestions(professional.missingInformation);
-    const waitingForUser = professional.status === "BLOCKED" && missingQuestions.length > 0;
+    const decisionWorkflow = professional.kind === "DECISION";
+    const missingQuestions = input.workflow === "DAILY_PORTFOLIO" || !decisionWorkflow
+      ? []
+      : clarificationQuestions(professional.missingInformation);
+    const waitingForUser = decisionWorkflow && professional.status === "BLOCKED" && missingQuestions.length > 0;
     return completeRun({
       ...input,
       analysisId,
@@ -195,12 +209,13 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
       recommendation: waitingForUser ? null : professional.recommendation,
       recommendationStatus: professional.status,
       debateSuggestion: professional.debateSuggestion,
+      conversationKind: professional.kind,
       artifactRows: context.holdings.map((holding) => ({
         symbol: holding.symbol,
         name: holding.name,
         marketValue: holding.market_value_decimal,
         unrealizedPnl: holding.unrealized_pnl_decimal,
-        weightPercent: holding.weight_bps,
+        weightPercent: Number(holding.weight_bps) / 100,
       })),
     });
   } catch (error) {
@@ -241,7 +256,16 @@ function prepareRun(input: AdvisorRunInput) {
   const userMessageId = createId("message");
   const create = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES (?,?,?,?,?)").run(analysisId, input.userId, "conversation_agent", "running", now);
-    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,client_message_id,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?,?)").run(userMessageId, input.sessionId, "user", input.content, now, input.clientMessageId ?? null, analysisId, json({ outputMode }));
+    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,client_message_id,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?,?)").run(
+      userMessageId,
+      input.sessionId,
+      "user",
+      input.content,
+      now,
+      input.clientMessageId ?? null,
+      analysisId,
+      json({ outputMode, workflow: input.workflow ?? "CONVERSATION" }),
+    );
     db.prepare("UPDATE conversation_sessions SET updated_at=? WHERE id=? AND user_id=?").run(now, input.sessionId, input.userId);
   });
   create();
@@ -265,11 +289,11 @@ function loadAdvisorContext(userId: string): AdvisorContext {
   return { profile: profile ?? null, goals, snapshot: snapshot ?? null, holdings, instruments };
 }
 
-function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
+function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
-  persistAdvisorAnswerStream(input.analysisId, input.answer, input.recommendationStatus);
+  persistAdvisorAnswerStream(input.analysisId, input.answer, input.recommendationStatus, input.conversationKind);
   const result: ConversationAgentResult = {
     messageId: input.userMessageId,
     assistantMessageId,
@@ -278,6 +302,7 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     answer: input.answer,
     recommendationId,
     missingQuestions: input.missingQuestions,
+    conversationKind: input.conversationKind,
     dataQueryId: input.sourceQueryId ?? null,
     debateSuggestion: input.debateSuggestion,
   };
@@ -286,21 +311,39 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   const clarificationId = input.status === "waiting_for_user" ? createClarification(db, input) : null;
   if (clarificationId) result.clarificationId = clarificationId;
   const persist = db.transaction(() => {
-    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)").run(assistantMessageId, input.sessionId, "assistant", input.answer, now, input.analysisId, json({ provider: input.provider, recommendationId, outputMode: input.outputMode, compliance, debateSuggestion: input.debateSuggestion }));
+    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)").run(
+      assistantMessageId,
+      input.sessionId,
+      "assistant",
+      input.answer,
+      now,
+      input.analysisId,
+      json({
+        provider: input.provider,
+        recommendationId,
+        outputMode: input.outputMode,
+        conversationKind: input.conversationKind,
+        compliance,
+        debateSuggestion: input.debateSuggestion,
+      }),
+    );
     if (input.recommendation && recommendationId) persistRecommendation(db, input.userId, input.sessionId, input.analysisId, recommendationId, input.recommendation, input.recommendationStatus, now);
     db.prepare("UPDATE agent_runs SET status=?, completed_at=?, result_json=?, compliance_json=? WHERE id=? AND user_id=?").run(input.status, input.status === "waiting_for_user" ? null : now, json(result), json(compliance), input.analysisId, input.userId);
     db.prepare("UPDATE conversation_sessions SET updated_at=? WHERE id=? AND user_id=?").run(now, input.sessionId, input.userId);
   });
   persist();
   db.close();
-  if (input.status === "completed" && input.outputMode !== "SQL_ONLY") {
+  if ((input.status === "completed" || input.status === "blocked") && input.outputMode !== "SQL_ONLY") {
+    const artifactTitle = input.outputMode === "CHART"
+      ? "当前持仓分析图表"
+      : input.workflow === "DAILY_PORTFOLIO" ? "资产深度报告" : "当前持仓财务分析报告";
     const artifact = createArtifact({
       userId: input.userId,
       sessionId: input.sessionId,
       sourceMessageId: assistantMessageId,
       sourceQueryId: input.sourceQueryId,
       artifactType: input.outputMode === "CHART" ? "ECHARTS_OPTION" : "MARKDOWN",
-      title: input.outputMode === "CHART" ? "当前持仓分析图表" : "当前持仓财务分析报告",
+      title: artifactTitle,
       sourceRows: input.artifactRows,
       sourceColumns: input.artifactColumns ?? [
         { name: "symbol", type: "string" },
@@ -308,6 +351,9 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
         { name: "unrealizedPnl", type: "number" },
         { name: "weightPercent", type: "number" },
       ],
+      markdownContent: input.outputMode === "FINANCIAL_REPORT"
+        ? buildFinancialReportMarkdown(artifactTitle, input.answer, input.artifactRows)
+        : undefined,
     });
     result.artifact = { artifactId: artifact.artifactId, analysisId: artifact.analysisId, status: artifact.status, previewUrl: `/api/v1/generated-artifacts/${artifact.artifactId}/preview` };
     const resultDb = getDatabase();
@@ -315,12 +361,25 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     resultDb.close();
   }
   if (recommendationId) persistSseEvent({ analysisId: input.analysisId, type: "recommendation.created", payload: { recommendationId, status: input.recommendation?.compliance.status } });
-  if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, debateSuggestion: input.debateSuggestion } });
-  if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED", debateSuggestion: input.debateSuggestion } });
+  if (input.status === "completed" || input.status === "blocked" || input.status === "waiting_for_user") {
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "agent.completed",
+      payload: {
+        assistantMessageId,
+        recommendationId,
+        provider: input.provider,
+        conversationKind: input.conversationKind,
+        debateSuggestion: input.debateSuggestion,
+        ...(input.status === "blocked" ? { status: "BLOCKED" } : {}),
+        ...(input.status === "waiting_for_user" ? { status: "WAITING_FOR_USER" } : {}),
+      },
+    });
+  }
   return result;
 }
 
-function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED"): void {
+function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED", conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"): void {
   const lines = answer.split("\n").map((line) => line.trim()).filter(Boolean);
   if (lines.length === 0) return;
   persistSseEvent({
@@ -328,7 +387,11 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
     type: "advisor.thinking",
     payload: {
       phase: "final_summary",
-      title: status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",
+      title: conversationKind === "GUIDED_INTAKE"
+        ? "顾问正在梳理你的目标"
+        : conversationKind === "FINANCIAL_PLAN"
+          ? "顾问正在整理你的资金方案"
+          : status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",
       content: lines[0] ?? "",
     },
   });
@@ -395,4 +458,29 @@ function normalizeOutputMode(value: string | undefined): ConversationOutputMode 
 
 function defaultDisclaimer(): string {
   return "本结果用于投资研究和方案模拟，不构成收益承诺，不会创建真实订单，最终决策由用户自行作出。";
+}
+
+function buildFinancialReportMarkdown(title: string, answer: string, rows: Record<string, unknown>[]): string {
+  const body = answer.trim().startsWith("#")
+    ? answer.trim()
+    : `# ${title}\n\n## Agent 结论\n\n${answer.trim()}`;
+  const appendix = rows.length
+    ? [
+      "## 当前持仓附录",
+      "",
+      "| 标的 | 名称 | 市值 | 浮盈亏 | 权重 |",
+      "| --- | --- | ---: | ---: | ---: |",
+      ...rows.map((row) => `| ${markdownCell(row.symbol)} | ${markdownCell(row.name)} | ${markdownCell(row.marketValue)} | ${markdownCell(row.unrealizedPnl)} | ${markdownPercent(row.weightPercent)} |`),
+    ].join("\n")
+    : "## 当前持仓附录\n\n本次没有可用的持仓明细。";
+  return `${body}\n\n${appendix}\n\n---\n\n本报告由资产顾问 Agent 基于当前持仓生成，用于投资研究和方案模拟，不构成真实交易指令。`;
+}
+
+function markdownCell(value: unknown): string {
+  return String(value ?? "—").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function markdownPercent(value: unknown): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2).replace(/\.?0+$/u, "")}%` : markdownCell(value);
 }

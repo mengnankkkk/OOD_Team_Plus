@@ -24,7 +24,8 @@ import {
   ChevronDown,
   FileText,
   Gavel,
-  Image,
+  Fingerprint,
+  Image as ImageIcon,
   MoreHorizontal,
   MessageSquarePlus,
   Mic,
@@ -48,6 +49,10 @@ import {
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useSearchParams } from "@/features/frontend-migration/router";
+import { useNavigate } from "@/features/frontend-migration/router";
+import { recordRecommendationDecision } from "@/services/recommendationService";
+import { saveInjectiveProofDraft } from "@/lib/injective-proof";
 
 const SUGGESTIONS = [
   "我想三年后在杭州付首付，月入 2 万，帮我建档",
@@ -78,7 +83,7 @@ const ACTION_TOOLS = [
   },
   {
     label: "图像生成",
-    icon: Image,
+    icon: ImageIcon,
     prompt: "请帮我生成一张图像，画面要求是：",
   },
   {
@@ -98,6 +103,7 @@ type DebateSuggestionWithTarget = DebateSuggestion & { targetSymbol?: string | n
 type AdvisorMessageMeta = {
   profileUpdate?: Record<string, unknown>;
   trace?: AdvisorTraceModel;
+  recommendationId?: string;
   streaming?: boolean;
   streamStatus?: string;
   thinkingSteps?: Array<{ key: string; title: string; content: string }>;
@@ -118,6 +124,9 @@ const DEBATE_ROLES: Array<{ value: DebateRole; label: string; icon: typeof Sword
 
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
+  const [searchParams] = useSearchParams();
+  const requestedConversationId = searchParams.get("conversationId");
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
@@ -141,6 +150,7 @@ const AdvisorPage = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
+  const appliedPromptRef = useRef<string | null>(null);
 
   const visibleSessions = useMemo(() => {
     const keyword = sessionSearch.trim().toLowerCase();
@@ -280,13 +290,26 @@ const AdvisorPage = () => {
       const data = await refreshSessions();
       if (selectionVersion !== historyRequestRef.current) return;
       if (data && data.length) {
-        setActiveSessionId(data[0].sessionId);
-        await loadSessionMessages(data[0].sessionId);
+        const requested = requestedConversationId
+          ? data.find((session) => session.sessionId === requestedConversationId)
+          : null;
+        const next = requested ?? data[0];
+        setActiveSessionId(next.sessionId);
+        await loadSessionMessages(next.sessionId);
       } else {
         resetToNewSession();
       }
     })();
-  }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
+  }, [user, refreshSessions, loadSessionMessages, requestedConversationId, resetToNewSession]);
+
+  useEffect(() => {
+    const prompt = searchParams.get("prompt")?.trim();
+    if (!prompt || appliedPromptRef.current === prompt) return;
+    appliedPromptRef.current = prompt;
+    resetToNewSession();
+    setDraft(prompt.slice(0, 4_000));
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [resetToNewSession, searchParams]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -299,7 +322,7 @@ const AdvisorPage = () => {
         composerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
       });
     }
-  }, [messages, sending]);
+  }, [advisorMode, messages, sending]);
 
   const openSession = async (sessionId: string) => {
     if (sending) return;
@@ -453,6 +476,10 @@ const AdvisorPage = () => {
       );
       return;
     }
+    const relatedRecommendation = [...messages].reverse().find((message) => {
+      const recommendationId = (message.metadata as { recommendationId?: unknown } | undefined)?.recommendationId;
+      return message.role === "advisor" && typeof recommendationId === "string";
+    })?.metadata as { recommendationId?: string } | undefined;
     setSending(true);
     const currentSessionId = activeSessionId;
     const optimistic: OnboardingMessage = {
@@ -543,6 +570,9 @@ const AdvisorPage = () => {
         toast.success("已更新你的财务档案");
         await refreshProfile();
       }
+      if (relatedRecommendation?.recommendationId) {
+        void recordRecommendationDecision(user.id, relatedRecommendation.recommendationId, "FOLLOW_UP", { reason: text.trim() }).catch(() => undefined);
+      }
       void refreshSessions();
     } catch (err: any) {
       toast.error(err?.message ?? "顾问 Agent 暂时无响应");
@@ -596,9 +626,13 @@ const AdvisorPage = () => {
   const currentAdvisorMode = ADVISOR_MODES.find((mode) => mode.value === advisorMode) ?? ADVISOR_MODES[0];
 
   const emptyChatState = messages.length === 0 && !loadingHistory;
+  const composerDraft = draft;
+  const composerSending = sending;
+  const setComposerDraft = setDraft;
+  const handleComposerSend = handleSend;
 
   return (
-    <div className="flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
+    <div className="relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
       <aside className="hidden w-[302px] shrink-0 flex-col border-r border-neutral-200 bg-[#f7f7f7] text-neutral-950 md:flex">
         <div className="flex items-center justify-between px-3 pb-4 pt-3">
           <button
@@ -797,6 +831,29 @@ const AdvisorPage = () => {
                           </div>
                         ) : null}
                       </div>
+                      {msg.role === "advisor" && !meta.streaming && msg.content.trim() ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-4">
+                          {meta.recommendationId ? (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/recommendations/${meta.recommendationId}`)}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/75"
+                            >
+                              <FileText className="size-3.5" /> 查看建议卡
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              saveInjectiveProofDraft({ content: msg.content, sourceId: msg.id, sourceLabel: "Advisor AI 回答" });
+                              navigate("/injective");
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-700 transition-colors hover:text-cyan-500"
+                          >
+                            <Fingerprint className="size-3.5" /> 存入 Injective 证据链
+                          </button>
+                        </div>
+                      ) : null}
                       {msg.role === "advisor" && meta.trace ? <AdvisorTrace trace={meta.trace} /> : null}
                       {msg.role === "advisor" && meta.debateSuggestion?.recommended ? (
                         <DebateSuggestionCard suggestion={meta.debateSuggestion} onStart={startBattleFromSuggestion} />
@@ -830,15 +887,15 @@ const AdvisorPage = () => {
             >
               <textarea
                 ref={textareaRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                value={composerDraft}
+                onChange={(e) => setComposerDraft(e.target.value)}
                 placeholder="发消息…"
                 rows={2}
                 className="w-full min-h-[52px] resize-none border-0 bg-transparent px-2 py-1 text-sm text-neutral-900 tracking-wide caret-blue-600 outline-none placeholder:text-neutral-400"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
-                    handleSend();
+                    handleComposerSend();
                   }
                 }}
               />
@@ -906,7 +963,7 @@ const AdvisorPage = () => {
                     if (f) {
                       setAttachment(f);
                       if (pendingUploadPrompt) {
-                        setDraft((current) => current.trim() ? current : pendingUploadPrompt);
+                        setComposerDraft((current) => current.trim() ? current : pendingUploadPrompt);
                       }
                       toast.info(`已选择文件：${f.name}`);
                     }
@@ -945,7 +1002,7 @@ const AdvisorPage = () => {
                             setAdvisorMode(mode.value);
                             if (mode.value === "normal") setPendingDebateContext(null);
                           }}
-                          className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm focus:bg-neutral-100"
+                          className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm text-neutral-950 focus:bg-neutral-100 focus:text-neutral-950"
                         >
                           <span>{mode.label}</span>
                           {advisorMode === mode.value ? <Check className="size-4 text-blue-600" /> : null}
@@ -1007,9 +1064,9 @@ const AdvisorPage = () => {
                 <button
                   onClick={(ev) => {
                     ev.stopPropagation();
-                    handleSend();
+                    handleComposerSend();
                   }}
-                  disabled={sending || (!draft.trim() && !attachment)}
+                  disabled={composerSending || (!composerDraft.trim() && !attachment)}
                   className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="发送"
                 >

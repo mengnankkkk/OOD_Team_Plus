@@ -4,6 +4,21 @@ import type { AssetClass, Holding, HoldingInput } from "@/types/app/asset";
 type HoldingRow = Record<string, unknown>;
 type InstrumentSearchRow = { instrumentId: string; symbol: string; name: string; assetType: string; sector?: string | null; tradable: boolean };
 
+function priceStatus(row: HoldingRow): Holding["priceStatus"] {
+  if (row.current_price_decimal == null && row.current_price == null) return "fallback";
+  try {
+    const statuses = JSON.parse(String(row.price_sources_json ?? "[]")) as Array<{ source?: string; status?: string; symbols?: string[] }>;
+    const symbol = String(row.symbol ?? "");
+    const hasSuccessfulMarketSource = statuses.some((status) => status.status === "SUCCEEDED" && status.source?.startsWith("PANDADATA:"));
+    const usesFallback = statuses.some((status) => status.status === "FALLBACK"
+      && status.source === "PREVIOUS_SNAPSHOT"
+      && (!status.symbols || status.symbols.includes(symbol)));
+    return hasSuccessfulMarketSource && !usesFallback ? "market" : "fallback";
+  } catch {
+    return "fallback";
+  }
+}
+
 const toAssetClass = (value: unknown): AssetClass => {
   const normalized = String(value ?? "other").toLowerCase();
   if (normalized === "stock") return "stock";
@@ -31,6 +46,8 @@ const mapRow = (row: HoldingRow): Holding => {
     costBasis: cost,
     currentPrice: price,
     marketValue: Number(row.market_value_decimal ?? quantity * price),
+    priceAsOf: row.price_as_of == null ? null : String(row.price_as_of),
+    priceStatus: priceStatus(row),
     createdAt: String(row.created_at ?? new Date(0).toISOString()),
     updatedAt: String(row.updated_at ?? row.created_at ?? new Date(0).toISOString()),
   };
@@ -61,11 +78,14 @@ export async function listHoldings(_userId: string, opts?: { page?: number; page
 }
 
 export async function createHolding(_userId: string, input: HoldingInput): Promise<Holding> {
+  if (input.costBasis === undefined || !Number.isFinite(input.costBasis) || input.costBasis < 0) {
+    throw new Error("请填写有效的持仓成本价");
+  }
   const instrument = await resolveInstrument(input);
   const row = await apiPost<HoldingRow>("/api/v1/holdings", {
     instrumentId: instrument.instrumentId,
     quantity: String(input.quantity),
-    cost: String(input.costBasis ?? input.currentPrice),
+    cost: String(input.costBasis),
     portfolioId: input.accountId ?? "portfolio-demo",
   });
   return mapRow({ ...row, symbol: instrument.symbol, name: instrument.name, asset_type: instrument.assetType, sector: instrument.sector });
@@ -86,6 +106,10 @@ export async function deleteHolding(_userId: string, id: string): Promise<void> 
   await apiDelete(`/api/v1/holdings/${id}`);
 }
 
+export async function refreshHoldingPrices(portfolioId = "portfolio-demo"): Promise<void> {
+  await apiPost("/api/v1/portfolio-analysis/refresh", { portfolioId, forceRefresh: true });
+}
+
 export async function bulkCreateHoldings(userId: string, inputs: HoldingInput[]): Promise<number> {
   for (const input of inputs) await createHolding(userId, input);
   return inputs.length;
@@ -99,6 +123,5 @@ export async function parseHoldingsCsv(csvText: string): Promise<HoldingInput[]>
     assetClass: toAssetClass(candidate.assetType),
     quantity: Number(candidate.quantity ?? 0),
     costBasis: Number(candidate.averageCost ?? 0),
-    currentPrice: Number(candidate.averageCost ?? 0),
   }));
 }

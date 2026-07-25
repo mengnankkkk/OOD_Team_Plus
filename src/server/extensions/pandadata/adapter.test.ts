@@ -9,8 +9,12 @@ import { callPandaData } from "@/server/extensions/pandadata/adapter";
 describe("callPandaData", () => {
   beforeEach(() => {
     execFile.mockReset();
+    vi.stubEnv("PANDADATA_USERNAME", "8613800000000");
+    vi.stubEnv("PANDADATA_PASSWORD", "test-password");
     vi.stubEnv("PANDADATA_BASE_URL", "https://pandadata.example.test");
     vi.stubEnv("JAVA_SERVICE_BASE_URL", "");
+    vi.stubEnv("DEFAULT_USERNAME", "");
+    vi.stubEnv("DEFAULT_PASSWORD", "");
   });
 
   afterEach(() => vi.unstubAllEnvs());
@@ -44,6 +48,22 @@ describe("callPandaData", () => {
     expect(execFile.mock.calls[0]?.[1]?.[0]).toMatch(/call_api\.py$/u);
     expect(execFile).toHaveBeenNthCalledWith(1, "python-test", expect.arrayContaining(["--dry-run"]), expect.any(Object));
     expect(execFile).toHaveBeenNthCalledWith(2, "python-test", expect.arrayContaining(["--no-setup"]), expect.any(Object));
+  });
+
+  it("normalizes the scalar latest-trading-day response", async () => {
+    execFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true, dry_run: true }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: { type: "str", data: "20260724" } }) });
+
+    const result = await callPandaData("get_last_trade_date", {
+      exchange: "US",
+    }, { pythonPath: "python-test" });
+
+    expect(result).toMatchObject({
+      data: [{ date: "20260724" }],
+      fresh: true,
+      asOfDate: "2026-07-24",
+    });
   });
 
   it("does not treat successful dry-run as live data", async () => {

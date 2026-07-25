@@ -1,4 +1,6 @@
 import { apiGet, apiPost } from "@/features/frontend-migration/api";
+import { mapEvidencePack } from "@/services/recommendationEvidenceMapper";
+import { sendAdvisorMessageStream } from "@/services/advisorService";
 import type { AgentRun, EvidencePack, EvidenceRow, Recommendation, RecommendationAction } from "@/types/app/recommendation";
 
 type ApiRecommendation = Record<string, unknown>;
@@ -35,15 +37,21 @@ const mapRecommendation = (row: ApiRecommendation): Recommendation => {
     driver: evidenceRows(reasons, "支持证据")[0]?.value ?? String(row.summary ?? ""),
     evidence: evidenceRows(reasons, "支持证据"),
     counterEvidence: evidenceRows(row.counterEvidence, "反方证据"),
-    effectiveUntil: String(row.expiresAt ?? row.updatedAt ?? new Date().toISOString()),
+    effectiveUntil: displayDate(row.expiresAt ?? row.updatedAt ?? new Date().toISOString()),
     expireCondition: String(row.invalidation ?? "数据或投资逻辑变化时失效"),
     riskImpact: { risks: row.risks ?? [] },
     complianceStatus: String(compliance.status ?? "PENDING").toUpperCase() === "PASSED" ? "approved" : String(compliance.status ?? "").toUpperCase() === "BLOCKED" ? "blocked" : "pending",
     complianceNotes: Array.isArray(compliance.reasons) ? compliance.reasons.join("；") : null,
-    status: (["active", "simulated", "revoked", "expired", "rejected"].includes(status) ? status : "active") as Recommendation["status"],
+    status: (["active", "degraded", "blocked", "simulated", "revoked", "expired", "rejected"].includes(status) ? status : "active") as Recommendation["status"],
     createdAt: String(row.createdAt ?? new Date(0).toISOString()),
   };
 };
+
+function displayDate(value: unknown): string {
+  const text = String(value ?? "");
+  const match = text.match(/^\d{4}-\d{2}-\d{2}/u);
+  return match?.[0] ?? text;
+}
 
 export async function listRecommendations(_userId: string, opts?: { statuses?: string[]; limit?: number }): Promise<Recommendation[]> {
   const result = await apiGet<{ items: ApiRecommendation[] }>(`/api/v1/recommendations?limit=${opts?.limit ?? 20}`);
@@ -56,16 +64,52 @@ export async function getRecommendation(_userId: string, id: string): Promise<Re
   catch { return null; }
 }
 
-export async function updateRecommendationStatus(_userId: string, id: string, status: string): Promise<void> {
-  const action = status === "rejected" ? "REJECT" : status === "simulated" ? "ACCEPT" : "DEFER";
-  await apiPost(`/api/v1/recommendations/${id}/decisions`, { action });
+export type RecommendationDecisionAction = "ACCEPT" | "REJECT" | "DEFER" | "REVOKE" | "FOLLOW_UP" | "VIEWED" | "COMMENT";
+
+export async function recordRecommendationDecision(
+  _userId: string,
+  id: string,
+  action: RecommendationDecisionAction,
+  details: { reason?: string; note?: string } = {},
+): Promise<void> {
+  await apiPost(`/api/v1/recommendations/${id}/decisions`, { action, ...details });
 }
 
-export async function listAgentRuns(userId: string, limit = 10): Promise<AgentRun[]> {
-  const recommendations = await listRecommendations(userId, { limit });
-  return recommendations.filter((item) => item.agentRunId).map((item) => ({
-    id: item.agentRunId!, triggerType: "advisor", status: "succeeded", plannerSummary: item.headline,
-    agentStates: {}, startedAt: item.createdAt, completedAt: item.createdAt,
+export async function updateRecommendationStatus(
+  userId: string,
+  id: string,
+  status: string,
+  details: { reason?: string; note?: string } = {},
+): Promise<void> {
+  const action = status === "rejected" ? "REJECT" : status === "simulated" ? "ACCEPT" : status === "active" ? "REVOKE" : "DEFER";
+  await recordRecommendationDecision(userId, id, action, details);
+}
+
+export async function listAgentRuns(_userId: string, limit = 10): Promise<AgentRun[]> {
+  const result = await apiGet<{ items: Array<Record<string, unknown>> }>(`/api/v1/analyses?limit=${limit}`);
+  return result.items.map((item) => ({
+    id: String(item.id ?? item.analysisId),
+    triggerType: String(item.type ?? "analysis").toLowerCase(),
+    type: String(item.type ?? "ANALYSIS"),
+    agent: item.agent == null ? null : String(item.agent),
+    status: mapRunStatus(item.status),
+    plannerSummary: item.summary == null ? null : String(item.summary),
+    agentStates: {},
+    startedAt: String(item.startedAt ?? item.createdAt ?? new Date(0).toISOString()),
+    completedAt: item.completedAt == null ? null : String(item.completedAt),
+    recommendationId: item.recommendationId == null ? null : String(item.recommendationId),
+    recommendationStatus: item.recommendationStatus == null ? null : String(item.recommendationStatus),
+    evidenceCount: Number(item.evidenceCount ?? 0),
+    missingEvidenceCount: Number(item.missingEvidenceCount ?? 0),
+    toolCount: Number(item.toolCount ?? 0),
+    skillCount: Number(item.skillCount ?? 0),
+    canRetry: Boolean(item.canRetry),
+    failure: item.failure && typeof item.failure === "object"
+      ? {
+          code: (item.failure as Record<string, unknown>).code == null ? null : String((item.failure as Record<string, unknown>).code),
+          message: (item.failure as Record<string, unknown>).message == null ? null : String((item.failure as Record<string, unknown>).message),
+        }
+      : null,
   }));
 }
 
@@ -74,41 +118,55 @@ export async function getEvidenceForRecommendation(_userId: string, recId: strin
   const analysisId = rec.analysisId == null ? null : String(rec.analysisId);
   if (!analysisId) return null;
   const pack = await apiGet<Record<string, unknown>>(`/api/v1/analyses/${analysisId}/evidence-pack`);
-  const events = Array.isArray(pack.events) ? pack.events : [];
-  return {
-    id: `evidence-${recId}`,
-    recommendationId: recId,
-    agentRunId: analysisId,
-    dataSnapshots: Array.isArray(pack.evidence) ? pack.evidence : [],
-    skillRuns: [],
-    workflowDag: { nodes: (events as Array<Record<string, unknown>>).map((event) => ({ id: String(event.id), label: String(event.type), status: "done", durationMs: 0, summary: "" })), edges: [] },
-    researchMetrics: (pack.result as Record<string, unknown>) ?? {},
-    simulationLog: [],
-    riskVerdicts: [],
-    createdAt: String((pack.analysis as Record<string, unknown> | undefined)?.createdAt ?? new Date().toISOString()),
-  };
+  return mapEvidencePack(pack, analysisId, recId);
 }
 
 export async function getEvidenceForAnalysis(analysisId: string): Promise<EvidencePack | null> {
-  try {
-    const pack = await apiGet<Record<string, unknown>>(`/api/v1/analyses/${analysisId}/evidence-pack`);
-    const events = Array.isArray(pack.events) ? pack.events : [];
-    const recommendations = Array.isArray(pack.recommendations) ? pack.recommendations as Array<Record<string, unknown>> : [];
-    return {
-      id: `evidence-${analysisId}`,
-      recommendationId: recommendations[0]?.id == null ? null : String(recommendations[0].id),
-      agentRunId: analysisId,
-      dataSnapshots: Array.isArray(pack.evidence) ? pack.evidence : [],
-      skillRuns: [],
-      workflowDag: { nodes: (events as Array<Record<string, unknown>>).map((event) => ({ id: String(event.id), label: String(event.type), status: "done", durationMs: 0, summary: "" })), edges: [] },
-      researchMetrics: (pack.result as Record<string, unknown>) ?? {}, simulationLog: [], riskVerdicts: [],
-      createdAt: String((pack.analysis as Record<string, unknown> | undefined)?.createdAt ?? new Date().toISOString()),
-    };
-  } catch { return null; }
+  const pack = await apiGet<Record<string, unknown>>(`/api/v1/analyses/${analysisId}/evidence-pack`);
+  return mapEvidencePack(pack, analysisId);
 }
 
-export async function runAgentWorkflow(_trigger = "manual") {
+function mapRunStatus(value: unknown): AgentRun["status"] {
+  const status = String(value ?? "").toUpperCase();
+  if (status === "RUNNING" || status === "QUEUED" || status === "PENDING") return "running";
+  if (status === "FAILED" || status === "INTERRUPTED") return "failed";
+  if (status === "BLOCKED" || status === "WAITING_FOR_USER") return "blocked";
+  if (status === "CANCELLED") return "cancelled";
+  return "succeeded";
+}
+
+type AgentWorkflowObserver = {
+  onProgress?: (message: string) => void;
+};
+
+const DAILY_PORTFOLIO_PROMPT = [
+  "请生成今日组合建议，并运行完整 Agent 回路。",
+  "读取我的最新用户画像、目标、现金与全部真实持仓，诊断组合健康度、集中度、浮盈亏、最大回撤约束和压力情景。",
+  "数据与研究 Agent 应核验可用的 PandaData 市场证据；组合、风险、建议与合规 Agent 必须分别给出结论。",
+  "最终形成一条组合级可执行建议，包含建议动作、执行节奏、支持证据、反方证据、主要风险、替代方案和失效条件。",
+  "只用于研究和模拟，不创建真实订单。",
+].join("\n");
+
+export async function runAgentWorkflow(_trigger = "manual", observer: AgentWorkflowObserver = {}) {
   void _trigger;
-  const result = await apiPost<Record<string, unknown>>("/api/v1/analyses", { type: "PORTFOLIO_DIAGNOSTIC", input: { question: "分析当前组合健康度、风险与可执行建议" } });
-  return { runId: String(result.analysisId ?? result.id), recommendations: [], signals: [], trace: [], agentStates: {} };
+  const result = await sendAdvisorMessageStream(
+    DAILY_PORTFOLIO_PROMPT,
+    null,
+    "SQL_ONLY",
+    { onProgress: observer.onProgress },
+    "DAILY_PORTFOLIO",
+  );
+  const recommendation = result.recommendationId
+    ? await getRecommendation("", result.recommendationId)
+    : null;
+  return {
+    runId: result.analysisId ?? "",
+    recommendations: recommendation ? [recommendation] : [],
+    signals: [],
+    trace: result.trace ? [result.trace] : [],
+    agentStates: {},
+    sessionId: result.sessionId,
+    clarificationId: result.clarificationId,
+    reply: result.reply,
+  };
 }

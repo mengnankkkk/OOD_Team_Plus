@@ -38,7 +38,9 @@ const WatchlistPage = () => {
     const finalSymbol = matched?.code ?? normalizeAShareCode(symbol.trim());
     if (!finalName) { toast.error("请选择或填写标的名称"); return; }
     try {
-      await addWatchlistItem({ name: finalName, symbol: finalSymbol || finalName, reason, plannedHorizon: horizon });
+      const drawdownThresholdPct = Number(threshold);
+      if (!Number.isFinite(drawdownThresholdPct) || drawdownThresholdPct < 1 || drawdownThresholdPct > 90) { toast.error("回撤阈值需在 1% 到 90% 之间"); return; }
+      await addWatchlistItem({ name: finalName, symbol: finalSymbol || finalName, reason, plannedHorizon: horizon, drawdownThresholdPct });
       toast.success("已加入持仓观测");
       setOpen(false); setName(""); setSymbol(""); setReason(""); setThreshold("15"); setHorizon(""); setGoalId("__none__");
       qc.invalidateQueries({ queryKey: ["watchlist"] });
@@ -102,7 +104,7 @@ const WatchlistPage = () => {
               {w.reason && <p className="mt-4 text-sm text-muted-foreground">{w.reason}</p>}
               <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                 {w.planned_horizon && <span className="rounded border border-border px-2 py-0.5">持有 {w.planned_horizon}</span>}
-                {w.drawdown_threshold && <span className="rounded border border-border px-2 py-0.5">回撤 &gt; {w.drawdown_threshold}% 提醒</span>}
+                {w.drawdown_threshold && <span className="rounded border border-border px-2 py-0.5">近 20 日回撤 ≥ {w.drawdown_threshold}% 提醒</span>}
               </div>
               <div className="mt-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">Agent 将持续关注：估值、事件、组合关联度、行业拥挤度</div>
             </li>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, CheckCircle2, FileText, MessageSquare, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileText, Fingerprint, MessageSquare, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "@/features/frontend-migration/router";
 import { apiMutation, shortDate } from "@/features/workbench/lib/api";
 import { ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { saveInjectiveProofDraft } from "@/lib/injective-proof";
 
 type Conversation = { id: string; title: string; status: "active" | "archived"; updated_at: string; last_message_preview?: string | null; row_version?: number };
 type ConversationDetail = Conversation & { messages: Array<{ id: string; role: string; content: string; created_at: string }> };
@@ -23,6 +24,11 @@ type ResearchSummary = { id: string; query_text: string; status: string; created
 type ResearchResult = { id: string; title: string | null; snippet: string | null; url: string | null; adapter: string; source_name?: string | null };
 type ResearchSourceStatus = { adapter: string; status: string; result_count: number; error: { message?: string } | null };
 type NotificationPreference = { mode: "IMPORTANT_ONLY" | "DAILY_DIGEST" | "MUTED"; quietHoursStart: string | null; quietHoursEnd: string | null; version: number };
+const NOTIFICATION_MODE_LABELS: Record<NotificationPreference["mode"], string> = {
+  IMPORTANT_ONLY: "仅重要提醒",
+  DAILY_DIGEST: "每日汇总",
+  MUTED: "暂停所有提醒",
+};
 
 function Shell({ title, eyebrow, children, actions }: { title: string; eyebrow: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -306,9 +312,13 @@ export function GeneratedArtifactDetailPage() {
   if (detail.loading) return <LoadingBlock label="正在读取产物…" />;
   if (detail.error) return <ErrorBlock message={detail.error} retry={detail.reload} />;
   if (!detail.data) return <Empty title="产物不存在" detail="请从查询结果重新进入。" />;
+  function openInjectiveProof() {
+    saveInjectiveProofDraft({ content, sourceId: id, sourceLabel: detail.data?.title ?? "AI 生成报告" });
+    navigate("/injective");
+  }
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="ARTIFACT" title={detail.data.title} description="这里提供预览、修改和删除。" actions={<div className="flex gap-2"><Button variant="outline" onClick={() => setEditing((v) => !v)}><FileText className="size-4" />{editing ? "取消编辑" : "编辑"}</Button><Button variant="outline" onClick={() => void remove()}><Trash2 className="size-4" />删除</Button></div>} />
+      <PageHeading eyebrow="ARTIFACT" title={detail.data.title} description="这里提供预览、修改、存证和删除。" actions={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={openInjectiveProof} disabled={!content.trim()}><Fingerprint className="size-4" />Injective 存证</Button><Button variant="outline" onClick={() => setEditing((v) => !v)}><FileText className="size-4" />{editing ? "取消编辑" : "编辑"}</Button><Button variant="outline" onClick={() => void remove()}><Trash2 className="size-4" />删除</Button></div>} />
       <Shell title="安全预览" eyebrow="PREVIEW">{editing ? <div className="space-y-3"><Input value={title} onChange={(e) => setTitle(e.target.value)} /><Textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18} /><Button onClick={() => void save()}><CheckCircle2 className="size-4" />保存为新版本</Button></div> : preview.loading ? <LoadingBlock label="正在生成预览…" /> : preview.error ? <ErrorBlock message={preview.error} retry={preview.reload} /> : preview.data?.markdown ? <pre className="whitespace-pre-wrap rounded-lg border border-border bg-muted p-4 text-sm leading-7">{preview.data.markdown}</pre> : preview.data?.option ? <pre className="overflow-auto rounded-lg border border-border bg-muted p-4 text-xs">{JSON.stringify(preview.data.option, null, 2)}</pre> : <Empty title="无预览" detail="产物内容为空或不可预览。" />}</Shell>
     </div>
   );
@@ -375,7 +385,7 @@ export function NotificationPreferencePage() {
       toast.error(error instanceof Error ? error.message : "保存失败");
     }
   }
-  return <div className="page-stack"><PageHeading eyebrow="NOTIFICATIONS" title="通知偏好" description="设置提醒频率和静默时段。" />{pref.loading ? <LoadingBlock label="正在读取偏好…" /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title="偏好设置" eyebrow="PREFERENCE"><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>模式</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="IMPORTANT_ONLY">IMPORTANT_ONLY</SelectItem><SelectItem value="DAILY_DIGEST">DAILY_DIGEST</SelectItem><SelectItem value="MUTED">MUTED</SelectItem></SelectContent></Select></div><div className="space-y-2"><Label>静默开始</Label><Input value={start} onChange={(e) => setStart(e.target.value)} placeholder="22:00" /></div><div className="space-y-2"><Label>静默结束</Label><Input value={end} onChange={(e) => setEnd(e.target.value)} placeholder="07:00" /></div></div><Button className="mt-4" onClick={() => void save()}>保存偏好</Button></Shell>}</div>;
+  return <div className="page-stack"><PageHeading eyebrow="NOTIFICATIONS" title="通知偏好" description="设置提醒频率和静默时段。" />{pref.loading ? <LoadingBlock label="正在读取偏好…" /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title="偏好设置" eyebrow="PREFERENCE"><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>提醒方式</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(NOTIFICATION_MODE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>静默开始</Label><Input value={start} onChange={(e) => setStart(e.target.value)} placeholder="22:00" /></div><div className="space-y-2"><Label>静默结束</Label><Input value={end} onChange={(e) => setEnd(e.target.value)} placeholder="07:00" /></div></div><Button className="mt-4" onClick={() => void save()}>保存偏好</Button></Shell>}</div>;
 }
 
 export function DemoBootstrapPage() {

@@ -5,7 +5,11 @@ import { formatRecommendation } from "@/server/extensions/advisor/recommendation
 import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
 import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, json, meta } from "@/server/http/context";
 
-const Schema = z.object({ action: z.enum(["ACCEPT", "REJECT", "DEFER"]), reason: z.string().max(1000).optional(), note: z.string().max(1000).optional() });
+const Schema = z.object({
+  action: z.enum(["ACCEPT", "REJECT", "DEFER", "REVOKE", "FOLLOW_UP", "VIEWED", "COMMENT"]),
+  reason: z.string().trim().max(1000).optional(),
+  note: z.string().trim().max(1000).optional(),
+});
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,15 +28,55 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     db.close();
     return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation not found" } }, { status: 404 });
   }
-  if (recommendation.expires_at && Date.parse(String(recommendation.expires_at)) <= Date.now()) {
+  if (parsed.data.action !== "REVOKE" && recommendation.expires_at && Date.parse(String(recommendation.expires_at)) <= Date.now()) {
     db.close();
     return NextResponse.json({ error: { code: "DECISION_CONFLICT", message: "Recommendation has expired" } }, { status: 409 });
   }
+  const currentStatus = String(recommendation.status ?? "ACTIVE").toUpperCase();
+  if (parsed.data.action === "ACCEPT" && currentStatus === "BLOCKED") {
+    db.close();
+    return NextResponse.json({ error: { code: "RECOMMENDATION_BLOCKED", message: "该建议已被风险或合规检查阻断，不能模拟采纳。" } }, { status: 409 });
+  }
+  if (parsed.data.action === "ACCEPT" && !["ACTIVE", "DEGRADED"].includes(currentStatus)) {
+    db.close();
+    return NextResponse.json({ error: { code: "DECISION_CONFLICT", message: "当前建议状态不能再次模拟采纳。" } }, { status: 409 });
+  }
+  if (parsed.data.action === "REVOKE" && currentStatus !== "SIMULATED") {
+    db.close();
+    return NextResponse.json({ error: { code: "DECISION_CONFLICT", message: "Only a simulated recommendation can be revoked" } }, { status: 409 });
+  }
   const decisionId = createId("decision");
   const now = isoNow();
-  db.prepare("INSERT INTO decision_logs (id,user_id,conversation_id,action,recommendation_json,decision,created_at) VALUES (?,?,?,?,?,?,?)").run(decisionId, userId, recommendation.conversation_id ?? null, parsed.data.action, json({ recommendation: formatRecommendation(recommendation), reason: parsed.data.reason ?? null, note: parsed.data.note ?? null }), parsed.data.action, now);
+  const transition = decisionTransition(parsed.data.action, currentStatus);
+  const snapshot = formatRecommendation({ ...recommendation, status: transition.recommendationStatus, updated_at: now });
+  db.transaction(() => {
+    if (transition.shouldUpdateRecommendation) db.prepare("UPDATE recommendations SET status=?,updated_at=? WHERE id=? AND user_id=?").run(transition.recommendationStatus, now, id, userId);
+    db.prepare("INSERT INTO decision_logs (id,user_id,conversation_id,action,recommendation_json,decision,created_at) VALUES (?,?,?,?,?,?,?)").run(
+      decisionId,
+      userId,
+      recommendation.conversation_id ?? null,
+      parsed.data.action,
+      json({
+        recommendationId: id,
+        analysisId: recommendation.analysis_id ?? null,
+        recommendation: snapshot,
+        reason: parsed.data.reason ?? null,
+        note: parsed.data.note ?? null,
+      }),
+      parsed.data.action,
+      now,
+    );
+  })();
   db.close();
-  const payload = { data: { decisionId, recommendationId: id, action: parsed.data.action, ordersCreated: false, createdAt: now }, meta: meta() };
+  const payload = { data: { decisionId, recommendationId: id, analysisId: recommendation.analysis_id ?? null, action: transition.responseAction, recommendationStatus: transition.recommendationStatus, ordersCreated: false, createdAt: now }, meta: meta() };
   await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
   return NextResponse.json(payload, { status: 201 });
+}
+
+function decisionTransition(action: z.infer<typeof Schema>["action"], currentStatus: string) {
+  if (action === "ACCEPT") return { responseAction: "SIMULATED", recommendationStatus: "SIMULATED", shouldUpdateRecommendation: true };
+  if (action === "REJECT") return { responseAction: "REJECTED", recommendationStatus: "REJECTED", shouldUpdateRecommendation: true };
+  if (action === "REVOKE") return { responseAction: "REVOKED", recommendationStatus: "ACTIVE", shouldUpdateRecommendation: true };
+  if (action === "DEFER") return { responseAction: "LATER", recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
+  return { responseAction: action, recommendationStatus: currentStatus, shouldUpdateRecommendation: false };
 }

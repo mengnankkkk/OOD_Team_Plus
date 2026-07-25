@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
+import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker";
+import type { InstrumentSearchResult } from "@/components/desktop/AShareInstrumentPicker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiGet, apiPost } from "@/features/frontend-migration/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useHoldings, useHoldingsInvalidator } from "@/hooks/useHoldings";
 import { horizonFromAnswer, maxDrawdownFromAnswer } from "@/lib/risk-assessment";
 import { toast } from "sonner";
 
@@ -40,6 +43,17 @@ type OnboardingGoal = {
   assetPreference: "STOCK" | "SECTOR" | "INDEX";
 };
 
+type OnboardingHolding = {
+  id: string;
+  name: string;
+  symbol: string;
+  assetType: string;
+  market?: string;
+  sector?: string | null;
+  quantity: string;
+  cost: string;
+};
+
 const initialProfile: OnboardingProfile = {
   displayName: "",
   age: "",
@@ -61,6 +75,10 @@ const initialGoal: OnboardingGoal = {
   assetPreference: "INDEX",
 };
 
+function emptyHolding(id: string): OnboardingHolding {
+  return { id, name: "", symbol: "", assetType: "stock", quantity: "", cost: "" };
+}
+
 const selectClass = "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20";
 
 function normalizeMoney(value: string): string {
@@ -71,6 +89,16 @@ function isValidMoney(value: string, options: { allowZero?: boolean } = {}): boo
   const normalized = normalizeMoney(value);
   if (!/^\d+(\.\d{1,2})?$/u.test(normalized)) return false;
   return options.allowZero ? Number(normalized) >= 0 : Number(normalized) > 0;
+}
+
+function instrumentTypeForResolve(value: string): "stock" | "fund" | "index" | "bond" | "cash" | "other" {
+  const type = value.toLowerCase();
+  if (type.includes("index") || type.includes("etf")) return "index";
+  if (type.includes("fund")) return "fund";
+  if (type.includes("bond")) return "bond";
+  if (type.includes("cash") || type.includes("money_market")) return "cash";
+  if (type.includes("stock")) return "stock";
+  return "other";
 }
 
 function Field({ label, htmlFor, required, children }: { label: string; htmlFor?: string; required?: boolean; children: React.ReactNode }) {
@@ -84,6 +112,10 @@ function Field({ label, htmlFor, required, children }: { label: string; htmlFor?
 
 export default function OnboardingGate() {
   const { user, profile, loading, refreshProfile } = useAuth();
+  const { data: savedHoldings = [], isLoading: holdingsLoading } = useHoldings();
+  const invalidateHoldings = useHoldingsInvalidator();
+  const holdingIdRef = useRef(2);
+  const refreshedUserIdRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -91,12 +123,26 @@ export default function OnboardingGate() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [profileForm, setProfileForm] = useState<OnboardingProfile>(initialProfile);
   const [goalForm, setGoalForm] = useState<OnboardingGoal>(initialGoal);
+  const [portfolioForm, setPortfolioForm] = useState<OnboardingHolding[]>([emptyHolding("holding-1")]);
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const needsOnboarding = Boolean(user && !loading && profile && !profile.onboardingCompleted);
+  const profileComplete = Boolean(profile?.onboardingCompleted);
+  const needsOnboarding = Boolean(
+    user
+    && !loading
+    && !holdingsLoading
+    && profile
+    && (!profileComplete || savedHoldings.length === 0),
+  );
   const currentQuestion = questions[questionIndex];
-  const progress = step === 0 ? ((questionIndex + 1) / Math.max(questions.length, 1)) * 100 : step === 1 ? 66 : 100;
+  const progress = step === 0 ? ((questionIndex + 1) / Math.max(questions.length, 1)) * 25 : (step + 1) * 25;
+
+  useEffect(() => {
+    if (!user || refreshedUserIdRef.current === user.id) return;
+    refreshedUserIdRef.current = user.id;
+    void refreshProfile().catch(() => undefined);
+  }, [refreshProfile, user]);
 
   useEffect(() => {
     if (!needsOnboarding) {
@@ -104,16 +150,17 @@ export default function OnboardingGate() {
       return;
     }
     setOpen(true);
-  }, [needsOnboarding]);
+    if (profileComplete && savedHoldings.length === 0) setStep(3);
+  }, [needsOnboarding, profileComplete, savedHoldings.length]);
 
   useEffect(() => {
-    if (!open || questions.length > 0) return;
+    if (!open || profileComplete || questions.length > 0) return;
     setLoadingQuestions(true);
     void apiGet<{ version: number; questions: Question[] }>("/api/v1/risk-questionnaire")
       .then((result) => setQuestions(result.questions))
       .catch((error) => toast.error(error instanceof Error ? error.message : "问卷加载失败"))
       .finally(() => setLoadingQuestions(false));
-  }, [open, questions.length]);
+  }, [open, profileComplete, questions.length]);
 
   useEffect(() => {
     const displayName = user?.user_metadata?.display_name;
@@ -136,7 +183,8 @@ export default function OnboardingGate() {
   const stepTitle = useMemo(() => {
     if (step === 0) return "先了解你的风险承受能力";
     if (step === 1) return "补充你的财务基础";
-    return "设置第一个理财目标";
+    if (step === 2) return "设置第一个理财目标";
+    return "录入你的当前组合";
   }, [step]);
 
   const updateProfile = <K extends keyof OnboardingProfile>(key: K, value: OnboardingProfile[K]) => {
@@ -145,6 +193,19 @@ export default function OnboardingGate() {
 
   const updateGoal = <K extends keyof OnboardingGoal>(key: K, value: OnboardingGoal[K]) => {
     setGoalForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateHolding = (id: string, changes: Partial<OnboardingHolding>) => {
+    setPortfolioForm((current) => current.map((holding) => holding.id === id ? { ...holding, ...changes } : holding));
+  };
+
+  const addHolding = () => {
+    const id = `holding-${holdingIdRef.current++}`;
+    setPortfolioForm((current) => [...current, emptyHolding(id)]);
+  };
+
+  const removeHolding = (id: string) => {
+    setPortfolioForm((current) => current.length > 1 ? current.filter((holding) => holding.id !== id) : current);
   };
 
   const nextQuestion = () => {
@@ -218,11 +279,44 @@ export default function OnboardingGate() {
     return true;
   };
 
+  const validatePortfolio = () => {
+    if (portfolioForm.some((holding) => !holding.name.trim() || !holding.symbol.trim() || !holding.quantity.trim() || !holding.cost.trim())) {
+      toast.error("请完整填写每笔持仓的标的、数量和成本价");
+      return false;
+    }
+    if (portfolioForm.some((holding) => !isValidMoney(holding.quantity) || !isValidMoney(holding.cost, { allowZero: true }))) {
+      toast.error("持有数量必须大于 0，持仓成本价不能为负数");
+      return false;
+    }
+    const symbols = portfolioForm.map((holding) => holding.symbol.trim().toUpperCase());
+    if (new Set(symbols).size !== symbols.length) {
+      toast.error("同一标的请合并为一笔持仓");
+      return false;
+    }
+    return true;
+  };
+
   const submit = async () => {
-    if (!validateGoal() || !user) return;
+    if (!user || !validatePortfolio()) return;
+    if (!profileComplete && (!validateProfile() || !validateGoal())) return;
     setSaving(true);
     try {
-      await apiPost("/api/v1/onboarding/complete", {
+      const resolvedHoldings = await Promise.all(portfolioForm.map(async (holding) => {
+        const instrument = await apiPost<InstrumentSearchResult>("/api/v1/instruments/resolve", {
+          symbol: holding.symbol.trim(),
+          name: holding.name.trim(),
+          assetType: instrumentTypeForResolve(holding.assetType),
+          market: holding.market,
+          sector: holding.sector ?? undefined,
+        });
+        return {
+          instrumentId: instrument.instrumentId,
+          quantity: normalizeMoney(holding.quantity),
+          cost: normalizeMoney(holding.cost),
+        };
+      }));
+      const portfolio = { id: "portfolio-demo", holdings: resolvedHoldings };
+      await apiPost("/api/v1/onboarding/complete", profileComplete ? { portfolio } : {
         answers,
         profile: {
           displayName: profileForm.displayName.trim() || undefined,
@@ -243,10 +337,11 @@ export default function OnboardingGate() {
           priority: goalForm.priority,
           assetPreference: goalForm.assetPreference,
         },
+        portfolio,
       });
-      await refreshProfile();
+      await Promise.all([refreshProfile(), invalidateHoldings()]);
       setOpen(false);
-      toast.success("建档完成，接下来 Agent 会按你的目标和风险等级工作");
+      toast.success(profileComplete ? "当前组合已补齐，顾问可以直接开始诊断" : "画像与组合已完成，接下来 Agent 会按你的真实情况工作");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "建档失败，请稍后重试");
     } finally {
@@ -270,18 +365,18 @@ export default function OnboardingGate() {
             <div>
               <DialogTitle className="text-lg sm:text-xl">完成你的专属理财建档</DialogTitle>
               <DialogDescription className="mt-1.5 max-w-2xl leading-5 sm:mt-2 sm:leading-6">
-                为了避免给出不适合你的建议，需要先完成一次适当性测评和一个目标设置。问卷不会决定收益，只用于控制建议的风险边界。
+                为了避免给出不适合你的建议，需要把风险画像、投资目标和当前持仓一次填完整。问卷不会决定收益，只用于控制建议的风险边界。
               </DialogDescription>
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2 sm:mt-6">
-            {["风险测评", "财务档案", "投资目标"].map((label, index) => (
+            {["风险测评", "财务档案", "投资目标", "当前组合"].map((label, index) => (
               <div key={label} className="flex min-w-0 flex-1 items-center gap-2">
                 <div className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold ${step > index ? "bg-primary text-primary-foreground" : step === index ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "bg-muted text-muted-foreground"}`}>
                   {step > index ? <Check className="size-4" /> : index + 1}
                 </div>
                 <span className={`truncate text-xs ${step === index ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
-                {index < 2 ? <div className="h-px flex-1 bg-border" /> : null}
+                {index < 3 ? <div className="h-px flex-1 bg-border" /> : null}
               </div>
             ))}
           </div>
@@ -290,7 +385,7 @@ export default function OnboardingGate() {
 
         <div data-testid="onboarding-content" className="min-h-0 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-6 md:px-8">
           <div className="mb-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">STEP {step + 1} / 3</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">STEP {step + 1} / 4</p>
             <h2 className="mt-1 text-lg font-semibold">{stepTitle}</h2>
             <p className="mt-1 text-sm text-muted-foreground">带 <span className="text-destructive">*</span> 的字段为必填项。</p>
           </div>
@@ -367,14 +462,69 @@ export default function OnboardingGate() {
               </Field>
             </div>
           ) : null}
+
+          {step === 3 ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-primary/20 bg-primary/5 px-4 py-3 text-sm leading-6 text-muted-foreground">
+                请至少录入一笔当前真实持仓。顾问会据此计算集中度、回撤和组合影响，后续可以在资产页继续补充或修改。
+              </div>
+              {portfolioForm.map((holding, index) => (
+                <div key={holding.id} className="rounded-md border border-border bg-card p-4 sm:p-5">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">持仓 {index + 1}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">按当前实际数量与平均成本填写</p>
+                    </div>
+                    {portfolioForm.length > 1 ? (
+                      <Button type="button" variant="ghost" size="icon" onClick={() => removeHolding(holding.id)} aria-label={`删除持仓 ${index + 1}`} title={`删除持仓 ${index + 1}`}>
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    ) : null}
+                  </div>
+                  <AShareInstrumentPicker
+                    idPrefix={`onboarding-${holding.id}`}
+                    name={holding.name}
+                    symbol={holding.symbol}
+                    searchLabel="搜索当前持仓"
+                    symbolLabel="代码"
+                    onChange={(next) => updateHolding(holding.id, {
+                      name: next.name,
+                      symbol: next.symbol,
+                      assetType: next.stock?.assetType ?? holding.assetType,
+                      market: next.stock?.market,
+                      sector: next.stock?.sector ?? null,
+                    })}
+                  />
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <Field label="持有数量 / 份额" htmlFor={`onboarding-${holding.id}-quantity`} required>
+                      <Input id={`onboarding-${holding.id}-quantity`} type="number" min="0" step="any" value={holding.quantity} onChange={(event) => updateHolding(holding.id, { quantity: event.target.value })} placeholder="例如：100" />
+                    </Field>
+                    <Field label="持仓成本价" htmlFor={`onboarding-${holding.id}-cost`} required>
+                      <Input id={`onboarding-${holding.id}-cost`} type="number" min="0" step="any" value={holding.cost} onChange={(event) => updateHolding(holding.id, { cost: event.target.value })} placeholder="例如：12.50" />
+                    </Field>
+                  </div>
+                </div>
+              ))}
+              <Button type="button" variant="outline" className="w-full" onClick={addHolding}>
+                <Plus className="size-4" />添加另一笔持仓
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         <div className="z-10 flex shrink-0 items-center justify-between gap-3 border-t border-border bg-card px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-6 sm:py-4 md:px-8">
-          <Button variant="ghost" onClick={() => step === 0 ? undefined : step === 1 ? setStep(0) : setStep(1)} disabled={saving || step === 0}>
+          <Button variant="ghost" onClick={() => step > 0 && setStep((current) => current - 1)} disabled={saving || step === 0 || (profileComplete && step === 3)}>
             <ChevronLeft className="size-4" />上一步
           </Button>
-          {step < 2 ? (
-            <Button onClick={() => { if (step === 0) nextQuestion(); else if (validateProfile()) setStep(2); }} disabled={saving || loadingQuestions || !currentQuestion}>
+          {step < 3 ? (
+            <Button
+              onClick={() => {
+                if (step === 0) nextQuestion();
+                else if (step === 1 && validateProfile()) setStep(2);
+                else if (step === 2 && validateGoal()) setStep(3);
+              }}
+              disabled={saving || (step === 0 && (loadingQuestions || !currentQuestion))}
+            >
               {step === 0 && questionIndex < questions.length - 1 ? "下一题" : "进入下一步"}<ChevronRight className="size-4" />
             </Button>
           ) : (

@@ -1,10 +1,12 @@
 export type ConversationOutputMode = "SQL_ONLY" | "CHART" | "FINANCIAL_REPORT";
+export type AdvisorWorkflow = "CONVERSATION" | "DAILY_PORTFOLIO";
 
 export interface AdvisorRunInput {
   userId: string;
   sessionId: string;
   content: string;
   outputMode?: ConversationOutputMode;
+  workflow?: AdvisorWorkflow;
   clientMessageId?: string;
 }
 
@@ -44,8 +46,8 @@ export interface AdvisorContext {
 }
 
 export interface RecommendationDraft {
-  instrumentId: string;
-  symbol: string;
+  instrumentId: string | null;
+  symbol: string | null;
   action: "WATCH" | "TRIAL_BUY" | "SCALE_IN" | "HOLD" | "STOP_ADDING" | "SCALE_OUT" | "EXIT";
   suitability: "HIGH" | "MEDIUM" | "LOW";
   summary: string;

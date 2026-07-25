@@ -1,0 +1,21 @@
+{
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "image_widths": [
+    103,
+    103,
+    103,
+    103
+  ],
+  "checks": [
+    "four Unity character images loaded",
+    "manual shove interaction",
+    "Hisa mirrors the user message",
+    "Student and Shark speak and clash",
+    "Teacher publishes the judge bubble",
+    "mobile characters stay inside the stage"
+  ],
+  "body_scroll_width": 390,
+  "viewport_width": 390
+}

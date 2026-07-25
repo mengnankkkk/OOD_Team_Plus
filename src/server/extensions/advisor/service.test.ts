@@ -32,6 +32,7 @@ beforeEach(() => {
     VALUES (?,?,?,'active',?,?,1)`).run(conversationId, TEST_USER_ID, "Advisor", now, now);
   db.close();
   professional.runProfessionalAdvisor.mockResolvedValue({
+    kind: "DECISION",
     runId: "analysis_mock",
     status: "DEGRADED",
     direction: "HOLD",
@@ -101,6 +102,7 @@ describe("advisor debate suggestion persistence", () => {
       .run(TEST_USER_ID, conversationId, now, now);
     db.close();
     professional.runProfessionalAdvisor.mockResolvedValueOnce({
+      kind: "DECISION",
       runId: "analysis_publication",
       status: "DEGRADED",
       direction: "HOLD",

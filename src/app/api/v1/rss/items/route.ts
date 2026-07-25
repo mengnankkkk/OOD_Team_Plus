@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { sanitizeRssText } from "@/server/extensions/rss/text";
 import { getDatabase, meta, parseJson } from "@/server/http/context";
 
 export async function GET(req: NextRequest) {
@@ -25,8 +26,8 @@ export async function GET(req: NextRequest) {
     id: row.id,
     feedId: row.feed_id,
     feedName: row.feed_title,
-    title: row.title,
-    summary: row.summary,
+    title: sanitizeRssText(row.title),
+    summary: sanitizeRssText(row.summary) || null,
     canonicalUrl: row.link,
     author: row.author,
     publishedAt: row.published_at,

@@ -3,10 +3,13 @@ import { z } from "zod";
 
 import { formatRecommendation } from "@/server/extensions/advisor/recommendations";
 import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
-import { createWorkspace } from "@/server/extensions/simulation/service";
+import { createWorkspace, generateOptions } from "@/server/extensions/simulation/service";
 import { getDatabase, getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
-const Schema = z.object({ label: z.string().min(1).max(120).optional(), objective: z.string().min(1).max(2000).optional() });
+const Schema = z.object({
+  label: z.string().trim().min(1).max(2000).optional(),
+  objective: z.string().trim().min(1).max(2000).optional(),
+});
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -20,13 +23,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
   if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   const db = getDatabase();
-  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND status='active'").get(id, userId) as Record<string, unknown> | undefined;
-  const snapshot = db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(userId) as { id?: string } | undefined;
-  db.close();
-  if (!recommendation || !snapshot?.id) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation or portfolio snapshot not found" } }, { status: 404 });
+  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND UPPER(status) IN ('ACTIVE','DEGRADED')").get(id, userId) as Record<string, unknown> | undefined;
+  if (!recommendation) {
+    db.close();
+    return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Active or degraded recommendation not found" } }, { status: 404 });
+  }
   const formatted = formatRecommendation(recommendation);
-  const result = createWorkspace(userId, { label: parsed.data.label ?? `建议模拟：${formatted.summary ?? formatted.action}`, objectiveText: parsed.data.objective ?? `模拟采纳建议 ${formatted.action} 对组合的影响`, portfolioSnapshotId: snapshot.id, conversationSessionId: String(recommendation.conversation_id ?? "") || undefined, recommendationId: id });
-  const payload = { data: { workspaceId: result.workspaceId, recommendationId: id, rootBranchId: result.branchId, activeBranchId: result.branchId, ordersCreated: false, next: { generateOptionsUrl: `/api/v1/simulation-workspaces/${result.workspaceId}/options` }, analysis: { analysisId: result.analysisId, type: "SIMULATION_WORKSPACE", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
+  const provenance = formatted.provenance as Record<string, unknown>;
+  const recommendedSnapshotId = typeof provenance.snapshotId === "string" ? provenance.snapshotId : undefined;
+  const snapshot = (recommendedSnapshotId
+    ? db.prepare("SELECT id FROM portfolio_snapshots WHERE id=? AND user_id=?").get(recommendedSnapshotId, userId)
+    : db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(userId)) as { id?: string } | undefined;
+  db.close();
+  if (!snapshot?.id) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Portfolio snapshot not found" } }, { status: 404 });
+  const objectiveText = parsed.data.objective ?? `模拟采纳建议 ${formatted.action} 对组合的影响`;
+  const label = compactLabel(parsed.data.label ?? `建议模拟：${formatted.summary ?? formatted.action}`);
+  const result = createWorkspace(userId, { label, objectiveText, portfolioSnapshotId: snapshot?.id, conversationSessionId: String(recommendation.conversation_id ?? "") || undefined, recommendationId: id });
+  const optionRun = generateOptions(userId, result.workspaceId, objectiveText);
+  const payload = { data: { workspaceId: result.workspaceId, recommendationId: id, rootBranchId: result.branchId, activeBranchId: result.branchId, ordersCreated: false, next: { workspaceUrl: `/simulations?workspace=${encodeURIComponent(result.workspaceId)}`, optionsUrl: `/api/v1/simulation-workspaces/${result.workspaceId}/options` }, analysis: { analysisId: optionRun.analysisId, type: "BRANCH_OPTION_GENERATION", status: "QUEUED", streamUrl: `/api/v1/analyses/${optionRun.analysisId}/events` } }, meta: meta() };
   await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
   return NextResponse.json(payload, { status: 201 });
+}
+
+function compactLabel(value: string): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return normalized.length > 120 ? `${normalized.slice(0, 119)}…` : normalized;
 }

@@ -1,7 +1,8 @@
-/* eslint-disable max-lines */
 import { apiGet, apiPatch, apiPost, FrontendApiError } from "@/features/frontend-migration/api";
 import { createClientId } from "@/lib/client-id";
 import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOutputMode, DebateSuggestion, OnboardingMessage, TraceSpan } from "@/types/app/onboarding";
+
+type AdvisorWorkflow = "CONVERSATION" | "DAILY_PORTFOLIO";
 
 type ConversationRow = { id: string; title: string; created_at: string; updated_at: string; row_version: number; last_message_preview?: string };
 type MessageRow = { id: string; role: string; content: string; metadata_json?: string; created_at: string; session_id?: string; agent_run_id?: string | null };
@@ -14,11 +15,21 @@ type StreamStarted = {
   clarificationId?: string | null;
   debateSuggestion?: unknown;
 };
-type AdvisorStreamObserver = {
+export type AdvisorStreamObserver = {
   onSessionId?: (sessionId: string) => void;
   onProgress?: (message: string) => void;
   onThinking?: (message: { key: string; title: string; content: string }) => void;
   onDelta?: (delta: string) => void;
+};
+
+type AnalysisDetail = {
+  status: string;
+  result?: {
+    artifact?: AdvisorReply["artifact"];
+  } | null;
+  failure?: {
+    message?: string;
+  } | null;
 };
 
 const ADVISOR_STREAM_EVENTS = [
@@ -54,7 +65,7 @@ export async function listOnboardingMessages(_userId: string, sessionId?: string
   const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
   return Promise.all(result.items.map(async (row) => {
     const message = mapMessage(row);
-    if (row.role !== "assistant" || !row.agent_run_id) return message;
+    if (row.role !== "assistant" || !row.agent_run_id || !shouldLoadAdvisorTrace(message.metadata)) return message;
     const trace = await loadAdvisorTrace(row.agent_run_id).catch(() => null);
     return trace ? { ...message, metadata: { ...message.metadata, trace } } : message;
   }));
@@ -95,7 +106,9 @@ export async function sendAdvisorMessage(message: string, sessionId: string | nu
     outputMode,
   });
   const analysis = result.analysis as { analysisId?: string } | undefined;
-  const trace = analysis?.analysisId ? await loadAdvisorTrace(analysis.analysisId).catch(() => null) : null;
+  const trace = analysis?.analysisId && shouldLoadAdvisorTrace(result)
+    ? await loadAdvisorTrace(analysis.analysisId).catch(() => null)
+    : null;
   return {
     reply: String(result.answer ?? "分析已完成。"),
     profileUpdate: null,
@@ -114,26 +127,34 @@ export async function sendAdvisorMessageStream(
   sessionId: string | null,
   outputMode: ConversationOutputMode,
   observer: AdvisorStreamObserver = {},
+  workflow: AdvisorWorkflow = "CONVERSATION",
 ): Promise<AdvisorReply> {
   const activeSessionId = await ensureConversation(sessionId, message);
   observer.onSessionId?.(activeSessionId);
-  observer.onProgress?.("已创建对话，正在启动顾问 Agent");
+  observer.onProgress?.("已创建对话，正在理解你的问题");
   const result = await apiPost<StreamStarted>(`/api/v1/conversations/${activeSessionId}/messages/stream`, {
     clientMessageId: createClientId(),
     content: message,
     outputMode,
+    workflow,
   });
   const analysisId = result.analysis?.analysisId ?? null;
   const streamUrl = result.analysis?.streamUrl;
   if (analysisId && streamUrl && !result.answer) {
-    observer.onProgress?.("顾问 Agent 已启动，正在连接事件流");
-    await watchAdvisorStream(streamUrl, observer).catch((error) => {
+    observer.onProgress?.("顾问正在判断是否需要启动专业分析");
+    await watchAdvisorStream(streamUrl, analysisId, observer).catch((error) => {
       observer.onProgress?.(error instanceof Error ? error.message : "事件流中断，正在读取最终结果");
     });
   }
   const assistant = analysisId ? await waitForAssistantMessage(activeSessionId, analysisId) : null;
-  const trace = analysisId ? await loadAdvisorTrace(analysisId).catch(() => null) : null;
+  const finalAnalysis = analysisId
+    ? await waitForFinalAnalysis(analysisId, outputMode !== "SQL_ONLY").catch(() => null)
+    : null;
   const metadata = assistant?.metadata ?? {};
+  const trace = analysisId && shouldLoadAdvisorTrace(metadata)
+    ? await loadAdvisorTrace(analysisId).catch(() => null)
+    : null;
+  const finalArtifact = finalAnalysis?.result?.artifact;
   return {
     reply: assistant?.content ?? String(result.answer ?? "分析已完成。"),
     profileUpdate: null,
@@ -141,7 +162,9 @@ export async function sendAdvisorMessageStream(
     sessionId: activeSessionId,
     analysisId,
     recommendationId: typeof metadata.recommendationId === "string" ? metadata.recommendationId : result.recommendationId ?? null,
-    artifact: result.artifact && typeof result.artifact === "object" ? result.artifact : null,
+    artifact: finalArtifact && typeof finalArtifact === "object"
+      ? finalArtifact
+      : result.artifact && typeof result.artifact === "object" ? result.artifact : null,
     clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
     debateSuggestion: normalizeDebateSuggestion(metadata.debateSuggestion ?? result.debateSuggestion),
   };
@@ -163,18 +186,42 @@ export function normalizeDebateSuggestion(value: unknown): DebateSuggestion | nu
   };
 }
 
-function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver): Promise<void> {
+function shouldLoadAdvisorTrace(metadata: Record<string, unknown>): boolean {
+  if (metadata.conversationKind === "DECISION") return true;
+  return metadata.conversationKind === undefined && typeof metadata.recommendationId === "string";
+}
+
+function watchAdvisorStream(streamUrl: string, analysisId: string, observer: AdvisorStreamObserver): Promise<void> {
   if (typeof EventSource === "undefined") return Promise.resolve();
   return new Promise((resolve, reject) => {
     const source = new EventSource(streamUrl);
+    let settled = false;
     const timeout = window.setTimeout(() => {
-      source.close();
-      reject(new Error("顾问事件流超时，正在读取最终结果"));
+      fail(new Error("顾问事件流超时，正在读取最终结果"));
     }, 600_000);
-    const finish = () => {
+    const terminalPoll = window.setInterval(() => {
+      void loadAnalysisDetail(analysisId)
+        .then((analysis) => {
+          if (["COMPLETED", "BLOCKED", "WAITING_FOR_USER", "FAILED", "CANCELLED", "INTERRUPTED"].includes(analysis.status)) finish();
+        })
+        .catch(() => undefined);
+    }, 1_500);
+    const cleanup = () => {
       window.clearTimeout(timeout);
+      window.clearInterval(terminalPoll);
       source.close();
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       resolve();
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
     };
     for (const type of ADVISOR_STREAM_EVENTS) {
       source.addEventListener(type, (event) => {
@@ -194,9 +241,7 @@ function watchAdvisorStream(streamUrl: string, observer: AdvisorStreamObserver):
       });
     }
     source.onerror = () => {
-      window.clearTimeout(timeout);
-      source.close();
-      reject(new Error("顾问事件流连接中断，正在读取最终结果"));
+      fail(new Error("顾问事件流连接中断，正在读取最终结果"));
     };
   });
 }
@@ -237,9 +282,27 @@ async function waitForAssistantMessage(sessionId: string, analysisId: string): P
     const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
     const row = [...result.items].reverse().find((item) => item.role === "assistant" && item.agent_run_id === analysisId);
     if (row) return mapMessage(row);
+    const analysis = await loadAnalysisDetail(analysisId);
+    if (["FAILED", "CANCELLED", "INTERRUPTED"].includes(analysis.status)) {
+      throw new Error(analysis.failure?.message ?? "顾问分析失败");
+    }
     await delay(1_000);
   }
   return null;
+}
+
+async function loadAnalysisDetail(analysisId: string): Promise<AnalysisDetail> {
+  return apiGet<AnalysisDetail>(`/api/v1/analyses/${analysisId}`);
+}
+
+async function waitForFinalAnalysis(analysisId: string, expectArtifact: boolean): Promise<AnalysisDetail> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const analysis = await loadAnalysisDetail(analysisId);
+    const terminal = ["COMPLETED", "BLOCKED", "WAITING_FOR_USER", "FAILED", "CANCELLED", "INTERRUPTED"].includes(analysis.status);
+    if (terminal && (!expectArtifact || analysis.result?.artifact || analysis.status !== "COMPLETED")) return analysis;
+    await delay(300);
+  }
+  return loadAnalysisDetail(analysisId);
 }
 
 function delay(ms: number): Promise<void> {

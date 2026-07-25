@@ -4,11 +4,14 @@ import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config
 
 import {
   BranchScenarioContextSchema,
+  BranchScenarioModelPlanSchema,
   BranchScenarioPlanSchema,
   type BranchScenarioAgentInput,
+  type BranchScenarioModelPlan,
   type BranchScenarioOption,
   type BranchScenarioPlan,
 } from "./scenario-contracts";
+import { mergeBranchScenarioPartial, parseBranchScenarioModelPlan } from "./scenario-model-plan";
 
 export type BranchScenarioAgentResult = {
   provider: BranchScenarioPlan["provider"];
@@ -37,15 +40,16 @@ export async function runBranchScenarioAgent(
     callbacks.onAgentStarted?.("SCENARIO_PLANNER", "提出互斥的 A/B/C 分支方案");
     callbacks.onAgentStarted?.("COMPLIANCE_REVIEWER", "检查模拟边界、证据和失效条件");
     const agent = createBranchScenarioAgent();
-    const output = await agent.generate<BranchScenarioPlan>(buildPrompt(input), {
-      maxSteps: 10,
-      modelSettings: { maxOutputTokens: 2_400, temperature: 0.1 },
-      structuredOutput: {
-        schema: BranchScenarioPlanSchema,
-        instructions: "只输出符合 schema 的 JSON。交易中禁止输出 price 字段，所有价格由服务端冻结。",
-      },
+    const modelPlan = await generateModelPlan(agent, buildPrompt(input));
+    const plan = BranchScenarioPlanSchema.parse({
+      ...modelPlan,
+      provider: "CHIEF_ADVISOR",
+      options: modelPlan.options.map((option, index) => ({
+        ...option,
+        label: scenarioLabel(option.strategy, index),
+        trades: option.trades.filter((trade) => Number(trade.quantity) > 0),
+      })),
     });
-    const plan = BranchScenarioPlanSchema.parse({ ...output.object, provider: "CHIEF_ADVISOR" });
     for (const role of ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "SCENARIO_PLANNER", "COMPLIANCE_REVIEWER"]) {
       callbacks.onAgentCompleted?.(role, "已完成分支模拟阶段");
     }
@@ -59,6 +63,31 @@ export async function runBranchScenarioAgent(
     const plan = deterministicFallback(input);
     return { provider: "DETERMINISTIC_FALLBACK", plan, delegatedAgents: ["DETERMINISTIC_FALLBACK"] };
   }
+}
+
+async function generateModelPlan(agent: Agent, prompt: string): Promise<BranchScenarioModelPlan> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请完整输出全部候选方案。" : "上一轮结构化输出不完整。请重新完整输出 options 数组，不要省略任何字段。"}`, {
+        maxSteps: 10,
+        modelSettings: { maxOutputTokens: 3_600, temperature: 0.1 },
+        structuredOutput: {
+          schema: BranchScenarioModelPlanSchema,
+          instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。必须完整输出 options 数组及每个方案的全部字段。",
+        },
+      });
+      let latestPartial: Partial<BranchScenarioModelPlan> = {};
+      for await (const partial of stream.objectStream) {
+        if (partial && typeof partial === "object") latestPartial = mergeBranchScenarioPartial(latestPartial, partial);
+      }
+      const streamedObject = await stream.object.catch(() => undefined);
+      return parseBranchScenarioModelPlan(streamedObject, latestPartial);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 export function createBranchScenarioAgent() {
@@ -178,10 +207,15 @@ function positiveHalf(value: string): string | null {
 function buildPrompt(input: BranchScenarioAgentInput): string {
   return [
     "请为资产分支模拟生成候选方案。",
-    "输出必须是 BranchScenarioPlan JSON，不要 Markdown，不要隐藏思维链。",
+    "输出必须符合结构化 schema，不要 Markdown，不要隐藏思维链。provider 和 label 由服务端生成，禁止输出这两个字段。",
     "模型只负责场景理解和交易意图，禁止填写 price；不得创造不在 instruments 中的标的。",
     JSON.stringify(input),
   ].join("\n");
+}
+
+function scenarioLabel(strategy: BranchScenarioOption["strategy"], index: number): string {
+  const title = strategy === "HOLD" ? "保持观察" : strategy === "BALANCED" ? "风险预算再平衡" : strategy === "DEFENSIVE" ? "压力约束降险" : "增长情景";
+  return `${String.fromCharCode(65 + index)} · ${title}`;
 }
 
 function safeMessage(error: unknown): string {

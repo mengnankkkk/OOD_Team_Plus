@@ -9,6 +9,7 @@ const Schema = z.object({
   clientMessageId: z.string().max(128).optional(),
   content: z.string().min(1).max(4000),
   outputMode: z.enum(["SQL_ONLY", "CHART", "FINANCIAL_REPORT"]).optional(),
+  workflow: z.enum(["CONVERSATION", "DAILY_PORTFOLIO"]).optional(),
 });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

@@ -2,6 +2,7 @@ import { XMLParser } from "fast-xml-parser";
 
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { fetchPublicHttpUrl } from "@/server/extensions/security/public-url";
+import { sanitizeRssText } from "@/server/extensions/rss/text";
 import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 
 const MAX_RSS_BYTES = 2 * 1024 * 1024;
@@ -123,9 +124,7 @@ function asArray(value: unknown): unknown[] {
 }
 
 function cleanText(value: unknown): string {
-  if (typeof value === "string" || typeof value === "number") return String(value).replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
-  const object = asObject(value);
-  return object ? cleanText(object["#text"] ?? object.name ?? "") : "";
+  return sanitizeRssText(value);
 }
 
 function readLink(value: unknown): string | null {

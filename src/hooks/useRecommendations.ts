@@ -6,7 +6,7 @@ export function useRecommendations() {
   const { user } = useAuth();
   return useQuery({
     queryKey: ["recommendations", user?.id],
-    queryFn: () => listRecommendations(user!.id, { statuses: ["active", "simulated"], limit: 20 }),
+    queryFn: () => listRecommendations(user!.id, { statuses: ["active", "degraded", "blocked", "simulated"], limit: 20 }),
     enabled: !!user,
     staleTime: 10_000,
   });
@@ -24,9 +24,10 @@ export function useAgentRuns(limit = 6) {
 
 export function useRecommendationInvalidator() {
   const qc = useQueryClient();
-  return () => {
-    qc.invalidateQueries({ queryKey: ["recommendations"] });
-    qc.invalidateQueries({ queryKey: ["agent-runs"] });
-    qc.invalidateQueries({ queryKey: ["alerts"] });
-  };
+  return () => Promise.all([
+    qc.invalidateQueries({ queryKey: ["recommendations"] }),
+    qc.invalidateQueries({ queryKey: ["agent-runs"] }),
+    qc.invalidateQueries({ queryKey: ["alerts"] }),
+    qc.invalidateQueries({ queryKey: ["decision-logs"] }),
+  ]);
 }

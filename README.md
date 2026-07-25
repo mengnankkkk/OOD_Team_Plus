@@ -30,7 +30,7 @@ Money Whisperer 是一套单机部署的个人投资研究与资产分析工作�
 - PandaData dry-run/live call、失败分类、数据新鲜度、市场快照和证据关联。
 - 智能查数、查询历史、结果分块、图表/Markdown 产物、预览和编辑。
 - 推荐卡、决策日志、模拟工作区、分支树、候选、执行、切换、撤回。
-- 研究搜索、RSS 阅读与管理、自选、观察条件、通知中心、通知偏好。
+- 研究搜索、RSS 阅读与管理、自选、观察条件、真实行情提醒中心、通知偏好。
 - 管理端系统健康、语义层 Metadata、RSS 源、Demo Seed/Reset。
 
 ## 目录结构
@@ -57,6 +57,17 @@ scripts/call_api.py             # PandaData Python bridge
 docs/                           # 产品、API、数据库和模块设计文档
 tests/                          # E2E 与辅助代码
 ```
+
+## Injective 链上存证
+
+Money Whisperer 可以把 Advisor 回答或 AI 生成报告转入 `/injective`，在浏览器本地计算 SHA-256，并部署一个只包含 `STOP + MWP1 + 32 字节报告哈希` 的微型证明合约到 Injective EVM Testnet（Chain ID `1439`）。交易金额为 `0 INJ`，只消耗测试网 Gas；报告正文、持仓与身份信息不会上传到链上。
+
+- Advisor 最终回答下方可直接进入存证流程。
+- AI 生成报告详情页提供 `Injective 存证` 操作。
+- `/api/v1/injective/status` 只读检查测试网 Chain ID 与最新区块。
+- 成功后可通过 Injective Blockscout 公开核验交易 Input Data 与合约字节码。
+
+该功能只使用公开测试网配置，不需要新增密钥或本地 `.env`。
 
 ## 环境变量
 
@@ -100,6 +111,8 @@ doppler run -- docker compose up -d
 ```
 
 应用数据写入命名 volume `money-whisperer-data`，容器内数据库默认路径为 `/app/data/money-whisperer.db`。
+
+提醒调度器随 Node 常驻进程启动，每小时使用 Pandadata 刷新活动持仓与自选标的；规则、降级行为和去重策略见 [提醒中心上线说明](./docs/notification-center.md)。
 
 ## 安全边界
 

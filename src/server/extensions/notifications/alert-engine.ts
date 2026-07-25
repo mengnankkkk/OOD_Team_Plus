@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 
-import { createId, getDatabase, isoNow } from "@/server/http/context";
+import { createId, getDatabase, isoNow, parseJson } from "@/server/http/context";
 
 export type ObservationConditionType = "UNREALIZED_GAIN_REACH" | "PRICE_ABOVE" | "PRICE_BELOW" | "DRAWDOWN_REACH";
 
@@ -80,7 +80,15 @@ function readObservedValue(db: { prepare: (sql: string) => { get: (...params: un
   if (condition.instrument_id) {
     const row = db.prepare(`SELECT price_decimal FROM holding_snapshots h JOIN portfolio_snapshots p ON p.id = h.portfolio_snapshot_id
       WHERE h.instrument_id = ? AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 1`).get(condition.instrument_id, condition.user_id) as { price_decimal?: string } | undefined;
-    return row?.price_decimal ? decimal(row.price_decimal) : null;
+    if (row?.price_decimal) return decimal(row.price_decimal);
+    const instrument = db.prepare("SELECT symbol,market FROM instruments WHERE id=?").get(condition.instrument_id) as { symbol?: string; market?: string } | undefined;
+    if (!instrument?.symbol) return null;
+    const symbol = instrument.symbol.toUpperCase();
+    const canonical = symbol.includes(".") || !/^\d{6}$/u.test(symbol) ? symbol : `${symbol}.${instrument.market || (symbol.startsWith("6") ? "SH" : "SZ")}`.toUpperCase();
+    const snapshot = db.prepare(`SELECT ms.raw_payload_json FROM market_snapshots ms JOIN instruments i ON i.id=ms.instrument_id
+      WHERE UPPER(i.symbol) IN (?,?) ORDER BY ms.trading_date DESC,ms.created_at DESC LIMIT 1`).get(symbol, canonical) as { raw_payload_json?: string } | undefined;
+    const payload = parseJson<Record<string, unknown>>(snapshot?.raw_payload_json, {});
+    return payload.close === undefined ? null : decimal(payload.close);
   }
   return null;
 }

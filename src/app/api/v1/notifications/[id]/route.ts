@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getDatabase, getRequestContext, isoNow, meta } from "@/server/http/context";
+import { getDatabase, getRequestContext, isoNow, meta, parseJson } from "@/server/http/context";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
 
 function formatNotification(row: Record<string, unknown>) {
   const status = row.dismissed_at ? "ignored" : row.read_at ? "read" : "unread";
-  return { ...row, status, unread: status === "unread", version: row.row_version };
+  return { ...row, bodyText: row.body_text, sourceType: row.source_type, sourceId: row.source_id, dataAsOf: row.data_as_of, metadata: parseJson(String(row.metadata_json ?? "{}"), {}), status, unread: status === "unread", version: row.row_version };
 }
 
 function parseVersion(req: NextRequest): number | null {

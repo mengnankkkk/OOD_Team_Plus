@@ -12,7 +12,7 @@ describe("database migration guard", () => {
     db.pragma("foreign_keys = ON");
     prepareDatabase(db as never, ":memory:");
     expect(db.pragma("user_version", { simple: true })).toBe(15);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(17);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
     expect(db.prepare(`SELECT name FROM sqlite_master
       WHERE type='table' AND name IN ('debate_sessions','debate_rounds','debate_turns','debate_arguments','debate_judgements')
       ORDER BY name`).all()).toEqual([

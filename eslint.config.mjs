@@ -38,9 +38,12 @@ export default defineConfig([
   {
     files: [
       "src/server/extensions/advisor/professional.ts",
+      "src/server/extensions/advisor/service.ts",
       "src/server/extensions/analysis/service.ts",
+      "src/server/extensions/query/panda-query-executor.ts",
       "src/server/extensions/query/plan-generator.ts",
       "src/server/extensions/simulation/candidate-generator.ts",
+      "src/services/advisorService.ts",
     ],
     rules: {
       "max-lines": "off",
@@ -50,6 +53,7 @@ export default defineConfig([
     ".next/**",
     ".next-e2e/**",
     ".next-visual/**",
+    ".worktrees/**",
     "coverage/**",
     "node_modules/**",
     "playwright-report/**",

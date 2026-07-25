@@ -60,7 +60,9 @@ export default function SimulationsPage() {
   useEffect(() => {
     if (hasAutoSelectedWorkspaceRef.current || !list.data) return;
     hasAutoSelectedWorkspaceRef.current = true;
-    if (list.data.items[0]) selectWorkspace(list.data.items[0].id);
+    const requestedWorkspaceId = new URLSearchParams(window.location.search).get("workspace")?.trim() ?? "";
+    if (requestedWorkspaceId) selectWorkspace(requestedWorkspaceId);
+    else if (list.data.items[0]) selectWorkspace(list.data.items[0].id);
   }, [list.data, selectWorkspace]);
 
   useEffect(() => {
@@ -85,8 +87,8 @@ export default function SimulationsPage() {
     return () => source.close();
   }, [options.data?.analysis?.streamUrl, options.data?.status, reloadOptions, reloadWorkspace]);
 
-  const queueOptions = async (workspaceId: string) => {
-    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective });
+  const queueOptions = async (workspaceId: string, objectiveText = objective) => {
+    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective: objectiveText });
     void pollOptionBatch(workspaceId, queued.analysis.analysisId);
   };
 
@@ -135,7 +137,7 @@ export default function SimulationsPage() {
     if (!workspace.data) return;
     setBusy("generate"); setError("");
     try {
-      await queueOptions(workspace.data.id);
+      await queueOptions(workspace.data.id, workspace.data.objectiveText);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "生成失败");
     } finally {
@@ -145,7 +147,7 @@ export default function SimulationsPage() {
 
   const pollOptionBatch = async (workspaceId: string, analysisId: string) => {
     const path = `/api/v1/simulation-workspaces/${workspaceId}/options`;
-    for (let attempt = 0; attempt < 180; attempt += 1) {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
       try {
         const latest = await apiGet<OptionsPayload>(path);
         if (selectedWorkspaceRef.current !== workspaceId) return;
@@ -204,7 +206,7 @@ export default function SimulationsPage() {
     }
   };
 
-  if (list.loading || activeHoldings.loading) return <LoadingBlock label="正在装载分支实验室" />;
+  if ((list.loading && !list.data) || (activeHoldings.loading && !activeHoldings.data)) return <LoadingBlock label="正在装载分支实验室" />;
   return <div className="page-stack simulation-page">
     <PageHeading
       eyebrow="SCENARIO BRANCH LAB / 分支实验室"
@@ -234,7 +236,7 @@ export default function SimulationsPage() {
           <div className="simulation-welcome-copy"><Status tone="good"><ShieldCheck size={12} />只做模拟，不会下单</Status>{mode === "DECISION_FLOW" ? <><h2>用 1 分钟体验一次“如果我这样买，会发生什么？”</h2><p>先创建一个练习工作区，Agent 会自动给你 3 个方案：保持不动、谨慎调整、积极调整。你可以执行其中任意一个，随时切换或撤回。</p></> : <><h2>分支实验室会记录每一次选择</h2><p>创建并执行方案后，这里会显示分支树、父子资产差异、撤回记录和冻结数据条件。先从左侧创建一个工作区即可进入实验室。</p></>}</div>
           <div className="simulation-steps"><div><b>1</b><span>准备组合</span><small>{starterMode ? "先用示例组合即可" : "将使用你的真实持仓"}</small></div><div><b>2</b><span>比较 A / B / C</span><small>看风险和资产变化</small></div><div><b>3</b><span>执行模拟</span><small>只改变分支，不改真账</small></div></div>
           <div className="simulation-welcome-actions"><button className="button primary" onClick={() => void createWorkspace()} disabled={Boolean(busy)}><WandSparkles size={15} />{busy === "create" ? "正在准备…" : starterMode ? "用示例组合开始" : "用我的持仓开始"}</button>{starterMode ? <Link className="button ghost" href="/assets">我有持仓，先去录入 <ArrowRight size={14} /></Link> : null}</div>
-        </section> : workspace.loading ? <LoadingBlock /> : workspace.error ? <ErrorBlock message={workspace.error} retry={workspace.reload} /> : workspace.data ? <>
+        </section> : workspace.loading && !workspace.data ? <LoadingBlock /> : workspace.error && !workspace.data ? <ErrorBlock message={workspace.error} retry={workspace.reload} /> : workspace.data ? <>
           <section className="panel branch-map">
             <div className="panel-heading"><div><span>ACTIVE SCENARIO / 当前练习</span><h2>{workspace.data.name}</h2><p>{workspace.data.objectiveText}</p></div><div className="scenario-badges"><Status tone="good"><ShieldCheck size={12} />只做模拟</Status>{workspace.data.portfolioSource === "STARTER_PORTFOLIO" ? <Status tone="warn">示例组合</Status> : <Status tone="good">我的持仓</Status>}</div></div>
             {workspace.data.portfolioSource === "STARTER_PORTFOLIO" ? <div className="inline-notice starter-notice">当前使用的是 AAPL、MSFT、SPY、GLD 示例组合。它只用于体验分支模拟，不会改动你的真实账本。录入自己的持仓后，可以重新创建一个“我的持仓”实验。</div> : null}

@@ -46,6 +46,7 @@ export const watchlistItems = sqliteTable(
     instrumentId: text("instrument_id").notNull(),
     reason: text("reason"),
     plannedHorizon: text("planned_horizon"),
+    drawdownThresholdBps: integer("drawdown_threshold_bps"),
     status: text("status", { enum: WATCHLIST_ITEM_STATUSES }).notNull().default("active"),
     addedAt: text("added_at").notNull(),
     removedAt: text("removed_at"),
@@ -69,13 +70,21 @@ export const notifications = sqliteTable(
     groupKey: text("group_key"),
     conditionId: text("condition_id"),
     eventId: text("event_id"),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    dataAsOf: text("data_as_of"),
+    expiresAt: text("expires_at"),
+    dedupeKey: text("dedupe_key"),
     readAt: text("read_at"),
     dismissedAt: text("dismissed_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     rowVersion: integer("row_version").notNull().default(1),
   },
-  (t) => [index("idx_notifications_user_created").on(t.userId, t.createdAt), index("idx_notifications_user_group").on(t.userId, t.groupKey, t.createdAt)],
+  (t) => [
+    index("idx_notifications_user_created").on(t.userId, t.createdAt),
+    index("idx_notifications_user_group").on(t.userId, t.groupKey, t.createdAt),
+    uniqueIndex("idx_notifications_dedupe_key").on(t.dedupeKey),
+  ],
 );
 
 export const notificationPreferences = sqliteTable(
@@ -92,6 +101,23 @@ export const notificationPreferences = sqliteTable(
     rowVersion: integer("row_version").notNull().default(1),
   },
   (t) => [index("idx_notification_preferences_user_updated").on(t.userId, t.updatedAt)],
+);
+
+export const notificationSyncStates = sqliteTable(
+  "notification_sync_states",
+  {
+    userId: text("user_id").primaryKey(),
+    status: text("status", { enum: ["idle", "running", "succeeded", "partial", "failed"] }).notNull().default("idle"),
+    lastAttemptAt: text("last_attempt_at"),
+    lastSuccessAt: text("last_success_at"),
+    lastMarketRefreshAt: text("last_market_refresh_at"),
+    dataAsOf: text("data_as_of"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [index("idx_notification_sync_states_status").on(t.status, t.updatedAt)],
 );
 
 export const rssFeeds = sqliteTable(

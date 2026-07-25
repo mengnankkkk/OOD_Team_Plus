@@ -1,7 +1,7 @@
 import type { HealthMetrics as HealthMetricsData } from "@/types/app/asset";
-import { ASSET_CLASS_LABEL } from "@/types/app/asset";
 import type { UserProfile } from "@/types/app/user";
 import { Loader } from "@/components/ui/loader";
+import { getConcentrationInsight } from "@/lib/financialHealth";
 
 interface AssetOverviewPanelProps {
   metrics: HealthMetricsData | null;
@@ -40,9 +40,8 @@ const AssetOverviewPanel = ({ metrics, profile, loading }: AssetOverviewPanelPro
   const emergencyValue = metrics.emergencyMonths;
   const savingsRate = metrics.savingsRate;
   const topClassRatio = metrics.concentration.topClassRatio;
-  const topClassLabel = metrics.concentration.topClass ? ASSET_CLASS_LABEL[metrics.concentration.topClass] : "—";
+  const concentrationInsight = getConcentrationInsight({ concentration: metrics.concentration });
   const drawdown = metrics.drawdown;
-  const concentrationAlert = topClassRatio > 0.4;
   const drawdownAlert = drawdown > 0.2;
   const emergencyAlert = emergencyValue !== null && emergencyValue < emergencyTarget;
   const savingsAlert = savingsRate !== null && savingsRate < 0.15;
@@ -62,10 +61,10 @@ const AssetOverviewPanel = ({ metrics, profile, loading }: AssetOverviewPanelPro
       alert: savingsAlert,
     },
     {
-      label: `${topClassLabel}集中度`,
+      label: concentrationInsight.label,
       value: percent(topClassRatio),
-      note: concentrationAlert ? "超过 40% 上限" : "在风险预算内",
-      alert: concentrationAlert,
+      note: concentrationInsight.note,
+      alert: false,
     },
     {
       label: "组合估算最大回撤",
@@ -80,7 +79,7 @@ const AssetOverviewPanel = ({ metrics, profile, loading }: AssetOverviewPanelPro
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border p-6">
         <div>
           <p className="eyebrow">资产概览</p>
-          <h2 className="mt-2 text-lg font-semibold">{concentrationAlert || drawdownAlert ? "当前资产需要关注" : "当前资产配置可控"}</h2>
+          <h2 className="mt-2 text-lg font-semibold">{drawdownAlert ? "当前资产需要关注" : "当前资产配置可控"}</h2>
         </div>
         <span className="rounded border border-border px-2 py-1 font-mono text-xs text-muted-foreground">¥{totalAssets}</span>
       </div>
