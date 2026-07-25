@@ -39,7 +39,7 @@ export async function runBranchScenarioAgent(
     callbacks.onAgentStarted?.("SCENARIO_PLANNER", "提出互斥的 A/B/C 分支方案");
     callbacks.onAgentStarted?.("COMPLIANCE_REVIEWER", "检查模拟边界、证据和失效条件");
     const agent = createBranchScenarioAgent();
-    const output = await agent.generate<BranchScenarioModelPlan>(buildPrompt(input), {
+    const stream = await agent.stream(buildPrompt(input), {
       maxSteps: 10,
       modelSettings: { maxOutputTokens: 2_400, temperature: 0.1 },
       structuredOutput: {
@@ -47,10 +47,16 @@ export async function runBranchScenarioAgent(
         instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。",
       },
     });
+    let latestPartial: Partial<BranchScenarioModelPlan> = {};
+    for await (const partial of stream.objectStream) {
+      if (partial && typeof partial === "object") latestPartial = { ...latestPartial, ...partial };
+    }
+    const streamedObject = await stream.object.catch(() => undefined);
+    const modelPlan = BranchScenarioModelPlanSchema.parse(streamedObject ?? latestPartial);
     const plan = BranchScenarioPlanSchema.parse({
-      ...output.object,
+      ...modelPlan,
       provider: "CHIEF_ADVISOR",
-      options: output.object.options.map((option, index) => ({
+      options: modelPlan.options.map((option, index) => ({
         ...option,
         label: scenarioLabel(option.strategy, index),
         trades: option.trades.filter((trade) => Number(trade.quantity) > 0),
