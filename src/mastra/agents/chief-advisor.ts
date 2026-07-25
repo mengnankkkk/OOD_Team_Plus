@@ -93,6 +93,7 @@ export async function runChiefAdvisor(input: {
     let finding: AgentFinding;
     let completedByModel = false;
     try {
+      let latestObjectPartial: Partial<ChiefAgentFinding> = {};
       const stream = await specialistAgent.stream<ChiefAgentFinding>(prompt, {
         maxSteps: 1,
         modelSettings: { maxOutputTokens: 900, temperature: 0.1 },
@@ -103,10 +104,13 @@ export async function runChiefAdvisor(input: {
         },
       });
       const consumeText = consumeTextStream(stream.textStream, (text) => input.onStreamEvent?.({ type: "agent.chunk", agent: role, text }));
-      const consumeObject = consumeObjectStream<ChiefAgentFinding>(stream.objectStream, (partial) => input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) }));
+      const consumeObject = consumeObjectStream<ChiefAgentFinding>(stream.objectStream, (partial) => {
+        latestObjectPartial = { ...latestObjectPartial, ...partial };
+        input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) });
+      });
       const [objectResult] = await Promise.allSettled([stream.object, consumeText, consumeObject]);
       if (objectResult.status === "rejected") throw objectResult.reason;
-      finding = AgentFindingSchema.parse({ ...normalizeChiefFinding(objectResult.value), agent: role });
+      finding = coerceModelFinding(role, objectResult.value, latestObjectPartial);
       completedByModel = true;
     } catch (error) {
       input.onAgentFailed?.(role, error);
@@ -164,12 +168,64 @@ async function consumeObjectStream<T extends object>(stream: NodeReadableStream<
   }
 }
 
-function normalizeChiefFinding(value: Partial<ChiefAgentFinding>): Partial<AgentFinding> {
+function normalizeChiefFinding(value: unknown): Partial<AgentFinding> {
+  if (!isPlainRecord(value)) return {};
   const { suggestedNextAgent, ...rest } = value;
+  const parsedSuggestedNextAgent = ProfessionalAgentRoleFromUnknown(suggestedNextAgent);
   return {
     ...rest,
-    ...(suggestedNextAgent ? { suggestedNextAgent } : {}),
+    ...(parsedSuggestedNextAgent ? { suggestedNextAgent: parsedSuggestedNextAgent } : {}),
+  } as Partial<AgentFinding>;
+}
+
+function coerceModelFinding(
+  role: AgentFinding["agent"],
+  value: unknown,
+  streamedPartial: Partial<ChiefAgentFinding>,
+): AgentFinding {
+  const merged = {
+    ...normalizeChiefFinding(streamedPartial),
+    ...normalizeChiefFinding(value),
+    agent: role,
   };
+  const conclusion = typeof merged.conclusion === "string" ? merged.conclusion.trim() : "";
+  if (!conclusion) throw new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+  const missingInformation = coerceStringArray(merged.missingInformation).slice(0, 12);
+  const counterEvidence = coerceStringArray(merged.counterEvidence).slice(0, 3);
+  const suggestedNextAgent = ProfessionalAgentRoleFromUnknown(merged.suggestedNextAgent);
+  return AgentFindingSchema.parse({
+    agent: role,
+    conclusion,
+    supportEvidence: coerceStringArray(merged.supportEvidence).slice(0, 3),
+    counterEvidence: counterEvidence.length ? counterEvidence : ["模型未提供反方证据，发布门按证据不足保守处理"],
+    missingInformation,
+    risks: coerceStringArray(merged.risks).slice(0, 3),
+    confidence: coerceConfidence(merged.confidence),
+    needsAnotherAgent: typeof merged.needsAnotherAgent === "boolean"
+      ? merged.needsAnotherAgent
+      : missingInformation.length > 0 || Boolean(suggestedNextAgent),
+    ...(suggestedNextAgent ? { suggestedNextAgent } : {}),
+  });
+}
+
+function coerceStringArray(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  return values.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function coerceConfidence(value: unknown): number {
+  const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numeric)) return 0.35;
+  return Math.min(1, Math.max(0, numeric));
+}
+
+function ProfessionalAgentRoleFromUnknown(value: unknown): AgentFinding["agent"] | undefined {
+  const parsed = AgentFindingSchema.shape.agent.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {

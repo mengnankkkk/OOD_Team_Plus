@@ -92,9 +92,9 @@ export async function runProfessionalAdvisor(input: {
   const intent = inferIntent(input.content);
   const requestedDirection = directionForIntent(intent);
   const targetSymbol = input.targetSymbol ?? extractSymbol(input.content);
-  const target = targetSymbol ? instruments.find((instrument) => instrument.symbol.toUpperCase() === targetSymbol.toUpperCase()) ?? null : null;
+  const target = targetSymbol ? findInstrumentBySymbol(instruments, targetSymbol) : null;
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
-  const requiredRoles = rolesFor(intent, Boolean(target));
+  const requiredRoles = rolesFor(intent, Boolean(target), input.content);
   const findings: AgentFinding[] = [];
   const roleRunIds = new Map<ProfessionalAgentRole, string>();
 
@@ -105,7 +105,7 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
-    registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile)));
+    registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
 
     let research: ResearchState = { dataState: target ? "UNAVAILABLE" : "NOT_REQUIRED", execution: null, closes: [], latest: null, asOfDate: null };
     if (requiredRoles.includes("DATA_RESEARCH")) {
@@ -113,23 +113,23 @@ export async function runProfessionalAdvisor(input: {
         const result = await researchInstrument(db, input.analysisId, childRunId, target);
         research = result.state;
         return result.finding;
-      }));
+      }, { emitEvents: false }));
     }
 
-    const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot)));
+    const riskFinding = registerFinding(await runRole(db, input, "PORTFOLIO_RISK", () => portfolioRiskFinding(holdings, snapshot), { emitEvents: false }));
 
     const deterministicDecision = deterministicDecisionFor({ intent, requestedDirection, target, targetHolding, profile, research, riskFinding });
     if (requiredRoles.includes("RECOMMENDATION")) {
-      registerFinding(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings)));
+      registerFinding(await runRole(db, input, "RECOMMENDATION", () => recommendationFinding(deterministicDecision, findings), { emitEvents: false }));
     }
 
     const criticalMissing = criticalMissingInformation(intent, profile, target, targetHolding);
     const complianceFinding = complianceFindingFor(criticalMissing, research.dataState, findings);
     if (requiredRoles.includes("COMPLIANCE_REVIEWER")) {
-      registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding));
+      registerFinding(await runRole(db, input, "COMPLIANCE_REVIEWER", () => complianceFinding, { emitEvents: false }));
     }
     if (requiredRoles.includes("EXPLANATION_REPORT")) {
-      registerFinding(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings)));
+      registerFinding(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings), { emitEvents: false }));
     }
 
     let candidate = deterministicDecision;
@@ -147,7 +147,10 @@ export async function runProfessionalAdvisor(input: {
       const model = await runChiefAdvisor({
         prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
         requiredAgents: requiredRoles,
-        onAgentStarted: (agent, label) => persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } }),
+        onAgentStarted: (agent, label) => {
+          markModelAttemptStarted(db, roleRunIds.get(agent));
+          persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
+        },
         onAgentCompleted: (finding) => {
           persistModelFinding(db, roleRunIds.get(finding.agent), finding);
           persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
@@ -220,7 +223,9 @@ async function runRole(
   input: { userId: string; sessionId: string; analysisId: string },
   role: ProfessionalAgentRole,
   operation: (childRunId: string) => AgentFinding | Promise<AgentFinding>,
+  options: { emitEvents?: boolean } = {},
 ): Promise<RoleRunResult> {
+  const emitEvents = options.emitEvents ?? true;
   const childRunId = createId("agent_run");
   const startedAt = isoNow();
   db.prepare(`INSERT INTO agent_runs
@@ -228,19 +233,25 @@ async function runRole(
     VALUES (?,?,'professional_agent','running',?,?,?,?,?,?,?)`).run(
     childRunId, input.userId, input.sessionId, input.analysisId, input.analysisId, role.toLowerCase(), role, startedAt, startedAt,
   );
-  persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent: role, childRunId } });
+  if (emitEvents) persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent: role, childRunId } });
   try {
     const finding = AgentFindingSchema.parse(await operation(childRunId));
     db.prepare("UPDATE agent_runs SET status='completed',completed_at=?,output_summary=?,result_json=? WHERE id=?")
       .run(isoNow(), finding.conclusion, json(finding), childRunId);
-    persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: role, childRunId, conclusion: finding.conclusion } });
+    if (emitEvents) persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: role, childRunId, conclusion: finding.conclusion } });
     return { childRunId, finding };
   } catch (error) {
     db.prepare("UPDATE agent_runs SET status='failed',completed_at=?,failure_code='AGENT_NODE_FAILED',failure_message=? WHERE id=?")
       .run(isoNow(), safeMessage(error), childRunId);
-    persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { agent: role, childRunId, code: "AGENT_NODE_FAILED" } });
+    if (emitEvents) persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { agent: role, childRunId, code: "AGENT_NODE_FAILED" } });
     throw error;
   }
+}
+
+function markModelAttemptStarted(db: ReturnType<typeof getDatabase>, childRunId: string | undefined): void {
+  if (!childRunId) return;
+  db.prepare("UPDATE agent_runs SET status='running',model_provider='deepseek',model_name=?,failure_code=NULL,failure_message=NULL WHERE id=?")
+    .run(process.env.DEEPSEEK_MODEL ?? null, childRunId);
 }
 
 function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, finding: AgentFinding): void {
@@ -254,7 +265,7 @@ function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: str
 function persistModelAttemptFailure(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, fallback: AgentFinding | undefined, error: unknown): void {
   if (!childRunId) return;
   db.prepare(`UPDATE agent_runs
-    SET status='completed',completed_at=?,model_provider='deepseek',model_name=?,
+    SET status='failed',completed_at=?,model_provider='deepseek',model_name=?,
         output_summary=COALESCE(?,output_summary),result_json=COALESCE(?,result_json),
         failure_code='MODEL_OUTPUT_INVALID',failure_message=?
     WHERE id=?`).run(isoNow(), process.env.DEEPSEEK_MODEL ?? null, fallback?.conclusion ?? null, fallback ? json(fallback) : null, safeMessage(error), childRunId);
@@ -630,12 +641,19 @@ function criticalMissingInformation(intent: AdvisorIntent, profile: Profile | un
   ].filter((value): value is string => Boolean(value));
 }
 
-function rolesFor(intent: AdvisorIntent, hasTarget: boolean): ProfessionalAgentRole[] {
+function rolesFor(intent: AdvisorIntent, hasTarget: boolean, content: string): ProfessionalAgentRole[] {
+  if (requestsFullAgentLoop(content)) {
+    return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+  }
   if (intent === "BUY" || intent === "SELL") return ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "RECOMMENDATION", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
   if (intent === "DIAGNOSIS") return ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
   return hasTarget
     ? ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"]
     : ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"];
+}
+
+function requestsFullAgentLoop(content: string): boolean {
+  return /(?:所有|全部|完整|全量).*(?:agent|Agent|智能体|子智能体)|(?:agent|Agent|智能体|子智能体).*(?:所有|全部|完整|全量)|真实\s*Agent\s*回路/u.test(content);
 }
 
 function inferIntent(content: string): AdvisorIntent {
@@ -711,7 +729,18 @@ function decimal(value: unknown): Decimal | null {
 }
 
 function extractSymbol(content: string): string | null {
-  return content.toUpperCase().match(/\b(?:\d{6}\.(?:SH|SZ|OF)|\d{5}\.HK|[A-Z]{1,10}(?:\.(?:US|HK))?)\b/u)?.[0] ?? null;
+  return content.toUpperCase().match(/\b(?:\d{6}(?:\.(?:SH|SZ|OF))?|\d{5}\.HK|[A-Z]{1,10}(?:\.(?:US|HK))?)\b/u)?.[0] ?? null;
+}
+
+function findInstrumentBySymbol(instruments: Instrument[], symbol: string): Instrument | null {
+  const normalized = normalizeSymbol(symbol);
+  return instruments.find((instrument) => normalizeSymbol(instrument.symbol) === normalized) ?? null;
+}
+
+function normalizeSymbol(symbol: string): string {
+  const upper = symbol.toUpperCase();
+  const bare = upper.match(/^\d{6}(?=\.(?:SH|SZ|OF)$)/u)?.[0] ?? upper;
+  return bare;
 }
 
 function marketDataset(target: Instrument): PandaQuerySource["dataset"] {
