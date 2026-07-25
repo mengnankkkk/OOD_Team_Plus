@@ -445,8 +445,7 @@ function marketMethod(holding: RefreshHolding): PandaDataMethod {
   const assetType = holding.asset_type.toLowerCase();
   if (market.includes("HK") || holding.symbol.toUpperCase().endsWith(".HK")) return "get_hk_daily";
   if (holding.symbol.toUpperCase().endsWith(".SH") || holding.symbol.toUpperCase().endsWith(".SZ") || market === "SH" || market === "SZ") {
-    if (assetType === "fund" || assetType === "etf") return "get_fund_daily";
-    if (assetType === "index") return "get_index_daily";
+    if (assetType === "fund" || assetType === "etf" || assetType === "index") return "get_fund_daily";
     return "get_stock_rt_daily";
   }
   return "get_us_daily";
