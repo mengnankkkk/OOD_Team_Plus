@@ -33,6 +33,17 @@ describe("debate agent coercion", () => {
     expect(fallbackPlan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge"]));
   });
 
+  it("adds every valid scheduled agent to the required agents", () => {
+    const plan = coerceDebateRoundPlan({
+      requiredAgents: ["evidence", "bull", "bear", "judge"],
+      speakingOrder: ["evidence", "chief_advisor", "bull", "bear", "judge"],
+    });
+
+    expect(DebateRoundPlanSchema.parse(plan)).toEqual(plan);
+    expect(plan.speakingOrder).toEqual(["evidence", "chief_advisor", "bull", "bear", "judge"]);
+    expect(plan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge", "chief_advisor"]));
+  });
+
   it("coerces advocate speech into the requested stance and keeps it contract-valid", () => {
     const speech = coerceAdvocateSpeech("bull", {
       stance: "bear",
@@ -89,5 +100,26 @@ describe("debate agent coercion", () => {
     expect(judgement.suggestedNextPrompts).toHaveLength(3);
     expect(judgement.suggestedNextPrompts.every((prompt) => prompt.trim().length > 0)).toBe(true);
     expect(judgement.complianceNote).toMatch(/research|simulation/i);
+  });
+
+  it("keeps quoted user commands while neutralizing judge-authored trade commands", () => {
+    const judgement = coerceDebateJudgement({
+      userClaim: "The user asks whether they should buy now.",
+      bullStrongestPoint: "Buy now because the result was strong.",
+      bearStrongestPoint: "立即买入 would be too risky.",
+      keyDisagreement: "必须加仓 versus waiting for proof.",
+      whyNotFinal: "马上卖出 if the next report disappoints.",
+      suggestedNextPrompts: ["Sell now.", "Compare current valuation with history."],
+      complianceNote: "应该减仓 after this debate.",
+    });
+
+    expect(judgement.userClaim).toBe("The user asks whether they should buy now.");
+    expect(judgement.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(judgement.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(judgement.keyDisagreement).toMatch(/evidence|research/i);
+    expect(judgement.whyNotFinal).toMatch(/evidence|research/i);
+    expect(judgement.suggestedNextPrompts[0]).toMatch(/evidence|research/i);
+    expect(judgement.suggestedNextPrompts[1]).toBe("Compare current valuation with history.");
+    expect(judgement.complianceNote).toMatch(/research and simulation/i);
   });
 });

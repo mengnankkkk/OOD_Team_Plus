@@ -158,11 +158,12 @@ export async function runDebateJudge(prompt: string): Promise<DebateJudgement> {
 
 export function coerceDebateRoundPlan(value: unknown): DebateRoundPlan {
   const record = normalizeRecord(value);
-  const requiredAgents = uniqueDebateAgents(record.requiredAgents);
-  for (const agent of REQUIRED_DEBATE_AGENTS) {
-    if (!requiredAgents.includes(agent)) requiredAgents.push(agent);
-  }
   const speakingOrder = debateAgentsFrom(record.speakingOrder);
+  const requiredAgents = uniqueDebateAgents(
+    debateAgentsFrom(record.requiredAgents),
+    speakingOrder,
+    [...REQUIRED_DEBATE_AGENTS],
+  );
 
   return DebateRoundPlanSchema.parse({
     userDebateRole: parseEnum(DebateUserRoleSchema, record.userDebateRole) ?? "neutral",
@@ -214,36 +215,44 @@ export function coerceAdvocateSpeech(stance: "bull" | "bear", value: unknown): A
 export function coerceDebateJudgement(value: unknown): DebateJudgement {
   const record = normalizeRecord(value);
   const responseQuality = normalizeRecord(record.responseQuality);
-  const suggestedNextPrompts = stringArray(record.suggestedNextPrompts).slice(0, 3);
-  const complianceNote = nonEmptyString(
+  const bullStrongestPointFallback = "The bull case did not provide a complete strongest point, so the evidence should be reviewed directly.";
+  const bearStrongestPointFallback = "The bear case did not provide a complete strongest point, so the evidence should be reviewed directly.";
+  const keyDisagreementFallback = "The key disagreement is whether the available evidence supports the claim strongly enough.";
+  const whyNotFinalFallback = "The evidence and assumptions remain incomplete, so this discussion cannot settle the question.";
+  const suggestedPromptFallback = "Ask for fresh research that could change the current conclusion.";
+  const complianceNoteFallback = "This is research and simulation for education, not individualized investment advice or an instruction to trade.";
+  const suggestedNextPrompts = stringArray(record.suggestedNextPrompts)
+    .slice(0, 3)
+    .map((prompt) => neutralizeJudgeNarrative(prompt, suggestedPromptFallback));
+  const complianceNote = neutralizeJudgeNarrative(nonEmptyString(
     record.complianceNote,
-    "This is research and simulation for education, not individualized investment advice or an instruction to trade.",
-  );
+    complianceNoteFallback,
+  ), complianceNoteFallback);
 
   return DebateJudgementSchema.parse({
     userClaim: nonEmptyString(record.userClaim, "The user's claim needs a balanced evidence review."),
-    bullStrongestPoint: nonEmptyString(
+    bullStrongestPoint: neutralizeJudgeNarrative(nonEmptyString(
       record.bullStrongestPoint,
-      "The bull case did not provide a complete strongest point, so the evidence should be reviewed directly.",
-    ),
-    bearStrongestPoint: nonEmptyString(
+      bullStrongestPointFallback,
+    ), bullStrongestPointFallback),
+    bearStrongestPoint: neutralizeJudgeNarrative(nonEmptyString(
       record.bearStrongestPoint,
-      "The bear case did not provide a complete strongest point, so the evidence should be reviewed directly.",
-    ),
-    keyDisagreement: nonEmptyString(
+      bearStrongestPointFallback,
+    ), bearStrongestPointFallback),
+    keyDisagreement: neutralizeJudgeNarrative(nonEmptyString(
       record.keyDisagreement,
-      "The key disagreement is whether the available evidence supports the claim strongly enough.",
-    ),
+      keyDisagreementFallback,
+    ), keyDisagreementFallback),
     responseQuality: {
       bull: parseEnum(DebateResponseQualitySchema, responseQuality.bull) ?? "not_applicable",
       bear: parseEnum(DebateResponseQualitySchema, responseQuality.bear) ?? "not_applicable",
     },
     evidenceTilt: parseEnum(DebateEvidenceTiltSchema, record.evidenceTilt) ?? "insufficient_evidence",
     confidence: coerceConfidence(record.confidence),
-    whyNotFinal: nonEmptyString(
+    whyNotFinal: neutralizeJudgeNarrative(nonEmptyString(
       record.whyNotFinal,
-      "The evidence and assumptions remain incomplete, so this discussion cannot settle the question.",
-    ),
+      whyNotFinalFallback,
+    ), whyNotFinalFallback),
     suggestedNextPrompts: suggestedNextPrompts.length ? suggestedNextPrompts : [
       "What fresh evidence would most weaken the bull case?",
       "What fresh evidence would most weaken the bear case?",
@@ -342,8 +351,8 @@ function coerceAdvocateArgument(
   };
 }
 
-function uniqueDebateAgents(value: unknown): DebateAgent[] {
-  return [...new Set(debateAgentsFrom(value))];
+function uniqueDebateAgents(...agentLists: DebateAgent[][]): DebateAgent[] {
+  return [...new Set(agentLists.flat())];
 }
 
 function debateAgentsFrom(value: unknown): DebateAgent[] {
@@ -392,4 +401,18 @@ function stanceLabel(stance: DebateStance): string {
 
 function includesResearchAndSimulation(value: string): boolean {
   return /\bresearch\b/iu.test(value) && /\bsimulation\b/iu.test(value);
+}
+
+function neutralizeJudgeNarrative(value: string, fallback: string): string {
+  return hasImperativeTradeCommand(value) ? fallback : value;
+}
+
+function hasImperativeTradeCommand(value: string): boolean {
+  return [
+    /\b(?:buy|sell)\s+now\b/iu,
+    /\b(?:must|should)\s+(?:buy|sell)\b/iu,
+    /\b(?:must|should)\s+(?:add(?:\s+to)?|reduce)\s+(?:your\s+)?(?:position|holdings?)\b/iu,
+    /(?:立即|马上)\s*(?:买入|卖出)/u,
+    /(?:必须|应该)\s*(?:买入|卖出|加仓|减仓)/u,
+  ].some((pattern) => pattern.test(value));
 }
