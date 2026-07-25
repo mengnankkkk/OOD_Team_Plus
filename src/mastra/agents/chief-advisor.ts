@@ -185,14 +185,19 @@ async function streamModelObject<T extends object>(
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_400, temperature: 0.1 },
   });
+  let latestPartial: Partial<T> = {};
   if (stream.objectStream) {
     for await (const partial of stream.objectStream) {
-      if (partial && typeof partial === "object") onPartial(partial as Partial<T>);
+      if (partial && typeof partial === "object") {
+        latestPartial = { ...latestPartial, ...(partial as Partial<T>) };
+        onPartial(latestPartial);
+      }
     }
   }
-  const result = await stream.object;
-  if (!result || typeof result !== "object") throw new Error("MODEL_OUTPUT_EMPTY");
-  return result as T;
+  const result = await stream.object.catch(() => undefined);
+  if (result && typeof result === "object") return result as T;
+  if (Object.keys(latestPartial).length > 0) return latestPartial as T;
+  throw new Error("MODEL_OUTPUT_EMPTY");
 }
 
 async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
