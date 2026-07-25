@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, LoaderCircle, Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +19,16 @@ export type InstrumentSearchResult = {
 
 type PickerInstrument = InstrumentSearchResult & { symbol: string };
 
+type InstrumentSearchPage = {
+  items: PickerInstrument[];
+  pagination?: {
+    limit: number;
+    nextCursor: string | null;
+    hasMore: boolean;
+    total: number;
+  };
+};
+
 type Props = {
   name: string;
   symbol: string;
@@ -31,6 +41,8 @@ type Props = {
   symbolPlaceholder?: string;
   searchPlaceholder?: string;
 };
+
+const SEARCH_PAGE_SIZE = 8;
 
 export default function AShareInstrumentPicker({
   name,
@@ -47,18 +59,77 @@ export default function AShareInstrumentPicker({
   const [searchText, setSearchText] = useState("");
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [remoteMatches, setRemoteMatches] = useState<PickerInstrument[]>([]);
-  const localMatches = useMemo(() => searchText.trim() ? searchAShareStocks(searchText, 8).map((stock) => ({ ...stock, symbol: stock.code, instrumentId: stock.code, assetType: "STOCK", market: stock.code.startsWith("6") ? "SH" : "SZ", tradable: true })) : [], [searchText]);
+  const [remoteCursor, setRemoteCursor] = useState<string | null>(null);
+  const [remoteHasMore, setRemoteHasMore] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(SEARCH_PAGE_SIZE);
+  const requestVersionRef = useRef(0);
+  const localMatches = useMemo(() => searchText.trim() ? searchAShareStocks(searchText, Number.POSITIVE_INFINITY).map((stock) => ({ ...stock, symbol: stock.code, instrumentId: stock.code, assetType: "STOCK", market: stock.code.startsWith("6") ? "SH" : "SZ", tradable: true })) : [], [searchText]);
+
   useEffect(() => {
     const query = searchText.trim();
-    if (!query) { setRemoteMatches([]); return; }
+    const requestVersion = requestVersionRef.current + 1;
+    requestVersionRef.current = requestVersion;
+    setRemoteMatches([]);
+    setRemoteCursor(null);
+    setRemoteHasMore(false);
+    setRemoteLoading(false);
+    setVisibleLimit(SEARCH_PAGE_SIZE);
+    if (!query) return;
+
     const timer = window.setTimeout(() => {
-      apiGet<{ items: Array<InstrumentSearchResult & { symbol: string }> }>(`/api/v1/instruments/search?q=${encodeURIComponent(query)}&limit=12`)
-        .then((result) => setRemoteMatches(result.items.filter((item) => item.tradable)))
-        .catch(() => setRemoteMatches([]));
+      setRemoteLoading(true);
+      apiGet<InstrumentSearchPage>(`/api/v1/instruments/search?q=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&cursor=0`)
+        .then((result) => {
+          if (requestVersionRef.current !== requestVersion) return;
+          setRemoteMatches(result.items.filter((item) => item.tradable));
+          setRemoteCursor(result.pagination?.nextCursor ?? null);
+          setRemoteHasMore(Boolean(result.pagination?.hasMore));
+        })
+        .catch(() => {
+          if (requestVersionRef.current !== requestVersion) return;
+          setRemoteMatches([]);
+          setRemoteCursor(null);
+          setRemoteHasMore(false);
+        })
+        .finally(() => {
+          if (requestVersionRef.current === requestVersion) setRemoteLoading(false);
+        });
     }, 180);
     return () => window.clearTimeout(timer);
   }, [searchText]);
-  const matches = useMemo(() => [...new Map([...remoteMatches, ...localMatches].map((item) => [item.symbol, item])).values()].slice(0, 8), [localMatches, remoteMatches]);
+
+  const mergedMatches = useMemo(() => [...new Map([...localMatches, ...remoteMatches].map((item) => [item.symbol, item])).values()], [localMatches, remoteMatches]);
+  const matches = useMemo(() => mergedMatches.slice(0, visibleLimit), [mergedMatches, visibleLimit]);
+  const canLoadMore = mergedMatches.length > visibleLimit || remoteHasMore;
+
+  const handleLoadMore = async () => {
+    if (remoteLoading) return;
+    const nextVisibleLimit = visibleLimit + SEARCH_PAGE_SIZE;
+    if (mergedMatches.length > visibleLimit) {
+      setVisibleLimit(nextVisibleLimit);
+      return;
+    }
+    if (!remoteHasMore || !remoteCursor) return;
+
+    const query = searchText.trim();
+    const requestVersion = requestVersionRef.current;
+    setRemoteLoading(true);
+    try {
+      const result = await apiGet<InstrumentSearchPage>(`/api/v1/instruments/search?q=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&cursor=${encodeURIComponent(remoteCursor)}`);
+      if (requestVersionRef.current !== requestVersion) return;
+      setRemoteMatches((current) => [...new Map([...current, ...result.items.filter((item) => item.tradable)].map((item) => [item.symbol, item])).values()]);
+      setRemoteCursor(result.pagination?.nextCursor ?? null);
+      setRemoteHasMore(Boolean(result.pagination?.hasMore));
+      setVisibleLimit(nextVisibleLimit);
+    } catch {
+      if (requestVersionRef.current !== requestVersion) return;
+      setRemoteCursor(null);
+      setRemoteHasMore(false);
+    } finally {
+      if (requestVersionRef.current === requestVersion) setRemoteLoading(false);
+    }
+  };
 
   const applyStock = (stock: PickerInstrument) => {
     setSearchText(`${stock.symbol} ${stock.name}`);
@@ -115,7 +186,7 @@ export default function AShareInstrumentPicker({
             placeholder={searchPlaceholder}
             className="pl-9"
           />
-          {suggestOpen && matches.length ? (
+          {suggestOpen && (matches.length || remoteLoading) ? (
             <div className="absolute inset-x-0 top-[calc(100%+6px)] z-50 max-h-64 overflow-auto rounded-md border border-border bg-popover p-1 shadow-xl">
               {matches.map((stock) => (
                 <button
@@ -128,6 +199,17 @@ export default function AShareInstrumentPicker({
                   <span className="font-mono text-xs text-muted-foreground">{stock.symbol}</span>
                 </button>
               ))}
+              {canLoadMore ? (
+                <button
+                  type="button"
+                  onClick={() => void handleLoadMore()}
+                  disabled={remoteLoading}
+                  className="mt-1 flex h-9 w-full items-center justify-center gap-2 border-t border-border px-3 pt-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+                >
+                  {remoteLoading ? <LoaderCircle className="size-4 animate-spin" /> : <ChevronDown className="size-4" />}
+                  {remoteLoading ? "加载中…" : "加载更多"}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
