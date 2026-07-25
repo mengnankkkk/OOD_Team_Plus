@@ -13,13 +13,17 @@ export function insertNotification(db: ReturnType<typeof getDatabase>, input: {
   dedupeKey: string;
   dataAsOf: string;
   metadata: Record<string, unknown>;
+  conditionId?: string;
+  eventId?: string;
 }): number {
   const now = isoNow();
   const result = db.prepare(`INSERT OR IGNORE INTO notifications
-    (id,user_id,severity,title,body_text,source_type,source_id,group_key,metadata_json,data_as_of,dedupe_key,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,severity,title,body_text,source_type,source_id,group_key,condition_id,event_id,
+     metadata_json,data_as_of,dedupe_key,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     createId("notification"), input.userId, input.severity, input.title, input.body, input.sourceType,
-    input.sourceId, input.groupKey, json(input.metadata), input.dataAsOf, input.dedupeKey, now, now,
+    input.sourceId, input.groupKey, input.conditionId ?? null, input.eventId ?? null,
+    json(input.metadata), input.dataAsOf, input.dedupeKey, now, now,
   );
   return result.changes;
 }
