@@ -47,8 +47,16 @@ export const BranchScenarioPlanSchema = z.object({
   modelSummary: z.string().max(1000).optional(),
 }).strict();
 
+const BranchScenarioModelTradeSchema = z.object({
+  instrumentId: z.string().min(1).max(120),
+  action: z.enum(["BUY", "SELL"]),
+  quantity: decimalString,
+}).strict();
+
 export const BranchScenarioModelPlanSchema = z.object({
-  options: z.array(BranchScenarioOptionBaseSchema.omit({ label: true })).min(1).max(5),
+  options: z.array(BranchScenarioOptionBaseSchema.omit({ label: true }).extend({
+    trades: z.array(BranchScenarioModelTradeSchema).max(30),
+  })).min(1).max(5),
   delegatedAgents: z.array(z.string().min(1).max(80)).max(12),
   modelSummary: z.string().max(1000).optional(),
 }).strict();
