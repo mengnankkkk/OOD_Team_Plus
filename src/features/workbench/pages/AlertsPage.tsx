@@ -10,7 +10,7 @@ import { useAlerts, useAlertSyncState } from "@/hooks/useAlerts";
 import { markAllAlertsRead, syncAlerts, updateAlertStatus } from "@/services/alertsService";
 import type { Alert } from "@/types/app/notice";
 
-type Filter = "active" | "unread" | "important";
+type Filter = "active" | "unread" | "important" | "events";
 
 const severityMeta: Record<Alert["severity"], { label: string; icon: typeof Bell; tone: string; marker: string }> = {
   urgent: { label: "紧急", icon: ShieldAlert, tone: "text-destructive", marker: "bg-destructive" },
@@ -27,6 +27,7 @@ const sourceLabels: Record<string, string> = {
   MARKET_MOVE: "持仓异动",
   WATCHLIST_MOVE: "自选异动",
   WATCHLIST_DRAWDOWN: "自选回撤",
+  WATCHLIST_EVENT: "关联事件",
   WATCH_CONDITION: "自定义条件",
   DATA_QUALITY: "数据质量",
   DATA_FRESHNESS: "数据时效",
@@ -62,6 +63,7 @@ const AlertsPage = () => {
   const filtered = useMemo(() => alerts.filter((item) => {
     if (filter === "unread") return item.status === "unread";
     if (filter === "important") return item.status !== "dismissed" && ["urgent", "important"].includes(item.severity);
+    if (filter === "events") return item.status !== "dismissed" && item.sourceType === "WATCHLIST_EVENT";
     return item.status !== "dismissed";
   }), [alerts, filter]);
 
@@ -161,6 +163,7 @@ const AlertsPage = () => {
               ["active", "全部"],
               ["unread", `未读 ${unreadCount}`],
               ["important", `优先 ${importantCount}`],
+              ["events", "关联事件"],
             ] as Array<[Filter, string]>).map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}
           </div>
           <Button variant="ghost" size="sm" onClick={() => void markAllRead()} disabled={unreadCount === 0}><CheckCheck className="size-4" />全部已读</Button>
