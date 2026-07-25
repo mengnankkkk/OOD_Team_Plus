@@ -8,7 +8,7 @@ import { BranchDiff } from "@/features/workbench/components/branch-diff";
 import { BranchEventTimeline } from "@/features/workbench/components/branch-event-timeline";
 import { BranchOptionCard, BranchOptionEmptyState, type BranchOption } from "@/features/workbench/components/branch-option-card";
 import { ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
-import { apiGet, apiMutation, money, percent, shortDate } from "@/features/workbench/lib/api";
+import { apiMutation, money, percent, shortDate } from "@/features/workbench/lib/api";
 import { simulationProviderMessage } from "@/features/workbench/lib/simulation-provider";
 
 type WorkspaceSummary = { id: string; name: string; objectiveText: string; status: string; activeBranchId: string; version: number; updatedAt: string };
@@ -42,7 +42,6 @@ export default function SimulationsPage() {
   const parentSnapshot = useApiResource<Snapshot>(workspace.data && parentBranchId ? `/api/v1/simulation-workspaces/${workspace.data.id}/branches/${parentBranchId}/snapshot` : null);
   const events = useMemo(() => workspace.data?.events ?? [], [workspace.data?.events]);
   const reloadOptions = options.reload;
-  const reloadWorkspace = workspace.reload;
   const setWorkspaceData = workspace.setData;
   const setOptionsData = options.setData;
   const setSnapshotData = snapshot.setData;
@@ -67,30 +66,14 @@ export default function SimulationsPage() {
   }, [list.data, selectWorkspace]);
 
   useEffect(() => {
-    const status = options.data?.status;
-    if (!["QUEUED", "RUNNING"].includes(status ?? "")) return;
-    const timer = setInterval(() => {
-      void reloadOptions();
-      void reloadWorkspace();
-    }, 700);
+    if (!["QUEUED", "RUNNING"].includes(options.data?.status ?? "")) return;
+    const timer = setInterval(() => { void reloadOptions(); }, 1000);
     return () => clearInterval(timer);
-  }, [options.data?.status, reloadOptions, reloadWorkspace]);
-
-  useEffect(() => {
-    const streamUrl = options.data?.analysis?.streamUrl;
-    if (!streamUrl || !["QUEUED", "RUNNING"].includes(options.data?.status ?? "")) return;
-    const source = new EventSource(streamUrl);
-    const refresh = () => {
-      void reloadOptions();
-      void reloadWorkspace();
-    };
-    ["agent.completed", "branch.options.created", "run.completed", "run.failed"].forEach((eventName) => source.addEventListener(eventName, refresh));
-    return () => source.close();
-  }, [options.data?.analysis?.streamUrl, options.data?.status, reloadOptions, reloadWorkspace]);
+  }, [options.data?.status, reloadOptions]);
 
   const queueOptions = async (workspaceId: string, objectiveText = objective) => {
-    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective: objectiveText });
-    void pollOptionBatch(workspaceId, queued.analysis.analysisId);
+    const queued = await apiMutation<OptionsPayload>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective: objectiveText });
+    if (selectedWorkspaceRef.current === workspaceId) setOptionsData(queued);
   };
 
   const startNewWorkspace = () => {
@@ -144,24 +127,6 @@ export default function SimulationsPage() {
     } finally {
       setBusy("");
     }
-  };
-
-  const pollOptionBatch = async (workspaceId: string, analysisId: string) => {
-    const path = `/api/v1/simulation-workspaces/${workspaceId}/options`;
-    for (let attempt = 0; attempt < 600; attempt += 1) {
-      try {
-        const latest = await apiGet<OptionsPayload>(path);
-        if (selectedWorkspaceRef.current !== workspaceId) return;
-        setOptionsData(latest);
-        if (latest.status === "SUCCEEDED" || latest.status === "FAILED") return;
-      } catch (reason) {
-        if (selectedWorkspaceRef.current !== workspaceId) return;
-        setError(reason instanceof Error ? reason.message : "读取候选状态失败");
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    setError(`候选生成超时，请通过分析 ${analysisId} 查看运行状态`);
   };
 
   const execute = async (option: BranchOption) => {
