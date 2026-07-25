@@ -125,4 +125,51 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
     checkDb.close();
     expect(latestPrice.price_decimal).toBe("12.34");
   });
+
+  it("falls back to the latest historical close when A-share realtime data is empty", async () => {
+    const db = getDatabase();
+    db.prepare("INSERT INTO instruments (id,symbol,name,market,asset_type,sector,tradable) VALUES (?,?,?,?,?,?,1)")
+      .run("000001.SZ", "000001.SZ", "平安银行", "SZ", "stock", "银行");
+    db.prepare("INSERT INTO holdings (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?)")
+      .run("holding-pingan-weekend", TEST_USER_ID, TEST_PORTFOLIO_ID, "000001.SZ", "100", "10.00", "2026-07-25T01:00:00.000Z", "2026-07-25T01:00:00.000Z");
+    db.close();
+    callPandaData.mockImplementation(async (method: string) => ({
+      method,
+      callDurationMs: 1,
+      data: method === "get_stock_rt_daily"
+        ? []
+        : method === "get_stock_daily"
+          ? [{ symbol: "000001.SZ", date: "20260724", close: 11.1 }]
+          : [
+              { symbol: "AAPL", date: "2026-07-24", close: 155 },
+              { symbol: "MSFT", date: "2026-07-24", close: 225 },
+            ],
+    }));
+
+    const response = await POST(authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "a-share-weekend-fallback" },
+    }));
+
+    expect(response.status).toBe(202);
+    expect(callPandaData).toHaveBeenCalledWith(
+      "get_stock_daily",
+      expect.objectContaining({
+        symbol: ["000001.SZ"],
+        fields: ["symbol", "date", "close"],
+      }),
+    );
+    const checkDb = getDatabase();
+    const latestPrice = checkDb.prepare(`
+      SELECT hs.price_decimal
+      FROM holding_snapshots hs
+      JOIN portfolio_snapshots ps ON ps.id = hs.portfolio_snapshot_id
+      WHERE ps.user_id=? AND hs.instrument_id='000001.SZ'
+      ORDER BY ps.created_at DESC, hs.created_at DESC
+      LIMIT 1
+    `).get(TEST_USER_ID) as { price_decimal: string };
+    checkDb.close();
+    expect(latestPrice.price_decimal).toBe("11.1");
+  });
 });

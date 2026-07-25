@@ -92,9 +92,12 @@ export async function generateCandidates(
   }
 
   const heldIds = new Set(sortedRows.map((row) => row.instrument_id));
-  const target = instruments.find((instrument) => !heldIds.has(String(instrument.id)) && /FUND|ETF|INDEX/iu.test(String(instrument.asset_type)) && freshPrice(instrument) != null)
+  const heldDiversifier = sortedRows.find((row) => /FUND|ETF|INDEX/iu.test(String(row.asset_type)) && prices[row.instrument_id]);
+  const target = heldDiversifier
+    ? { id: heldDiversifier.instrument_id, asset_type: heldDiversifier.asset_type, sector: heldDiversifier.sector }
+    : instruments.find((instrument) => !heldIds.has(String(instrument.id)) && /FUND|ETF|INDEX/iu.test(String(instrument.asset_type)) && freshPrice(instrument) != null)
     ?? instruments.find((instrument) => !heldIds.has(String(instrument.id)) && freshPrice(instrument) != null);
-  if (target) {
+  if (target && !prices[String(target.id)]) {
     prices[String(target.id)] = clean(freshPrice(target)!);
     assets[String(target.id)] = { assetType: String(target.asset_type ?? "UNKNOWN"), sector: target.sector == null ? null : String(target.sector) };
   }
