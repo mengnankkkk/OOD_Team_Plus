@@ -65,6 +65,7 @@ type RoleRunResult = {
 };
 
 export type ProfessionalAdvisorResult = {
+  kind: "GUIDED_INTAKE" | "DECISION";
   runId: string;
   status: PublicationStatus;
   direction: AdvisorDecision["requestedDirection"];
@@ -110,6 +111,21 @@ export async function runProfessionalAdvisor(input: {
   };
 
   try {
+    if (intent === "GENERAL" && !requestsFullAgentLoop(input.content)) {
+      return {
+        kind: "GUIDED_INTAKE",
+        runId: input.analysisId,
+        status: "DEGRADED",
+        direction: "HOLD",
+        action: "WATCH",
+        findings: [],
+        missingInformation: [],
+        recommendation: null,
+        answer: formatGuidedIntakeAnswer(input.content),
+        provider: "DETERMINISTIC_FALLBACK",
+      };
+    }
+
     const profileFinding = registerFinding(await runRole(db, input, "PROFILE_CONTEXT", () => profileFindingFor(profile), { emitEvents: false }));
 
     let research: ResearchState = { dataState: target || holdings.length ? "UNAVAILABLE" : "NOT_REQUIRED", executions: [], closes: [], latest: null, asOfDate: null, quotes: [], riskMetrics: [], correlations: [] };
@@ -255,6 +271,7 @@ export async function runProfessionalAdvisor(input: {
     persistSseEvent({ analysisId: input.analysisId, type: "compliance.completed", payload: { status, dataState: research.dataState, modelFallback, unresolvedConflict } });
     const missingInformation = [...new Set([...criticalMissing, ...findings.flatMap((finding) => finding.missingInformation)])];
     return {
+      kind: "DECISION",
       runId: input.analysisId,
       status,
       direction: candidate.requestedDirection,
@@ -994,6 +1011,24 @@ function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, find
     `反方证据：${decision.counterEvidence.join("；")}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
     "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
+  ].join("\n");
+}
+
+function formatGuidedIntakeAnswer(content: string): string {
+  const mentionsSavings = /存款|现金|余额|积蓄|资金/u.test(content);
+  const mentionsFear = /怕|担心|风险|暴跌|亏损|回撤/u.test(content);
+  const firstQuestion = mentionsSavings
+    ? "这笔钱里，未来 1-3 年已经确定要用的部分大约有多少？"
+    : "未来 1-3 年有没有已经确定的大额用途，例如首付、教育、应急或换车？";
+  const secondQuestion = mentionsFear
+    ? "在账户短期下跌时，你大概能接受多大幅度的浮亏而不影响生活和睡眠？"
+    : "你希望优先解决的是稳住本金、安排阶段目标，还是为长期增值做配置？";
+  return [
+    "收到。普通模式会先把目标、资金用途和风险边界聊清楚，不会因为一条描述就读取历史持仓并生成买卖建议。",
+    "先确认两件事：",
+    `1. ${firstQuestion}`,
+    `2. ${secondQuestion}`,
+    "你回答后，我会先帮你整理资金分层和画像方向；只有你明确提出“诊断我的持仓”或“分析某个标的”时，才会启动完整的数据、风险与合规流程。",
   ].join("\n");
 }
 

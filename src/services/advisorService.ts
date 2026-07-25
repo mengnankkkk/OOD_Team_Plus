@@ -52,7 +52,7 @@ export async function listOnboardingMessages(_userId: string, sessionId?: string
   const result = await apiGet<{ items: MessageRow[] }>(`/api/v1/conversations/${sessionId}/messages`);
   return Promise.all(result.items.map(async (row) => {
     const message = mapMessage(row);
-    if (row.role !== "assistant" || !row.agent_run_id) return message;
+    if (row.role !== "assistant" || !row.agent_run_id || message.metadata.conversationKind === "GUIDED_INTAKE") return message;
     const trace = await loadAdvisorTrace(row.agent_run_id).catch(() => null);
     return trace ? { ...message, metadata: { ...message.metadata, trace } } : message;
   }));
@@ -93,7 +93,9 @@ export async function sendAdvisorMessage(message: string, sessionId: string | nu
     outputMode,
   });
   const analysis = result.analysis as { analysisId?: string } | undefined;
-  const trace = analysis?.analysisId ? await loadAdvisorTrace(analysis.analysisId).catch(() => null) : null;
+  const trace = analysis?.analysisId && result.conversationKind !== "GUIDED_INTAKE"
+    ? await loadAdvisorTrace(analysis.analysisId).catch(() => null)
+    : null;
   return {
     reply: String(result.answer ?? "分析已完成。"),
     profileUpdate: null,
@@ -114,7 +116,7 @@ export async function sendAdvisorMessageStream(
 ): Promise<AdvisorReply> {
   const activeSessionId = await ensureConversation(sessionId, message);
   observer.onSessionId?.(activeSessionId);
-  observer.onProgress?.("已创建对话，正在启动顾问 Agent");
+  observer.onProgress?.("已创建对话，正在理解你的问题");
   const result = await apiPost<StreamStarted>(`/api/v1/conversations/${activeSessionId}/messages/stream`, {
     clientMessageId: createClientId(),
     content: message,
@@ -123,14 +125,16 @@ export async function sendAdvisorMessageStream(
   const analysisId = result.analysis?.analysisId ?? null;
   const streamUrl = result.analysis?.streamUrl;
   if (analysisId && streamUrl && !result.answer) {
-    observer.onProgress?.("顾问 Agent 已启动，正在连接事件流");
+    observer.onProgress?.("顾问正在判断是否需要启动专业分析");
     await watchAdvisorStream(streamUrl, observer).catch((error) => {
       observer.onProgress?.(error instanceof Error ? error.message : "事件流中断，正在读取最终结果");
     });
   }
   const assistant = analysisId ? await waitForAssistantMessage(activeSessionId, analysisId) : null;
-  const trace = analysisId ? await loadAdvisorTrace(analysisId).catch(() => null) : null;
   const metadata = assistant?.metadata ?? {};
+  const trace = analysisId && metadata.conversationKind !== "GUIDED_INTAKE"
+    ? await loadAdvisorTrace(analysisId).catch(() => null)
+    : null;
   return {
     reply: assistant?.content ?? String(result.answer ?? "分析已完成。"),
     profileUpdate: null,
