@@ -89,6 +89,8 @@ export async function runProfessionalAdvisor(input: {
   db.prepare(`UPDATE agent_runs SET session_id=?,root_run_id=?,agent_type='chief_advisor',objective=?,started_at=COALESCE(started_at,?)
     WHERE id=? AND user_id=?`).run(input.sessionId, input.analysisId, input.content.slice(0, 500), now, input.analysisId, input.userId);
   const profile = db.prepare("SELECT risk_level,investment_amount_decimal,horizon,max_drawdown_decimal,preferences_json FROM user_profiles WHERE user_id=?").get(input.userId) as Profile | undefined;
+  const conversationMessages = db.prepare("SELECT content FROM messages WHERE session_id=? AND role='user' ORDER BY created_at ASC")
+    .all(input.sessionId) as Array<{ content: string }>;
   const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1").get(input.userId) as Record<string, unknown> | undefined;
   const holdings = snapshot ? db.prepare(`SELECT hs.instrument_id,i.symbol,i.name,i.asset_type,i.market,i.sector,
       hs.quantity_decimal,hs.cost_decimal,hs.price_decimal,hs.market_value_decimal,hs.unrealized_pnl_decimal,hs.weight_bps
@@ -121,7 +123,7 @@ export async function runProfessionalAdvisor(input: {
         findings: [],
         missingInformation: [],
         recommendation: null,
-        answer: formatGuidedIntakeAnswer(input.content),
+        answer: formatGuidedIntakeAnswer(conversationMessages.map((message) => message.content)),
         provider: "DETERMINISTIC_FALLBACK",
       };
     }
@@ -1014,21 +1016,35 @@ function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, find
   ].join("\n");
 }
 
-function formatGuidedIntakeAnswer(content: string): string {
-  const mentionsSavings = /存款|现金|余额|积蓄|资金/u.test(content);
-  const mentionsFear = /怕|担心|风险|暴跌|亏损|回撤/u.test(content);
-  const firstQuestion = mentionsSavings
-    ? "这笔钱里，未来 1-3 年已经确定要用的部分大约有多少？"
-    : "未来 1-3 年有没有已经确定的大额用途，例如首付、教育、应急或换车？";
-  const secondQuestion = mentionsFear
-    ? "在账户短期下跌时，你大概能接受多大幅度的浮亏而不影响生活和睡眠？"
-    : "你希望优先解决的是稳住本金、安排阶段目标，还是为长期增值做配置？";
+function formatGuidedIntakeAnswer(messages: string[]): string {
+  const context = messages.join("\n");
+  const hasInvestmentAmount = /(?:拿(?:出)?|投入|投资|配置|可用于|准备用|计划用)\s*(?:人民币)?\s*\d+(?:\.\d+)?\s*(?:万元|万|元|w)/iu.test(context);
+  const hasHorizon = /[一二三四五六七八九十\d]+\s*年|半年|几个月|短期|中期|中线|长期|长线|未来\s*[一二三四五六七八九十\d]+/u.test(context);
+  const hasGoal = /首付|买房|购房|教育|养老|退休|应急|结婚|换车|旅行|长期增值|财富增长|目标/u.test(context);
+  const hasRiskLimit = /\d+(?:\.\d+)?\s*%|最大.*(?:亏|回撤)|最多.*(?:亏|回撤)|能接受.*(?:亏|回撤)/u.test(context);
+  const hasPreference = /宽基|指数|ETF|个股|股票|债券|基金|存款|现金管理/u.test(context);
+  const questions = [
+    !hasInvestmentAmount ? "在保留应急金和近期支出后，你准备拿出多少作为可投资金额？" : null,
+    !hasHorizon ? "这部分投资资金预计多久不会使用：1 年以内、1-3 年，还是 3 年以上？" : null,
+    !hasGoal ? "你更想优先实现哪个目标：稳住本金、阶段性大额支出，还是长期增值？" : null,
+    !hasRiskLimit ? "账户短期下跌多少时会明显影响你的生活或让你想立刻卖出？" : null,
+    !hasPreference ? "你更愿意从宽基指数、债券/现金管理，还是个股研究开始？" : null,
+  ].filter((question): question is string => Boolean(question));
+
+  if (questions.length === 0) {
+    return [
+      "这轮对话里的可投资金额、期限、目标、回撤边界和方向偏好已经比较清楚了。",
+      "下一步可以先整理不涉及具体标的的资金分层方案；只有你明确提出“诊断我的持仓”或“分析某个标的”时，才会启动完整的数据、风险与合规流程并形成建议卡。",
+    ].join("\n");
+  }
+
   return [
-    "收到。普通模式会先把目标、资金用途和风险边界聊清楚，不会因为一条描述就读取历史持仓并生成买卖建议。",
-    "先确认两件事：",
-    `1. ${firstQuestion}`,
-    `2. ${secondQuestion}`,
-    "你回答后，我会先帮你整理资金分层和画像方向；只有你明确提出“诊断我的持仓”或“分析某个标的”时，才会启动完整的数据、风险与合规流程。",
+    messages.length > 1
+      ? "我把你刚补充的内容接上了。普通模式会继续把关键信息问完整，不会中途跳去生成买卖建议。"
+      : "收到。普通模式会先把目标、资金用途和风险边界聊清楚，不会因为一条描述就读取历史持仓并生成买卖建议。",
+    `接下来确认${questions.length > 1 ? "两件事" : "一件事"}：`,
+    ...questions.slice(0, 2).map((question, index) => `${index + 1}. ${question}`),
+    "你回答后，我会沿着当前对话继续往下梳理。",
   ].join("\n");
 }
 

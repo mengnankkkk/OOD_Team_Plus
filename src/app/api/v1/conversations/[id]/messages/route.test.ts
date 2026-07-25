@@ -118,6 +118,14 @@ describe("conversation advisor clarifications", () => {
     const recommendationCount = db.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE user_id=?").get(TEST_USER_ID) as { count: number };
     db.close();
     expect(recommendationCount.count).toBe(0);
+
+    const followUp = await sendMessage("未来三年不用，我准备拿 5 万长期投资，最多能接受 10% 浮亏", "guided-intake-follow-up");
+    const followUpBody = await followUp.json();
+    expect(followUpBody.data.conversationKind).toBe("GUIDED_INTAKE");
+    expect(followUpBody.data.recommendationId).toBeNull();
+    expect(followUpBody.data.answer).toContain("我把你刚补充的内容接上了");
+    expect(followUpBody.data.answer).toContain("你更想优先实现哪个目标");
+    expect(followUpBody.data.answer).not.toContain("准备拿出多少作为可投资金额");
   });
 });
 
