@@ -67,10 +67,34 @@ describe("database migration guard", () => {
     db.prepare("INSERT INTO users (id, display_name, created_at) VALUES (?, ?, ?)").run("legacy-user", "Legacy User", now);
     db.prepare("INSERT INTO watchlists (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
       .run("wl_legacy", "legacy-user", "持仓观测", now, now);
+    db.prepare("INSERT INTO watchlists (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'archived', ?, ?)")
+      .run("wl_archived", "legacy-user", "已归档观察", now, now);
     db.prepare(`INSERT INTO watchlist_items
       (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
       .run("wi_legacy", "wl_legacy", "AAPL", "already watched", "长期", now, now, now, 1500);
+    db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run(
+        "wi_duplicate",
+        "wl_legacy",
+        "AAPL",
+        "duplicate",
+        "长期",
+        "2026-07-25T01:00:00.000Z",
+        "2026-07-25T01:00:00.000Z",
+        "2026-07-25T01:00:00.000Z",
+        1500,
+      );
+    db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("wi_fresh", "wl_legacy", "MSFT", "needs backfill", "长期", now, now, now, 1200);
+    db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, reason, planned_horizon, status, added_at, created_at, updated_at, drawdown_threshold_bps)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("wi_archived", "wl_archived", "SPY", "archived list", "长期", now, now, now, 1000);
     db.prepare(`INSERT INTO observation_conditions
       (id, user_id, instrument_id, condition_type, threshold_decimal, status, created_at, updated_at)
       VALUES (?, ?, ?, 'DRAWDOWN_REACH', ?, 'active', ?, ?)`)
@@ -95,6 +119,42 @@ describe("database migration guard", () => {
       watchlist_item_id: null,
       window_days: null,
     });
+
+    const duplicate = db.prepare("SELECT status, removed_at, row_version FROM watchlist_items WHERE id = ?")
+      .get("wi_duplicate") as { removed_at: string | null; row_version: number; status: string };
+    expect(duplicate).toMatchObject({
+      status: "removed",
+      removed_at: "2026-07-25T01:00:00.000Z",
+      row_version: 2,
+    });
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM watchlist_items
+      WHERE watchlist_id = ? AND instrument_id = ? AND status = 'active'`).get("wl_legacy", "AAPL") as { count: number }).count).toBe(1);
+
+    const freshConditions = db.prepare(`SELECT watchlist_item_id, threshold_decimal, window_days
+      FROM observation_conditions
+      WHERE watchlist_item_id = ? AND condition_type = 'DRAWDOWN_REACH' AND status = 'active'`)
+      .all("wi_fresh") as Array<{ threshold_decimal: string; watchlist_item_id: string; window_days: number }>;
+    expect(freshConditions).toEqual([{
+      watchlist_item_id: "wi_fresh",
+      threshold_decimal: "0.12",
+      window_days: 20,
+    }]);
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
+      WHERE watchlist_item_id = ?`).get("wi_archived") as { count: number }).count).toBe(0);
+
+    expect(() => db.prepare(`INSERT INTO watchlist_items
+      (id, watchlist_id, instrument_id, status, added_at, created_at, updated_at)
+      VALUES (?, ?, ?, 'active', ?, ?, ?)`).run("wi_conflict", "wl_legacy", "AAPL", now, now, now))
+      .toThrow(/UNIQUE constraint failed/u);
+
+    expect(() => db.prepare(`INSERT INTO watchlists
+      (id, user_id, name, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'deleted', ?, ?)`).run("wl_deleted_name_reuse", "legacy-user", "持仓观测", now, now))
+      .not.toThrow();
+    expect(() => db.prepare(`INSERT INTO watchlists
+      (id, user_id, name, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'archived', ?, ?)`).run("wl_active_name_conflict", "legacy-user", "持仓观测", now, now))
+      .toThrow(/UNIQUE constraint failed/u);
     db.close();
   });
 
