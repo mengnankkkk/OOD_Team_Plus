@@ -27,7 +27,7 @@ export default defineConfig({
     { name: "mobile-chromium", use: { ...devices["Pixel 5"] } },
   ],
   webServer: {
-    command: "pnpm build && node scripts/start-e2e-server.mjs",
+    command: "node node_modules/next/dist/bin/next build && node scripts/start-e2e-server.mjs",
     url: origin,
     reuseExistingServer: false,
     timeout: 120_000,

@@ -87,6 +87,69 @@ describe("/api/v1/simulation-workspaces", () => {
     expect(itemCount.count).toBe(4);
   });
 
+  it("POST prefers active real holdings over an existing starter snapshot", async () => {
+    const userId = "real-holdings-over-starter-user";
+    const starterSnapshotId = `starter-snapshot-${userId}`;
+    const realPortfolioId = `real-portfolio-${userId}`;
+    const req = authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({
+        label: "Real holdings",
+        objectiveText: "Compare my actual holdings",
+      }),
+      headers: { "Idempotency-Key": "real-holdings-over-starter-key" },
+    }, { userId });
+    const db = getDatabase();
+    db.prepare("DELETE FROM holding_snapshots WHERE portfolio_snapshot_id IN (SELECT id FROM portfolio_snapshots WHERE user_id=?)").run(userId);
+    db.prepare("DELETE FROM portfolio_snapshots WHERE user_id=?").run(userId);
+    db.prepare("DELETE FROM holdings WHERE user_id=?").run(userId);
+    db.prepare("INSERT OR REPLACE INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,'partial',?,?,?)")
+      .run(starterSnapshotId, userId, `simulation-starter-${userId}`, "20000", "10120", JSON.stringify([{ source: "STARTER_PORTFOLIO", status: "FALLBACK" }]), "2099-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z");
+    db.prepare("INSERT INTO holdings (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?)")
+      .run(`real-aapl-${userId}`, userId, realPortfolioId, "AAPL", "2", "140", "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.prepare("INSERT INTO holdings (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?)")
+      .run(`real-msft-${userId}`, userId, realPortfolioId, "MSFT", "1", "190", "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.close();
+
+    const res = await POST(req);
+    const body = await res.json();
+    expect(res.status).toBe(202);
+    expect(body.data.portfolioSource).toBe("USER_PORTFOLIO");
+    expect(body.data.portfolioSnapshotId).not.toBe(starterSnapshotId);
+
+    const checkDb = getDatabase();
+    const itemCount = checkDb.prepare("SELECT COUNT(*) AS count FROM simulation_asset_snapshot_items WHERE snapshot_id IN (SELECT id FROM simulation_asset_snapshots WHERE workspace_id=?)").get(body.data.id) as { count: number };
+    const rootSnapshot = checkDb.prepare("SELECT cash_decimal AS cash FROM simulation_asset_snapshots WHERE workspace_id=? AND branch_id=?").get(body.data.id, body.data.rootBranchId) as { cash: string };
+    checkDb.close();
+    expect(itemCount.count).toBe(2);
+    expect(rootSnapshot.cash).toBe("0");
+  });
+
+  it("POST ignores historical user snapshots when no active holdings remain", async () => {
+    const userId = "deleted-holdings-user";
+    const req = authenticatedRequest(url, {
+      method: "POST",
+      body: JSON.stringify({
+        label: "No active holdings",
+        objectiveText: "Use a starter portfolio",
+      }),
+      headers: { "Idempotency-Key": "deleted-holdings-key" },
+    }, { userId });
+    const db = getDatabase();
+    db.prepare("UPDATE holdings SET status='deleted', updated_at='2026-07-25T00:00:00.000Z' WHERE user_id=?").run(userId);
+    db.close();
+
+    const res = await POST(req);
+    const body = await res.json();
+    expect(res.status).toBe(202);
+    expect(body.data.portfolioSource).toBe("STARTER_PORTFOLIO");
+
+    const checkDb = getDatabase();
+    const itemCount = checkDb.prepare("SELECT COUNT(*) AS count FROM simulation_asset_snapshot_items WHERE snapshot_id IN (SELECT id FROM simulation_asset_snapshots WHERE workspace_id=?)").get(body.data.id) as { count: number };
+    checkDb.close();
+    expect(itemCount.count).toBe(4);
+  });
+
   it("GET returns an empty items list", async () => {
     const res = await GET(authenticatedRequest(url));
     const body = await res.json();

@@ -322,8 +322,8 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
 }
 
 export function syncPortfolioFromHoldings(userId: string, portfolioId: string) {
-  const previous = getLatestSnapshot(userId);
   const db = getDatabase();
+  const previous = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? AND portfolio_id = ? ORDER BY created_at DESC LIMIT 1").get(userId, portfolioId) as Record<string, unknown> | undefined;
   const holdings = db.prepare(`SELECT h.*,
       COALESCE((SELECT hs.price_decimal FROM holding_snapshots hs
         JOIN portfolio_snapshots ps ON ps.id = hs.portfolio_snapshot_id

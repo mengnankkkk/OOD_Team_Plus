@@ -16,7 +16,7 @@ import { computeHealthMetrics } from "@/lib/financialHealth";
 import AssetOverviewPanel from "@/components/desktop/AssetOverviewPanel";
 import DrawdownChart from "@/components/desktop/DrawdownChart";
 import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker";
-import { apiGet, apiPost } from "@/features/frontend-migration/api";
+import { apiPost } from "@/features/frontend-migration/api";
 import { findAShareStock, normalizeAShareCode } from "@/lib/a-share-stocks";
 import { ArtifactLibrary } from "@/features/workbench/components/ArtifactLibrary";
 
@@ -136,12 +136,12 @@ const AssetsPage = () => {
           <h1 className="mt-2 text-3xl font-semibold">你的账本 · 全部持仓</h1>
           <p className="mt-2 text-sm text-muted-foreground">财务健康指标全部按当前持仓实时计算，服务端只返回你自己的数据。</p>
         </div>
-        <div className="flex gap-3">
-          <Button variant="outline" className="rounded-sm" onClick={handleCatalogSync} disabled={catalogSyncing} title="同步 A 股、基金、指数、港股、美股基础资料">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap">
+          <Button variant="outline" className="w-full rounded-sm sm:w-auto" onClick={handleCatalogSync} disabled={catalogSyncing} title="同步 A 股、基金、指数、港股、美股基础资料">
             <RefreshCw className={`size-4 ${catalogSyncing ? "animate-spin" : ""}`} />{catalogSyncing ? "同步中…" : "更新资产目录"}
           </Button>
           <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
-            <DialogTrigger asChild><Button variant="outline" className="rounded-sm"><Upload className="size-4" />智能体解析 CSV</Button></DialogTrigger>
+            <DialogTrigger asChild><Button variant="outline" className="w-full rounded-sm sm:w-auto"><Upload className="size-4" />智能体解析 CSV</Button></DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>粘贴持仓明细，让 Agent 解析</DialogTitle></DialogHeader>
               {!csvPreview ? (
@@ -171,7 +171,7 @@ const AssetsPage = () => {
           </Dialog>
 
           <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild><Button className="rounded-sm"><PlusCircle className="size-4" />手工录入</Button></DialogTrigger>
+            <DialogTrigger asChild><Button className="w-full rounded-sm sm:w-auto"><PlusCircle className="size-4" />手工录入</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle>新增持仓</DialogTitle></DialogHeader>
               <div className="grid gap-4">

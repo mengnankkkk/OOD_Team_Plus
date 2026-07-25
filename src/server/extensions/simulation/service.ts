@@ -2,6 +2,7 @@
 
 import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/context";
 import { calculatePortfolioMetrics, runPortfolioStressTests } from "@/server/extensions/analysis/financial-engine";
+import { syncPortfolioFromHoldings } from "@/server/extensions/analysis/service";
 import { generateCandidates, type PriceManifest, type SimulationCandidate } from "./candidate-generator";
 import { executeSimulation } from "./deterministic-engine";
 import { persistSseEvent } from "../sse/event-persister";
@@ -61,13 +62,27 @@ export function getWorkspace(userId: string, workspaceId: string) {
 
 function resolvePortfolioSnapshot(userId: string, requestedId?: string): { id: string; source: SimulationPortfolioSource } {
   const db = getDatabase();
-  const row = requestedId
-    ? db.prepare("SELECT * FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(requestedId, userId) as Row | undefined
-    : db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").get(userId) as Row | undefined;
+  const row = requestedId ? db.prepare("SELECT * FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(requestedId, userId) as Row | undefined : undefined;
+  const activePortfolio = requestedId ? undefined : db.prepare(`
+    SELECT portfolio_id AS portfolioId
+    FROM holdings
+    WHERE user_id = ? AND status = 'active'
+    GROUP BY portfolio_id
+    ORDER BY MAX(COALESCE(updated_at, created_at)) DESC, portfolio_id
+    LIMIT 1
+  `).get(userId) as { portfolioId?: string } | undefined;
+  const activeSnapshot = activePortfolio?.portfolioId
+    ? db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? AND portfolio_id = ? ORDER BY created_at DESC LIMIT 1").get(userId, activePortfolio.portfolioId) as Row | undefined
+    : undefined;
   db.close();
 
   if (requestedId && !row) throw new Error("Snapshot not found");
   if (row) return { id: String(row.id), source: portfolioSourceFromRow(row) };
+  if (activeSnapshot) return { id: String(activeSnapshot.id), source: "USER_PORTFOLIO" };
+  if (activePortfolio?.portfolioId) {
+    const synced = syncPortfolioFromHoldings(userId, activePortfolio.portfolioId);
+    return { id: synced.snapshotId, source: "USER_PORTFOLIO" };
+  }
   return createStarterPortfolioSnapshot(userId);
 }
 
