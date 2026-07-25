@@ -31,6 +31,7 @@ playwright-report/
 data/
 !src/data/
 !src/data/a-share-stocks.json
+public/全部A股股票代码一览表.xlsx
 .serena/
 .next-visual/
 .artifacts

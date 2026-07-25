@@ -382,7 +382,7 @@ async function researchInstrument(
       dataset: marketDataset(instrument),
       method,
       parameters: realtime
-        ? { symbol: [symbol], fields: columns }
+        ? { symbol, fields: columns }
         : { symbol: [symbol], start_date: startDate.toISOString().slice(0, 10).replaceAll("-", ""), end_date: end, fields: columns },
       columns,
       joinKeys: ["symbol", "date"],
