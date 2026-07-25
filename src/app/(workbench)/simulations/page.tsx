@@ -1,30 +1,33 @@
 "use client";
 
-import { GitBranch, ListTree, Plus, RotateCcw, ShieldCheck, Split, WandSparkles } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { ArrowRight, CheckCircle2, GitBranch, ListTree, Plus, RotateCcw, ShieldCheck, Split, WandSparkles } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { BranchDiff } from "@/features/workbench/components/branch-diff";
 import { BranchEventTimeline } from "@/features/workbench/components/branch-event-timeline";
 import { BranchOptionCard, BranchOptionEmptyState, type BranchOption } from "@/features/workbench/components/branch-option-card";
-import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
+import { ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
 import { apiGet, apiMutation, money, percent, shortDate } from "@/features/workbench/lib/api";
 
 type WorkspaceSummary = { id: string; name: string; objectiveText: string; status: string; activeBranchId: string; version: number; updatedAt: string };
 type TimelineEvent = { id?: string; event_type?: string; eventType?: string; created_at?: string; createdAt?: string; payload?: Record<string, unknown> };
 type Branch = { id: string; parentBranchId: string | null; label: string; depth: number; status: string };
-type Workspace = { id: string; name: string; objectiveText: string; status: string; portfolioSnapshotId: string; rootBranchId: string; activeBranchId: string; branches: Branch[]; events: TimelineEvent[]; version: number };
+type Workspace = { id: string; name: string; objectiveText: string; status: string; portfolioSnapshotId: string; portfolioSource?: "USER_PORTFOLIO" | "STARTER_PORTFOLIO"; rootBranchId: string; activeBranchId: string; branches: Branch[]; events: TimelineEvent[]; version: number };
 type Snapshot = { cash: string; totalValue: string; totalAssets?: string; costBasis?: string; unrealizedPnl: string; holdings: Array<{ instrumentId: string; quantity: string; cost?: string | null; marketValue: string; weightBps: number }>; metrics: { expectedReturn?: number; maxDrawdown?: number; concentrationHHI?: number; riskLevel?: string }; dataAsOf: string; priceManifestSha256?: string | null; engineVersion: string };
 type OptionsPayload = { batchId: string | null; status: string; items: BranchOption[]; provider?: string | null; priceManifest?: { capturedAt?: string; sha256?: string } | null; analysis?: { analysisId: string; streamUrl: string } | null };
+type CreateWorkspaceResponse = { id: string; portfolioSnapshotId: string; portfolioSource: "USER_PORTFOLIO" | "STARTER_PORTFOLIO" };
 
 export default function SimulationsPage() {
   const holdings = useApiResource<{ portfolioSnapshotId: string }>("/api/v1/portfolio-analysis/holdings");
   const list = useApiResource<{ items: WorkspaceSummary[] }>("/api/v1/simulation-workspaces?limit=20");
   const [selected, setSelected] = useState("");
   const [mode, setMode] = useState<"DECISION_FLOW" | "LAB">("DECISION_FLOW");
-  const [label, setLabel] = useState("组合再平衡实验");
-  const [objective, setObjective] = useState("降低组合集中度和最大回撤，同时保留中长期收益能力");
+  const [label, setLabel] = useState("我的第一次分支模拟");
+  const [objective, setObjective] = useState("看看不同买卖方案对我的组合有什么影响");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const createFormRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (!selected && list.data?.items[0]) setSelected(list.data.items[0].id);
@@ -39,6 +42,8 @@ export default function SimulationsPage() {
   const events = useMemo(() => workspace.data?.events ?? [], [workspace.data?.events]);
   const reloadOptions = options.reload;
   const reloadWorkspace = workspace.reload;
+  const hasPortfolio = Boolean(holdings.data?.portfolioSnapshotId);
+  const starterMode = !holdings.loading && !hasPortfolio;
 
   useEffect(() => {
     const status = options.data?.status;
@@ -62,14 +67,28 @@ export default function SimulationsPage() {
     return () => source.close();
   }, [options.data?.analysis?.streamUrl, options.data?.status, reloadOptions, reloadWorkspace]);
 
-  const createWorkspace = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!holdings.data?.portfolioSnapshotId) return;
+  const queueOptions = async (workspaceId: string) => {
+    const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspaceId}/options`, "POST", { objective });
+    void pollOptionBatch(workspaceId, queued.analysis.analysisId);
+  };
+
+  const createWorkspace = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (holdings.loading) return;
     setBusy("create"); setError("");
     try {
-      const data = await apiMutation<{ id: string }>("/api/v1/simulation-workspaces", "POST", { label, objectiveText: objective, portfolioSnapshotId: holdings.data.portfolioSnapshotId });
+      const data = await apiMutation<CreateWorkspaceResponse>("/api/v1/simulation-workspaces", "POST", {
+        label,
+        objectiveText: objective,
+        ...(holdings.data?.portfolioSnapshotId ? { portfolioSnapshotId: holdings.data.portfolioSnapshotId } : {}),
+      });
       setSelected(data.id);
       await list.reload();
+      try {
+        await queueOptions(data.id);
+      } catch (reason) {
+        setError(`工作区已创建，但方案生成没有启动：${reason instanceof Error ? reason.message : "请点击“生成新一轮方案”重试"}`);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建失败");
     } finally {
@@ -81,8 +100,7 @@ export default function SimulationsPage() {
     if (!workspace.data) return;
     setBusy("generate"); setError("");
     try {
-      const queued = await apiMutation<{ analysis: { analysisId: string } }>(`/api/v1/simulation-workspaces/${workspace.data.id}/options`, "POST", { objective });
-      void pollOptionBatch(queued.analysis.analysisId);
+      await queueOptions(workspace.data.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "生成失败");
     } finally {
@@ -90,9 +108,8 @@ export default function SimulationsPage() {
     }
   };
 
-  const pollOptionBatch = async (analysisId: string) => {
-    if (!workspace.data) return;
-    const path = `/api/v1/simulation-workspaces/${workspace.data.id}/options`;
+  const pollOptionBatch = async (workspaceId: string, analysisId: string) => {
+    const path = `/api/v1/simulation-workspaces/${workspaceId}/options`;
     for (let attempt = 0; attempt < 180; attempt += 1) {
       try {
         const latest = await apiGet<OptionsPayload>(path);
@@ -154,25 +171,36 @@ export default function SimulationsPage() {
   return <div className="page-stack simulation-page">
     <PageHeading
       eyebrow="SCENARIO BRANCH LAB / 分支实验室"
-      title="先比较不同未来，再决定是否行动"
-      description="候选只影响模拟分支，真实持仓不会被改写。价格、成交数量、费用和资产守恒由服务端确定性计算。"
+      title="先看看不同选择，再决定怎么做"
+      description="这是一个不会下单的练习场。你可以先用示例组合体验，也可以直接连接自己的持仓。"
       actions={<div className="heading-actions"><button className={`button ${mode === "DECISION_FLOW" ? "primary" : "ghost"}`} onClick={() => setMode("DECISION_FLOW")}><ListTree size={15} />决策流</button><button className={`button ${mode === "LAB" ? "primary" : "ghost"}`} onClick={() => setMode("LAB")}><GitBranch size={15} />分支实验室</button>{workspace.data && workspace.data.activeBranchId !== workspace.data.rootBranchId ? <button className="button ghost" onClick={() => void undo()} disabled={Boolean(busy)}><RotateCcw size={15} />撤回</button> : null}</div>}
     />
     {error ? <ErrorBlock message={error} /> : null}
     <section className="simulation-layout">
       <aside className="panel workspace-sidebar">
-        <div className="panel-heading"><div><span>WORKSPACES</span><h2>实验工作区</h2></div><Plus size={17} /></div>
+        <div className="panel-heading"><div><span>WORKSPACES / 你的练习</span><h2>实验工作区</h2></div><Plus size={17} /></div>
         <div className="workspace-list">{list.data?.items.map((item) => <button key={item.id} className={selected === item.id ? "active" : ""} onClick={() => setSelected(item.id)}><GitBranch size={16} /><span><b>{item.name}</b><small>{shortDate(item.updatedAt)}</small></span><Status tone={item.status === "ACTIVE" ? "good" : "neutral"}>{item.status}</Status></button>)}</div>
-        <form className="create-workspace" onSubmit={(event) => void createWorkspace(event)}>
+        <div className={`portfolio-readiness ${starterMode ? "starter" : "ready"}`}>
+          <div className="portfolio-readiness-head">{starterMode ? <WandSparkles size={15} /> : <CheckCircle2 size={15} />}<strong>{starterMode ? "还没有录入持仓" : "已连接你的持仓"}</strong></div>
+          <p>{starterMode ? "可以先用一份真实标的示例组合体验。它只存在于模拟里，不会写入你的账本。" : "这次模拟会基于你的当前持仓，真实资产不会被改写。"}</p>
+          {starterMode ? <Link className="text-link" href="/assets">去录入我的持仓 <ArrowRight size={13} /></Link> : null}
+        </div>
+        <form ref={createFormRef} className="create-workspace" onSubmit={(event) => void createWorkspace(event)}>
           <label>新实验名称<input value={label} onChange={(event) => setLabel(event.target.value)} /></label>
-          <label>优化目标<textarea rows={4} value={objective} onChange={(event) => setObjective(event.target.value)} /></label>
-          <button className="button primary" disabled={busy === "create" || !holdings.data}>{busy === "create" ? "创建中…" : <><Plus size={15} />创建工作区</>}</button>
+          <label>你想先看看什么？<textarea rows={3} value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="例如：如果我减一点科技股，组合会怎样？" /></label>
+          <button className="button primary" disabled={busy === "create"}>{busy === "create" ? "正在准备方案…" : starterMode ? <><WandSparkles size={15} />用示例组合开始</> : <><Plus size={15} />创建并开始模拟</>}</button>
+          <small className="form-hint">创建后会自动生成 A / B / C 三个可比较方案。</small>
         </form>
       </aside>
       <div className="simulation-main">
-        {!selected ? <EmptyBlock title="还没有模拟工作区" detail="输入一个目标，创建第一棵资产分支树。" /> : workspace.loading ? <LoadingBlock /> : workspace.error ? <ErrorBlock message={workspace.error} retry={workspace.reload} /> : workspace.data ? <>
+        {!selected ? <section className="panel simulation-welcome">
+          <div className="simulation-welcome-copy"><Status tone="good"><ShieldCheck size={12} />只做模拟，不会下单</Status><h2>用 1 分钟体验一次“如果我这样买，会发生什么？”</h2><p>先创建一个练习工作区，Agent 会自动给你 3 个方案：保持不动、谨慎调整、积极调整。你可以执行其中任意一个，随时切换或撤回。</p></div>
+          <div className="simulation-steps"><div><b>1</b><span>准备组合</span><small>{starterMode ? "先用示例组合即可" : "已使用你的持仓"}</small></div><div><b>2</b><span>比较 A / B / C</span><small>看风险和资产变化</small></div><div><b>3</b><span>执行模拟</span><small>只改变分支，不改真账</small></div></div>
+          <div className="simulation-welcome-actions"><button className="button primary" onClick={() => void createWorkspace()} disabled={Boolean(busy)}><WandSparkles size={15} />{busy === "create" ? "正在准备…" : starterMode ? "用示例组合开始" : "开始我的第一次模拟"}</button><Link className="button ghost" href="/assets">我有持仓，先去录入 <ArrowRight size={14} /></Link></div>
+        </section> : workspace.loading ? <LoadingBlock /> : workspace.error ? <ErrorBlock message={workspace.error} retry={workspace.reload} /> : workspace.data ? <>
           <section className="panel branch-map">
-            <div className="panel-heading"><div><span>ACTIVE SCENARIO</span><h2>{workspace.data.name}</h2><p>{workspace.data.objectiveText}</p></div><Status tone="good"><ShieldCheck size={12} /> SIMULATION ONLY</Status></div>
+            <div className="panel-heading"><div><span>ACTIVE SCENARIO / 当前练习</span><h2>{workspace.data.name}</h2><p>{workspace.data.objectiveText}</p></div><div className="scenario-badges"><Status tone="good"><ShieldCheck size={12} />只做模拟</Status>{workspace.data.portfolioSource === "STARTER_PORTFOLIO" ? <Status tone="warn">示例组合</Status> : <Status tone="good">我的持仓</Status>}</div></div>
+            {workspace.data.portfolioSource === "STARTER_PORTFOLIO" ? <div className="inline-notice starter-notice">当前使用的是 AAPL、MSFT、SPY、GLD 示例组合。它只用于体验分支模拟，不会改动你的真实账本。录入自己的持仓后，可以重新创建一个“我的持仓”实验。</div> : null}
             <div className="branch-tree">{workspace.data.branches.map((branch) => <button key={branch.id} style={{ marginLeft: `${branch.depth * 30}px` }} className={branch.id === workspace.data?.activeBranchId ? "active" : ""} onClick={() => void switchBranch(branch.id)} disabled={Boolean(busy)}><span className="branch-line" /><Split size={16} /><span><b>{branch.label}</b><small>深度 {branch.depth} · {branch.id.slice(-6)}</small></span>{branch.id === workspace.data?.activeBranchId ? <Status tone="good">当前</Status> : null}</button>)}</div>
           </section>
           {snapshot.data ? <section className="branch-summary"><div><span>模拟总资产</span><strong>{money(Number(snapshot.data.totalAssets ?? Number(snapshot.data.cash) + Number(snapshot.data.totalValue)))}</strong></div><div><span>浮盈亏</span><strong className={Number(snapshot.data.unrealizedPnl) >= 0 ? "positive" : "negative"}>{money(snapshot.data.unrealizedPnl)}</strong></div><div><span>压力回撤</span><strong className="negative">{percent(snapshot.data.metrics.maxDrawdown ?? 0)}</strong></div><div><span>集中度 HHI</span><strong>{Number(snapshot.data.metrics.concentrationHHI ?? 0).toFixed(3)}</strong></div><div><span>数据时点</span><strong>{shortDate(snapshot.data.dataAsOf)}</strong></div></section> : null}
@@ -181,7 +209,8 @@ export default function SimulationsPage() {
             <div className="decision-status">{options.data?.status === "QUEUED" || options.data?.status === "RUNNING" ? <Status tone="warn">{options.data.status === "QUEUED" ? "Agent 已排队" : "Agent 正在分析"}</Status> : options.data?.status === "SUCCEEDED" ? <Status tone="good">候选已就绪</Status> : options.data?.status === "FAILED" ? <Status tone="danger">本轮失败</Status> : <Status>等待生成</Status>}{options.data?.priceManifest?.capturedAt ? <small>冻结价格：{shortDate(options.data.priceManifest.capturedAt)}</small> : null}</div>
             {options.data?.items.length ? <div className="option-grid">{options.data.items.map((option) => <BranchOptionCard key={option.id} option={option} disabled={options.data?.status !== "SUCCEEDED"} busy={busy === option.id} onExecute={() => void execute(option)} />)}</div> : <BranchOptionEmptyState status={options.data?.status ?? "EMPTY"} />}
             <div className="panel decision-result"><div className="panel-heading"><div><span>STEP 2 / VERIFY</span><h2>执行后的组合变化</h2></div><Status tone="good">只写入模拟分支</Status></div><BranchDiff parent={parentSnapshot.data} child={snapshot.data} /></div>
-          </section> : <section className="lab-layout">
+          </section>
+          : <section className="lab-layout">
             <div className="panel"><div className="panel-heading"><div><span>BRANCH TIMELINE</span><h2>决策事件</h2></div></div><BranchEventTimeline events={events} /></div>
             <div className="panel"><div className="panel-heading"><div><span>ASSET DIFF</span><h2>父子分支差异</h2></div></div><BranchDiff parent={parentSnapshot.data} child={snapshot.data} /></div>
             <div className="panel"><div className="panel-heading"><div><span>FROZEN DATA</span><h2>复现实验条件</h2></div></div><dl className="lab-facts"><div><dt>价格清单 SHA-256</dt><dd>{snapshot.data?.priceManifestSha256 ?? "根分支使用原始持仓快照"}</dd></div><div><dt>数据时点</dt><dd>{snapshot.data?.dataAsOf ?? "—"}</dd></div><div><dt>引擎版本</dt><dd>{snapshot.data?.engineVersion ?? "—"}</dd></div><div><dt>工作区版本</dt><dd>{workspace.data.version}</dd></div></dl></div>

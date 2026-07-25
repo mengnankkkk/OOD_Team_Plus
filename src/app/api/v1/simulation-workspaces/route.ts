@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
     const result = createWorkspace(userId, parsed.data);
-    const payload = { data: { id: result.workspaceId, status: "ACTIVE", portfolioSnapshotId: parsed.data.portfolioSnapshotId, rootBranchId: result.branchId, activeBranchId: result.branchId, version: result.version, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
+    const payload = { data: { id: result.workspaceId, status: "ACTIVE", portfolioSnapshotId: result.portfolioSnapshotId, portfolioSource: result.portfolioSource, rootBranchId: result.branchId, activeBranchId: result.branchId, version: result.version, analysis: { analysisId: result.analysisId, type: "BRANCH_OPTION_GENERATION", status: "COMPLETED", streamUrl: `/api/v1/analyses/${result.analysisId}/events` } }, meta: meta() };
     await saveIdempotentResponse(userId, "simulation_workspace", key, idem.requestHash, payload);
     return NextResponse.json(payload, { status: 202 });
   } catch (error) {

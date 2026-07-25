@@ -507,6 +507,9 @@
   .goal-ring { @apply grid size-32 place-items-center border border-foreground font-mono text-2xl font-semibold; border-radius: 0; background: radial-gradient(circle, hsl(var(--card)) 57%, transparent 59%), conic-gradient(hsl(var(--primary)) 0 31%, hsl(var(--muted)) 31% 100%); }
   .status-led { @apply absolute right-5 top-5 size-2.5 rounded-full bg-destructive; animation: status-pulse 2.1s ease-in-out infinite; }
   .recommendation-card { border-left: 4px solid hsl(var(--destructive)); }
+  .recommendation-card h2,
+  .recommendation-card p,
+  .recommendation-card div { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
   .agent-card { @apply min-h-36 border border-foreground bg-card p-4 opacity-60 transition-[transform,opacity,box-shadow,background-color] duration-300; border-radius: 0; }
   .agent-card-active { @apply relative z-10 border-primary bg-card opacity-100; box-shadow: 4px 4px 0 hsl(var(--primary)); transform: translate(-2px, -2px); }
   .agent-card-active::before { content: ""; @apply pointer-events-none absolute -inset-6 -z-10; background: radial-gradient(circle, hsl(var(--primary) / .10), transparent 68%); }
@@ -667,6 +670,13 @@
 
 @media (max-width: 767px) {
   .metric-display { font-size: 2.5rem; }
+}
+
+@media (max-width: 560px) {
+  .recommendation-card { padding-top: 4.5rem !important; }
+  .recommendation-card > .flex { align-items: stretch; flex-direction: column; }
+  .recommendation-card > .flex .ml-auto { margin-left: 0; }
+  .recommendation-card > .flex .button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

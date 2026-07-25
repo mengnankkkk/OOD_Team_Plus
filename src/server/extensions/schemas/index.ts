@@ -66,7 +66,7 @@ export type GeneratedArtifactRequest = z.infer<typeof GeneratedArtifactRequestSc
 export const SimulationWorkspaceRequestSchema = z.object({
   label: z.string().min(1).max(200),
   objectiveText: z.string().min(1),
-  portfolioSnapshotId: z.string(),
+  portfolioSnapshotId: z.string().optional(),
   conversationSessionId: z.string().optional(),
   recommendationId: z.string().optional(),
 });

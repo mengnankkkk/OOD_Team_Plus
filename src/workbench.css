@@ -154,6 +154,14 @@
 .workspace-sidebar { position: sticky; top: 88px; }
 .create-workspace { display: grid; gap: 12px; margin-top: 18px; }
 .create-workspace label { display: grid; gap: 6px; font-size: 11px; font-weight: 700; }
+.portfolio-readiness { display: grid; gap: 7px; margin-top: 16px; border: 1px solid hsl(var(--border)); padding: 12px; font-size: 11px; line-height: 1.55; }
+.portfolio-readiness.starter { border-color: hsl(var(--status-watch) / .55); background: hsl(var(--status-watch) / .06); }
+.portfolio-readiness.ready { border-color: hsl(var(--status-down) / .45); background: hsl(var(--status-down) / .05); }
+.portfolio-readiness-head { display: flex; align-items: center; gap: 7px; }
+.portfolio-readiness-head svg { color: hsl(var(--primary)); }
+.portfolio-readiness p { margin: 0; color: hsl(var(--muted-foreground)); }
+.text-link { display: inline-flex; align-items: center; gap: 4px; color: hsl(var(--primary)); font-size: 11px; font-weight: 700; }
+.form-hint { color: hsl(var(--muted-foreground)); font-size: 10px; line-height: 1.45; }
 .branch-map, .branch-tree { display: grid; gap: 10px; }
 .branch-tree > button { display: flex; min-width: 0; align-items: center; gap: 9px; border: 1px solid hsl(var(--border)); background: transparent; padding: 11px; color: inherit; text-align: left; cursor: pointer; }
 .branch-tree > button:hover, .branch-tree > button.active { border-color: hsl(var(--primary)); background: hsl(var(--primary) / .06); }
@@ -166,30 +174,50 @@
 .branch-summary span, .branch-summary dt, .lab-facts dt { color: hsl(var(--muted-foreground)); font-size: 11px; }
 .branch-summary strong { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 16px; }
 .option-card { min-width: 0; border: 1px solid hsl(var(--border)); padding: 14px; }
-.option-card-head, .option-title { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.option-card p, .branch-summary p { overflow-wrap: anywhere; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.6; }
+.option-card-head, .option-title { display: flex; min-width: 0; align-items: start; justify-content: space-between; gap: 12px; }
+.option-card-head { flex-wrap: wrap; }
+.option-card p, .branch-summary p { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.6; }
 .option-section, .decision-flow { margin-top: 10px; }
 .decision-status { display: flex; align-items: center; gap: 10px; margin: 10px 0; color: hsl(var(--muted-foreground)); font-size: 11px; }
 .decision-status small { font-family: var(--font-mono); }
 .branch-option-card { display: grid; gap: 11px; }
-.option-provider { color: hsl(var(--muted-foreground)); font-family: var(--font-mono); font-size: 10px; }
-.branch-option-card h3 { margin: 0; font-family: var(--font-serif); font-size: 20px; line-height: 1.2; }
+.option-provider { max-width: 100%; overflow-wrap: anywhere; color: hsl(var(--muted-foreground)); font-family: var(--font-mono); font-size: 10px; text-align: right; }
+.branch-option-card h3 { max-width: 100%; margin: 0; overflow-wrap: anywhere; word-break: break-word; font-family: var(--font-serif); font-size: 20px; line-height: 1.2; }
+.scenario-range { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.scenario-range > div { min-width: 0; border-top: 1px solid hsl(var(--border)); padding-top: 8px; }
+.scenario-range span, .scenario-range b { display: block; overflow-wrap: anywhere; }
+.scenario-range span { color: hsl(var(--muted-foreground)); font-size: 10px; }
+.scenario-range b { margin-top: 4px; font-family: var(--font-mono); font-size: 13px; }
 .branch-option-card dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
 .branch-option-card dl > div { min-width: 0; border-top: 1px solid hsl(var(--border)); padding-top: 8px; }
 .branch-option-card dt { color: hsl(var(--muted-foreground)); font-size: 10px; }
 .branch-option-card dd { margin: 4px 0 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
 .evidence-list { display: grid; gap: 5px; border-top: 1px solid hsl(var(--border)); padding-top: 10px; font-size: 11px; line-height: 1.5; }
 .evidence-list ul { margin: 0 0 4px; padding-left: 16px; }
+.evidence-list li { overflow-wrap: anywhere; word-break: break-word; }
 .evidence-list p { margin: 0; }
 .branch-option-card details { border-top: 1px solid hsl(var(--border)); padding-top: 9px; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.6; }
 .branch-option-card details p { margin: 8px 0 0; }
 .branch-option-card details small { color: hsl(var(--muted-foreground)); }
+.branch-option-card .option-run { width: 100%; }
 .decision-result { margin-top: 14px; }
 .branch-diff { display: grid; gap: 0; }
 .branch-diff > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid hsl(var(--border)); padding: 11px 0; font-size: 12px; }
 .branch-diff > div:last-child { border-bottom: 0; }
 .branch-diff strong { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); }
 .diff-note { margin-top: 4px; }
+.scenario-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.starter-notice { margin-top: 12px; }
+.simulation-welcome { display: grid; gap: 24px; min-height: 420px; align-content: center; }
+.simulation-welcome-copy { max-width: 720px; }
+.simulation-welcome-copy h2 { max-width: 720px; margin: 14px 0 8px; font-family: var(--font-serif); font-size: clamp(26px, 3vw, 40px); line-height: 1.12; }
+.simulation-welcome-copy p { max-width: 640px; margin: 0; color: hsl(var(--muted-foreground)); font-size: 14px; line-height: 1.75; }
+.simulation-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 760px; }
+.simulation-steps > div { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 4px 9px; border-top: 1px solid hsl(var(--border)); padding-top: 12px; }
+.simulation-steps b { display: grid; width: 24px; height: 24px; place-items: center; grid-row: span 2; border: 1px solid hsl(var(--primary)); color: hsl(var(--primary)); font-family: var(--font-mono); font-size: 11px; }
+.simulation-steps span { font-size: 12px; font-weight: 700; }
+.simulation-steps small { color: hsl(var(--muted-foreground)); font-size: 10px; line-height: 1.4; }
+.simulation-welcome-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .event-timeline { display: grid; gap: 0; }
 .event-item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; border-bottom: 1px solid hsl(var(--border)); padding: 11px 0; }
 .event-item:last-child { border-bottom: 0; }
@@ -236,9 +264,26 @@
   .page-heading h1 { font-size: 27px; }
   .panel { padding: 14px; }
   .panel-heading { align-items: start; }
-  .dataset-grid, .metric-grid, .branch-summary, .branch-option-card dl { grid-template-columns: minmax(0, 1fr); }
+  .option-title { flex-direction: column; gap: 10px; }
+  .option-title > .button { width: 100%; }
+  .simulation-welcome { min-height: 0; padding: 18px 14px; }
+  .simulation-welcome-copy h2 { font-size: 28px; }
+  .simulation-steps { grid-template-columns: minmax(0, 1fr); }
+  .simulation-welcome-actions { display: grid; }
+  .simulation-welcome-actions .button { width: 100%; }
+  .branch-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .branch-option-card { padding: 12px; }
+  .branch-option-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .branch-option-card .option-card-head { align-items: flex-start; }
+  .branch-option-card .option-provider { flex: 1 1 100%; text-align: left; }
+  .dataset-grid, .metric-grid { grid-template-columns: minmax(0, 1fr); }
   .mode-row .run-query { width: 100%; margin-left: 0; }
   .result-badges { align-items: stretch; }
   .result-badges .button { width: 100%; }
   .data-table, .table-shell table { min-width: 580px; }
+}
+
+@media (max-width: 380px) {
+  .branch-summary, .branch-option-card dl, .scenario-range { grid-template-columns: minmax(0, 1fr); }
+  .branch-option-card h3 { font-size: 18px; }
 }

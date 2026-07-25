@@ -71,11 +71,10 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
 
   await page.goto("/simulations");
   await page.getByLabel("新实验名称").fill("E2E 组合实验");
-  await page.getByRole("button", { name: "创建工作区" }).click();
+  await page.getByRole("button", { name: "创建并开始模拟" }).click();
   await expect(page.getByText("E2E 组合实验", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: "生成新一轮方案" }).click();
-  await expect(page.getByRole("button", { name: "在新分支中执行" }).first()).toBeVisible();
-  await page.getByRole("button", { name: "在新分支中执行" }).first().click();
+  await expect(page.getByRole("button", { name: "仅在模拟分支中执行" }).first()).toBeVisible({ timeout: 90_000 });
+  await page.getByRole("button", { name: "仅在模拟分支中执行" }).first().click();
   await expect(page.getByRole("button", { name: "撤回到父分支" })).toBeVisible();
 
   await page.goto("/advisor");

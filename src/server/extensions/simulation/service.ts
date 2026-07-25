@@ -8,19 +8,22 @@ import { persistSseEvent } from "../sse/event-persister";
 
 type Row = Record<string, unknown>;
 type ActiveOptionRun = { controller: AbortController; promise: Promise<void> };
+type SimulationPortfolioSource = "USER_PORTFOLIO" | "STARTER_PORTFOLIO";
 
 const activeOptionRuns = new Map<string, ActiveOptionRun>();
 
-export function createWorkspace(userId: string, input: { label: string; objectiveText: string; portfolioSnapshotId: string; conversationSessionId?: string; recommendationId?: string }) {
+export function createWorkspace(userId: string, input: { label: string; objectiveText: string; portfolioSnapshotId?: string; conversationSessionId?: string; recommendationId?: string }) {
+  const resolvedSnapshot = resolvePortfolioSnapshot(userId, input.portfolioSnapshotId);
+  const portfolioSnapshotId = resolvedSnapshot.id;
   const db = getDatabase();
-  const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(input.portfolioSnapshotId, userId) as Row | undefined;
+  const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(portfolioSnapshotId, userId) as Row | undefined;
   if (!snapshot) { db.close(); throw new Error("Snapshot not found"); }
   const now = isoNow();
   const workspaceId = createId("workspace");
   const branchId = createId("branch");
   const analysisId = createId("analysis");
   const holdings = db.prepare(`SELECT h.*,i.asset_type,i.sector FROM holding_snapshots h
-    JOIN instruments i ON i.id=h.instrument_id WHERE h.portfolio_snapshot_id=?`).all(input.portfolioSnapshotId) as Row[];
+    JOIN instruments i ON i.id=h.instrument_id WHERE h.portfolio_snapshot_id=?`).all(portfolioSnapshotId) as Row[];
   const rootFinancialHoldings = holdings.map((holding) => ({
     instrumentId: String(holding.instrument_id), assetType: String(holding.asset_type), sector: holding.sector == null ? null : String(holding.sector),
     quantity: String(holding.quantity_decimal), price: String(holding.price_decimal), cost: String(holding.cost_decimal),
@@ -32,16 +35,16 @@ export function createWorkspace(userId: string, input: { label: string; objectiv
   const simSnapshotId = createId("sim_snapshot");
   const publish = db.transaction(() => {
     db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,completed_at) VALUES (?,?,?,'completed',?,?)").run(analysisId, userId, "simulation_workspace", now, now);
-    db.prepare("INSERT INTO simulation_workspaces (id, user_id, conversation_session_id, recommendation_id, portfolio_snapshot_id, label, objective_text, status, root_branch_id, active_branch_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)").run(workspaceId, userId, input.conversationSessionId ?? null, input.recommendationId ?? null, input.portfolioSnapshotId, input.label, input.objectiveText, branchId, branchId, now, now);
-    db.prepare("INSERT INTO simulation_branches (id, workspace_id, label, depth, status, created_at, updated_at) VALUES (?, ?, ?, 0, 'active', ?, ?)").run(branchId, workspaceId, "Initial assets", now, now);
-    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(simSnapshotId, workspaceId, branchId, input.portfolioSnapshotId, rootMetrics.cashValue, rootMetrics.totalMarketValue, json({ totalReturn: 0, totalAssets: rootMetrics.totalAssets, costBasis: rootCostBasis, unrealizedPnl: rootMetrics.unrealizedPnl, maxDrawdown: rootWorst, volatility: null, concentrationHHI: Number(rootMetrics.concentrationHhi), expectedReturn: 0, bullCaseReturn: Number(rootStress.find((item) => item.scenario === "BULL")?.changeRatio ?? 0), bearCaseReturn: Number(rootStress.find((item) => item.scenario === "BEAR")?.changeRatio ?? 0), riskLevel: Math.abs(rootWorst) > 0.2 ? "HIGH" : Math.abs(rootWorst) > 0.1 ? "MEDIUM" : "LOW", stressTests: rootStress, missingMetrics: ["ANNUAL_VOLATILITY_REQUIRES_HISTORICAL_SERIES"], formulaVersion: rootMetrics.formulaVersion, assetConservationDelta: "0", dataAsOf: snapshot.as_of }), "branch-simulation-v4", now);
+    db.prepare("INSERT INTO simulation_workspaces (id, user_id, conversation_session_id, recommendation_id, portfolio_snapshot_id, label, objective_text, status, root_branch_id, active_branch_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)").run(workspaceId, userId, input.conversationSessionId ?? null, input.recommendationId ?? null, portfolioSnapshotId, input.label, input.objectiveText, branchId, branchId, now, now);
+    db.prepare("INSERT INTO simulation_branches (id, workspace_id, label, depth, status, created_at, updated_at) VALUES (?, ?, ?, 0, 'active', ?, ?)").run(branchId, workspaceId, "当前组合", now, now);
+    db.prepare("INSERT INTO simulation_asset_snapshots (id, workspace_id, branch_id, portfolio_snapshot_id, cash_decimal, total_market_value_decimal, metrics_json, model_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(simSnapshotId, workspaceId, branchId, portfolioSnapshotId, rootMetrics.cashValue, rootMetrics.totalMarketValue, json({ totalReturn: 0, totalAssets: rootMetrics.totalAssets, costBasis: rootCostBasis, unrealizedPnl: rootMetrics.unrealizedPnl, maxDrawdown: rootWorst, volatility: null, concentrationHHI: Number(rootMetrics.concentrationHhi), expectedReturn: 0, bullCaseReturn: Number(rootStress.find((item) => item.scenario === "BULL")?.changeRatio ?? 0), bearCaseReturn: Number(rootStress.find((item) => item.scenario === "BEAR")?.changeRatio ?? 0), riskLevel: Math.abs(rootWorst) > 0.2 ? "HIGH" : Math.abs(rootWorst) > 0.1 ? "MEDIUM" : "LOW", stressTests: rootStress, missingMetrics: ["ANNUAL_VOLATILITY_REQUIRES_HISTORICAL_SERIES"], formulaVersion: rootMetrics.formulaVersion, assetConservationDelta: "0", dataAsOf: snapshot.as_of }), "branch-simulation-v4", now);
     for (const holding of holdings) db.prepare("INSERT INTO simulation_asset_snapshot_items (id, snapshot_id, instrument_id, quantity_decimal, cost_decimal, price_decimal, market_value_decimal, weight_bps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(createId("sim_item"), simSnapshotId, holding.instrument_id, holding.quantity_decimal, holding.cost_decimal ?? "0", holding.price_decimal, holding.market_value_decimal, holding.weight_bps, now);
     db.prepare("INSERT INTO simulation_branch_events (id, workspace_id, event_type, to_branch_id, user_id, created_at) VALUES (?, ?, 'root_created', ?, ?, ?)").run(createId("branch_event"), workspaceId, branchId, userId, now);
   });
   publish();
   db.close();
   persistSseEvent({ analysisId, type: "branch.created", payload: { workspaceId, branchId, simulationId: simSnapshotId } });
-  return { workspaceId, branchId, analysisId, version: 1 };
+  return { workspaceId, branchId, analysisId, version: 1, portfolioSnapshotId, portfolioSource: resolvedSnapshot.source };
 }
 
 export function getWorkspace(userId: string, workspaceId: string) {
@@ -50,8 +53,64 @@ export function getWorkspace(userId: string, workspaceId: string) {
   if (!workspace) { db.close(); return null; }
   const branches = db.prepare("SELECT * FROM simulation_branches WHERE workspace_id = ? ORDER BY depth, created_at, id").all(workspaceId) as Row[];
   const events = db.prepare("SELECT * FROM simulation_branch_events WHERE workspace_id = ? ORDER BY created_at, id").all(workspaceId) as Row[];
+  const portfolioSnapshot = db.prepare("SELECT source_statuses_json FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(workspace.portfolio_snapshot_id, userId) as Row | undefined;
+  const portfolioSource = portfolioSourceFromRow(portfolioSnapshot);
   db.close();
-  return { id: workspace.id, name: workspace.label, objectiveText: workspace.objective_text, status: String(workspace.status).toUpperCase(), portfolioSnapshotId: workspace.portfolio_snapshot_id, rootBranchId: workspace.root_branch_id ?? branches[0]?.id ?? null, activeBranchId: workspace.active_branch_id, branches: branches.map((branch) => ({ id: branch.id, parentBranchId: branch.parent_branch_id, label: branch.label, depth: branch.depth, status: branch.status })), events, version: workspace.row_version };
+  return { id: workspace.id, name: workspace.label, objectiveText: workspace.objective_text, status: String(workspace.status).toUpperCase(), portfolioSnapshotId: workspace.portfolio_snapshot_id, portfolioSource, rootBranchId: workspace.root_branch_id ?? branches[0]?.id ?? null, activeBranchId: workspace.active_branch_id, branches: branches.map((branch) => ({ id: branch.id, parentBranchId: branch.parent_branch_id, label: branch.label, depth: branch.depth, status: branch.status })), events, version: workspace.row_version };
+}
+
+function resolvePortfolioSnapshot(userId: string, requestedId?: string): { id: string; source: SimulationPortfolioSource } {
+  const db = getDatabase();
+  const row = requestedId
+    ? db.prepare("SELECT * FROM portfolio_snapshots WHERE id = ? AND user_id = ?").get(requestedId, userId) as Row | undefined
+    : db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").get(userId) as Row | undefined;
+  db.close();
+
+  if (requestedId && !row) throw new Error("Snapshot not found");
+  if (row) return { id: String(row.id), source: portfolioSourceFromRow(row) };
+  return createStarterPortfolioSnapshot(userId);
+}
+
+function createStarterPortfolioSnapshot(userId: string): { id: string; source: SimulationPortfolioSource } {
+  const db = getDatabase();
+  const portfolioId = `simulation-starter-${userId}`;
+  const existing = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id = ? AND portfolio_id = ? ORDER BY created_at DESC LIMIT 1").get(userId, portfolioId) as Row | undefined;
+  if (existing) {
+    db.close();
+    return { id: String(existing.id), source: "STARTER_PORTFOLIO" };
+  }
+
+  const now = isoNow();
+  const snapshotId = createId("portfolio_snapshot");
+  const starterHoldings = [
+    { instrumentId: "AAPL", symbol: "AAPL", name: "Apple", market: "NASDAQ", assetType: "stock", sector: "Technology", quantity: "8", price: "190" },
+    { instrumentId: "MSFT", symbol: "MSFT", name: "Microsoft", market: "NASDAQ", assetType: "stock", sector: "Technology", quantity: "4", price: "420" },
+    { instrumentId: "SPY", symbol: "SPY", name: "SPDR S&P 500 ETF", market: "NYSE", assetType: "fund", sector: "Broad Market", quantity: "10", price: "520" },
+    { instrumentId: "GLD", symbol: "GLD", name: "SPDR Gold Shares", market: "NYSE", assetType: "fund", sector: "Commodities", quantity: "8", price: "215" },
+  ];
+  const totalMarketValue = starterHoldings.reduce((total, holding) => total + Number(holding.quantity) * Number(holding.price), 0);
+  const publish = db.transaction(() => {
+    for (const holding of starterHoldings) {
+      db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, name, market, asset_type, sector, tradable) VALUES (?, ?, ?, ?, ?, ?, 1)")
+        .run(holding.instrumentId, holding.symbol, holding.name, holding.market, holding.assetType, holding.sector);
+    }
+    db.prepare("INSERT INTO portfolio_snapshots (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at) VALUES (?,?,?,?,?,'partial',?,?,?)")
+      .run(snapshotId, userId, portfolioId, "20000", String(totalMarketValue), json([{ source: "STARTER_PORTFOLIO", status: "FALLBACK" }]), now, now);
+    const weights = starterHoldings.map((holding) => Math.round((Number(holding.quantity) * Number(holding.price) / totalMarketValue) * 10_000));
+    for (const [index, holding] of starterHoldings.entries()) {
+      const marketValue = Number(holding.quantity) * Number(holding.price);
+      db.prepare("INSERT INTO holding_snapshots (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .run(createId("holding_snapshot"), snapshotId, holding.instrumentId, holding.quantity, holding.price, holding.price, String(marketValue), "0", weights[index], now);
+    }
+  });
+  publish();
+  db.close();
+  return { id: snapshotId, source: "STARTER_PORTFOLIO" };
+}
+
+function portfolioSourceFromRow(row: Row | undefined): SimulationPortfolioSource {
+  const statuses = parseJson<Array<{ source?: string }>>(String(row?.source_statuses_json ?? "[]"), []);
+  return statuses.some((status) => status.source === "STARTER_PORTFOLIO") ? "STARTER_PORTFOLIO" : "USER_PORTFOLIO";
 }
 
 export function generateOptions(userId: string, workspaceId: string, objective: string) {

@@ -93,6 +93,7 @@ const AdvisorPage = () => {
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingUploadPrompt, setPendingUploadPrompt] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
@@ -173,7 +174,16 @@ const AdvisorPage = () => {
   }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
 
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    const list = listRef.current;
+    if (!list) return;
+
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      requestAnimationFrame(() => {
+        composerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      });
+    }
   }, [messages, sending]);
 
   const openSession = async (sessionId: string) => {
@@ -359,7 +369,7 @@ const AdvisorPage = () => {
   const emptyChatState = messages.length === 0 && !loadingHistory;
 
   return (
-    <div className="flex h-full min-h-[560px] w-full gap-0 overflow-hidden border-y border-border bg-card md:min-h-[640px]">
+    <div className="flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
       <aside className="hidden w-[302px] shrink-0 flex-col border-r border-neutral-200 bg-[#f7f7f7] text-neutral-950 md:flex">
         <div className="flex items-center justify-between px-3 pb-4 pt-3">
           <button
@@ -461,18 +471,18 @@ const AdvisorPage = () => {
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section className="flex min-w-0 flex-1 flex-col md:min-h-0">
         <header className="flex flex-col items-start justify-between gap-2 border-b border-border px-3 py-3 sm:flex-row sm:items-center sm:px-6">
           <div className="min-w-0">
             <p className="line-clamp-1 text-sm font-medium">{activeSession?.title ?? "新对话"}</p>
           </div>
         </header>
 
-        <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-6 sm:px-6">
+        <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
           {loadingHistory ? (
-            <div className="grid h-full place-items-center text-sm text-muted-foreground">加载对话…</div>
+            <div className="grid min-h-[360px] place-items-center text-sm text-muted-foreground md:h-full md:min-h-0">加载对话…</div>
           ) : emptyChatState ? (
-            <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center text-center">
+            <div className="mx-auto flex min-h-[360px] max-w-2xl flex-col items-center justify-center text-center md:h-full md:min-h-0">
               <div className="grid size-12 place-items-center rounded-full bg-primary/10 text-primary">
                 <Sparkles className="size-5" />
               </div>
@@ -551,7 +561,7 @@ const AdvisorPage = () => {
         </div>
 
         <div className="px-3 sm:px-6">
-          <div className="mx-auto mb-16 max-w-[1100px] md:mb-6">
+          <div ref={composerRef} className="mx-auto mb-16 max-w-[1100px] md:mb-6">
             <div
               className="relative rounded-[28px] border bg-white p-3 shadow-[0_18px_48px_rgba(37,99,235,0.12)] transition-all hover:border-transparent hover:shadow-[0_18px_54px_rgba(37,99,235,0.22)]"
               style={{ borderColor: "rgba(96, 165, 250, 0.35)" }}
