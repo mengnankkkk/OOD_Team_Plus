@@ -45,6 +45,12 @@ export const BranchScenarioPlanSchema = z.object({
   modelSummary: z.string().max(1000).optional(),
 }).strict();
 
+export const BranchScenarioModelPlanSchema = z.object({
+  options: z.array(BranchScenarioOptionSchema.omit({ label: true })).min(1).max(5),
+  delegatedAgents: z.array(z.string().min(1).max(80)).max(12),
+  modelSummary: z.string().max(1000).optional(),
+}).strict();
+
 export const BranchScenarioContextSchema = z.object({
   objective: z.string().min(1).max(2000),
   profile: z.record(z.string(), z.unknown()).nullable(),
@@ -58,4 +64,5 @@ export const BranchScenarioContextSchema = z.object({
 export type BranchScenarioTrade = z.infer<typeof BranchScenarioTradeSchema>;
 export type BranchScenarioOption = z.infer<typeof BranchScenarioOptionSchema>;
 export type BranchScenarioPlan = z.infer<typeof BranchScenarioPlanSchema>;
+export type BranchScenarioModelPlan = z.infer<typeof BranchScenarioModelPlanSchema>;
 export type BranchScenarioAgentInput = z.infer<typeof BranchScenarioContextSchema>;
