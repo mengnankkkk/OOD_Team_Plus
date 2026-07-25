@@ -19,6 +19,7 @@ export type ArtifactInput = {
   sourceRows?: Record<string, unknown>[];
   sourceColumns?: Array<{ name: string; type?: string }>;
   markdownContent?: string;
+  recommendationId?: string | null;
 };
 
 type ArtifactRow = Record<string, unknown>;
@@ -55,16 +56,22 @@ export function createArtifact(input: ArtifactInput) {
       VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?, ?, ?, ?, ?)`)
       .run(artifactId, input.userId, source.sessionId, input.sourceMessageId ?? null, input.sourceQueryId ?? null,
         analysisId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", input.title,
-        source.snapshotJson, source.snapshotSha256, json({ analysisId, modelName: "local-deterministic", algorithmVersion: "artifact-v1", sourceSnapshotSha256: source.snapshotSha256 }), now, now, now);
+        source.snapshotJson, source.snapshotSha256, json({
+          analysisId,
+          recommendationId: input.recommendationId ?? null,
+          modelName: "local-deterministic",
+          algorithmVersion: "artifact-v1",
+          sourceSnapshotSha256: source.snapshotSha256,
+        }), now, now, now);
     db.prepare(`INSERT INTO generated_artifact_versions
       (id, artifact_id, version_no, content_type, content_json, content_markdown, content_sha256, size_bytes, created_by_type, created_by_id, edited_by, created_at)
       VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'agent', ?, ?, ?)`)
       .run(createId("artifact_version"), artifactId, input.artifactType === "ECHARTS_OPTION" ? "echarts_option" : "markdown", contentJson, contentMarkdown, contentHash, contentSize, analysisId, input.userId, now);
     if (input.sourceMessageId && source.sourceMessageRole === "assistant") {
       db.prepare(`INSERT INTO message_artifacts
-        (id,message_id,artifact_type,generated_artifact_id,display_order,created_at)
-        VALUES (?,?,'generated_artifact',?,COALESCE((SELECT MAX(display_order)+1 FROM message_artifacts WHERE message_id=?),1),?)`)
-        .run(createId("message_artifact"), input.sourceMessageId, artifactId, input.sourceMessageId, now);
+        (id,message_id,artifact_type,recommendation_id,generated_artifact_id,display_order,created_at)
+        VALUES (?,?,'generated_artifact',?,?,COALESCE((SELECT MAX(display_order)+1 FROM message_artifacts WHERE message_id=?),1),?)`)
+        .run(createId("message_artifact"), input.sourceMessageId, input.recommendationId ?? null, artifactId, input.sourceMessageId, now);
     }
   });
   publish();
@@ -75,21 +82,32 @@ export function createArtifact(input: ArtifactInput) {
 
 export function listArtifacts(userId: string, limit: number, filters: { sourceMessageId?: string; artifactType?: string; status?: string; sessionId?: string } = {}) {
   const db = getDatabase();
-  const conditions = ["user_id = ?", "status != 'deleted'"];
+  const conditions = ["ga.user_id = ?", "ga.status != 'deleted'"];
   const params: unknown[] = [userId];
-  if (filters.sourceMessageId) { conditions.push("source_message_id = ?"); params.push(filters.sourceMessageId); }
-  if (filters.artifactType) { conditions.push("artifact_type = ?"); params.push(filters.artifactType.toLowerCase()); }
-  if (filters.status) { conditions.push("status = ?"); params.push(filters.status.toLowerCase()); }
-  if (filters.sessionId) { conditions.push("session_id = ?"); params.push(filters.sessionId); }
+  if (filters.sourceMessageId) { conditions.push("ga.source_message_id = ?"); params.push(filters.sourceMessageId); }
+  if (filters.artifactType) { conditions.push("ga.artifact_type = ?"); params.push(filters.artifactType.toLowerCase()); }
+  if (filters.status) { conditions.push("ga.status = ?"); params.push(filters.status.toLowerCase()); }
+  if (filters.sessionId) { conditions.push("ga.session_id = ?"); params.push(filters.sessionId); }
   params.push(limit);
-  const rows = db.prepare(`SELECT * FROM generated_artifacts WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as ArtifactRow[];
+  const rows = db.prepare(`SELECT ga.*, COALESCE(ma.recommendation_id, r.id) AS recommendation_id
+    FROM generated_artifacts ga
+    LEFT JOIN message_artifacts ma ON ma.generated_artifact_id=ga.id
+    LEFT JOIN messages m ON m.id=ga.source_message_id
+    LEFT JOIN recommendations r ON r.analysis_id=m.agent_run_id AND r.user_id=ga.user_id AND r.status!='deleted'
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY ga.created_at DESC LIMIT ?`).all(...params) as ArtifactRow[];
   db.close();
   return rows.map(toArtifactSummary);
 }
 
 export function getArtifact(userId: string, id: string) {
   const db = getDatabase();
-  const row = db.prepare("SELECT * FROM generated_artifacts WHERE id = ? AND user_id = ? AND status != 'deleted'").get(id, userId) as ArtifactRow | undefined;
+  const row = db.prepare(`SELECT ga.*, COALESCE(ma.recommendation_id, r.id) AS recommendation_id
+    FROM generated_artifacts ga
+    LEFT JOIN message_artifacts ma ON ma.generated_artifact_id=ga.id
+    LEFT JOIN messages m ON m.id=ga.source_message_id
+    LEFT JOIN recommendations r ON r.analysis_id=m.agent_run_id AND r.user_id=ga.user_id AND r.status!='deleted'
+    WHERE ga.id=? AND ga.user_id=? AND ga.status!='deleted'`).get(id, userId) as ArtifactRow | undefined;
   if (!row) { db.close(); return null; }
   const version = db.prepare("SELECT * FROM generated_artifact_versions WHERE artifact_id = ? AND version_no = ?").get(id, row.current_version_no) as ArtifactRow | undefined;
   db.close();
@@ -149,7 +167,22 @@ export function deleteArtifact(userId: string, id: string, expectedVersion: numb
 }
 
 function toArtifactSummary(row: ArtifactRow) {
-  return { id: row.id, type: String(row.artifact_type).toUpperCase(), title: row.title, status: String(row.status).toUpperCase(), currentVersion: row.current_version_no, messageId: row.source_message_id, dataQueryId: row.source_query_id, conversationId: row.session_id, analysisId: row.agent_run_id, previewUrl: `/api/v1/generated-artifacts/${row.id}/preview`, createdAt: row.created_at, updatedAt: row.updated_at };
+  const provenance = parseJson<Record<string, unknown>>(String(row.provenance_json ?? "{}"), {});
+  return {
+    id: row.id,
+    type: String(row.artifact_type).toUpperCase(),
+    title: row.title,
+    status: String(row.status).toUpperCase(),
+    currentVersion: row.current_version_no,
+    messageId: row.source_message_id,
+    dataQueryId: row.source_query_id,
+    conversationId: row.session_id,
+    recommendationId: row.recommendation_id ?? provenance.recommendationId ?? null,
+    analysisId: row.agent_run_id,
+    previewUrl: `/api/v1/generated-artifacts/${row.id}/preview`,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function toVersion(row: ArtifactRow) {
