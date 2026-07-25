@@ -191,6 +191,67 @@ describe("/api/v1/admin/a2a-clients", () => {
     expect(active.count).toBe(1);
     expect(responseRow.response_json).not.toContain(firstBody.data.token);
   });
+
+  it("creates only one client when identical idempotent requests arrive concurrently", async () => {
+    const requestBody = {
+      name: "Concurrent partner",
+      capabilities: ["scenario_simulation", "tasks_read"],
+      rateLimitPerMinute: 25,
+    };
+
+    const responses = await Promise.all([
+      POST(createRequest("create-concurrent-1", requestBody)),
+      POST(createRequest("create-concurrent-1", requestBody)),
+    ]);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(new Set(bodies.map((body) => body.data.client.id)).size).toBe(1);
+    expect(bodies.filter((body) => typeof body.data.token === "string")).toHaveLength(1);
+    expect(bodies.filter((body) => body.data.token === undefined)).toHaveLength(1);
+
+    const db = getDatabase();
+    const clients = db.prepare(
+      "SELECT count(*) AS count FROM a2a_external_clients WHERE name=?",
+    ).get(requestBody.name) as { count: number };
+    const tokens = db.prepare(
+      `SELECT count(*) AS count FROM a2a_external_client_tokens
+        WHERE external_client_id=(SELECT id FROM a2a_external_clients WHERE name=?)`,
+    ).get(requestBody.name) as { count: number };
+    db.close();
+    expect(clients.count).toBe(1);
+    expect(tokens.count).toBe(1);
+  });
+
+  it("rotates only once when identical idempotent requests arrive concurrently", async () => {
+    const created = createExternalClientFixture();
+    const rotate = () => ROTATE(
+      authenticatedRequest(
+        `http://localhost/api/v1/admin/a2a-clients/${created.client.id}/rotate-token`,
+        { method: "POST", headers: { "idempotency-key": "rotate-concurrent-1" } },
+      ),
+      { params: Promise.resolve({ id: created.client.id }) },
+    );
+
+    const responses = await Promise.all([rotate(), rotate()]);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(bodies.filter((body) => typeof body.data.token === "string")).toHaveLength(1);
+    expect(bodies.filter((body) => body.data.token === undefined)).toHaveLength(1);
+    expect(new Set(bodies.map((body) => body.data.tokenPrefix)).size).toBe(1);
+
+    const db = getDatabase();
+    const tokenRows = db.prepare(
+      "SELECT count(*) AS count FROM a2a_external_client_tokens WHERE external_client_id=?",
+    ).get(created.client.id) as { count: number };
+    const activeRows = db.prepare(
+      "SELECT count(*) AS count FROM a2a_external_client_tokens WHERE external_client_id=? AND revoked_at IS NULL",
+    ).get(created.client.id) as { count: number };
+    db.close();
+    expect(tokenRows.count).toBe(2);
+    expect(activeRows.count).toBe(1);
+  });
 });
 
 function createExternalClientFixture() {

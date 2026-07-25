@@ -1,19 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { rotateExternalClientToken } from "@/server/a2a/client-service";
+import { rotateExternalClientTokenIdempotently } from "@/server/a2a/client-idempotency-service";
 import { authError, requireAdmin } from "@/server/auth/http";
-import {
-  beginIdempotentRequest,
-  parseIdempotentResponse,
-  saveIdempotentResponse,
-} from "@/server/extensions/middleware/idempotency";
 import {
   getRequestContext,
   idempotencyKey,
   meta,
 } from "@/server/http/context";
-import { a2aAdminError, idempotencyConflict } from "../../route";
+import { a2aAdminError } from "../../route";
 
 const RotateSchema = z.object({}).strict();
 
@@ -51,29 +46,17 @@ export async function POST(
   }
 
   const { id } = await params;
-  const routeCode = `admin_a2a_client_rotate:${id}`;
-  const idem = await beginIdempotentRequest(
-    context.userId,
-    routeCode,
-    key,
-    { clientId: id },
-  );
-  if (idem.existing?.conflict) return idempotencyConflict();
-  if (idem.existing) {
-    return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
-  }
-
   try {
-    const result = rotateExternalClientToken(context.userId, id);
     const responseMeta = meta();
-    await saveIdempotentResponse(
+    const result = rotateExternalClientTokenIdempotently(
       context.userId,
-      routeCode,
-      key,
-      idem.requestHash,
-      { data: { tokenPrefix: result.tokenPrefix }, meta: responseMeta },
+      id,
+      { key, responseMeta },
     );
-    return NextResponse.json({ data: result, meta: responseMeta });
+    if (result.kind === "replay") {
+      return NextResponse.json(result.response, { status: 200 });
+    }
+    return NextResponse.json({ data: result.value, meta: responseMeta });
   } catch (error) {
     return a2aAdminError(error);
   }

@@ -1,10 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
-
 import {
   A2APublicError,
   type A2ACapability,
   type ExternalClientView,
 } from "./contracts";
+import {
+  createExternalClientInTransaction,
+  rotateExternalClientTokenInTransaction,
+  type CreateExternalClientInput,
+} from "./client-write-service";
 import { createId, getDatabase, isoNow, parseJson } from "@/server/http/context";
 
 type ClientRow = {
@@ -20,12 +23,6 @@ type ClientRow = {
   row_version: number;
 };
 
-type CreateExternalClientInput = {
-  name: string;
-  capabilities: A2ACapability[];
-  rateLimitPerMinute: number;
-};
-
 type UpdateExternalClientInput = {
   name?: string;
   status?: "ACTIVE" | "DISABLED";
@@ -39,42 +36,13 @@ export function createExternalClient(
   input: CreateExternalClientInput,
 ): { client: ExternalClientView; token: string } {
   const db = getDatabase();
-  const clientId = createId("a2a_client");
-  const tokenId = createId("a2a_token");
-  const now = isoNow();
-  const generated = generateToken();
-
   try {
+    let result: { client: ExternalClientView; token: string } | undefined;
     const transaction = db.transaction(() => {
-      db.prepare(`INSERT INTO a2a_external_clients
-        (id,name,status,capabilities_json,rate_limit_per_minute,created_by_user_id,created_at,updated_at,row_version)
-        VALUES (?,?,'ACTIVE',?,?,?,?,?,1)`).run(
-        clientId,
-        input.name,
-        JSON.stringify(input.capabilities),
-        input.rateLimitPerMinute,
-        actorUserId,
-        now,
-        now,
-      );
-      db.prepare(`INSERT INTO a2a_external_client_tokens
-        (id,external_client_id,token_prefix,token_hash,created_at)
-        VALUES (?,?,?,?,?)`).run(tokenId, clientId, generated.tokenPrefix, generated.tokenHash, now);
-      writeAudit(db, {
-        actorUserId,
-        action: "A2A_EXTERNAL_CLIENT_CREATE",
-        clientId,
-        metadata: {
-          name: input.name,
-          capabilities: input.capabilities,
-          rateLimitPerMinute: input.rateLimitPerMinute,
-          tokenPrefix: generated.tokenPrefix,
-        },
-        now,
-      });
+      result = createExternalClientInTransaction(db, actorUserId, input);
     });
     transaction();
-    return { client: requireClientRow(db, clientId), token: generated.token };
+    return requireTransactionResult(result);
   } finally {
     db.close();
   }
@@ -162,49 +130,21 @@ export function rotateExternalClientToken(
   clientId: string,
 ): { token: string; tokenPrefix: string } {
   const db = getDatabase();
-  const now = isoNow();
-  const generated = generateToken();
   try {
+    let result: { token: string; tokenPrefix: string } | undefined;
     const transaction = db.transaction(() => {
-      const client = db.prepare("SELECT id FROM a2a_external_clients WHERE id=?").get(clientId);
-      if (!client) throw new A2APublicError("RESOURCE_NOT_FOUND", 404, "External A2A client not found");
-
-      db.prepare(`UPDATE a2a_external_client_tokens
-        SET revoked_at=?
-        WHERE external_client_id=? AND revoked_at IS NULL`).run(now, clientId);
-      db.prepare(`INSERT INTO a2a_external_client_tokens
-        (id,external_client_id,token_prefix,token_hash,created_at)
-        VALUES (?,?,?,?,?)`).run(
-        createId("a2a_token"),
-        clientId,
-        generated.tokenPrefix,
-        generated.tokenHash,
-        now,
-      );
-      writeAudit(db, {
-        actorUserId,
-        action: "A2A_EXTERNAL_CLIENT_TOKEN_ROTATE",
-        clientId,
-        metadata: { tokenPrefix: generated.tokenPrefix },
-        now,
-      });
+      result = rotateExternalClientTokenInTransaction(db, actorUserId, clientId);
     });
     transaction();
-    return { token: generated.token, tokenPrefix: generated.tokenPrefix };
+    return requireTransactionResult(result);
   } finally {
     db.close();
   }
 }
 
-function generateToken(): { token: string; tokenPrefix: string; tokenHash: string } {
-  const secret = randomBytes(32).toString("base64url");
-  const tokenPrefix = randomBytes(4).toString("hex");
-  const token = `mwa2a_${tokenPrefix}_${secret}`;
-  return {
-    token,
-    tokenPrefix,
-    tokenHash: createHash("sha256").update(token).digest("hex"),
-  };
+function requireTransactionResult<T>(result: T | undefined): T {
+  if (result === undefined) throw new Error("A2A transaction completed without a result");
+  return result;
 }
 
 function clientSelectSql(): string {

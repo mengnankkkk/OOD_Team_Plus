@@ -2,16 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  createExternalClient,
   listExternalClients,
 } from "@/server/a2a/client-service";
+import { createExternalClientIdempotently } from "@/server/a2a/client-idempotency-service";
 import { A2A_CAPABILITIES, A2APublicError } from "@/server/a2a/contracts";
 import { authError, requireAdmin } from "@/server/auth/http";
-import {
-  beginIdempotentRequest,
-  parseIdempotentResponse,
-  saveIdempotentResponse,
-} from "@/server/extensions/middleware/idempotency";
 import {
   getRequestContext,
   idempotencyKey,
@@ -56,24 +51,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const routeCode = "admin_a2a_client_create";
-  const idem = await beginIdempotentRequest(context.userId, routeCode, key, parsed.data);
-  if (idem.existing?.conflict) return idempotencyConflict();
-  if (idem.existing) {
-    return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
-  }
-
   try {
-    const result = createExternalClient(context.userId, parsed.data);
     const responseMeta = meta();
-    await saveIdempotentResponse(
+    const result = createExternalClientIdempotently(
       context.userId,
-      routeCode,
-      key,
-      idem.requestHash,
-      { data: { client: result.client }, meta: responseMeta },
+      parsed.data,
+      { key, responseMeta },
     );
-    return NextResponse.json({ data: result, meta: responseMeta }, { status: 201 });
+    if (result.kind === "replay") {
+      return NextResponse.json(result.response, { status: 200 });
+    }
+    return NextResponse.json(
+      { data: result.value, meta: responseMeta },
+      { status: 201 },
+    );
   } catch (error) {
     return a2aAdminError(error);
   }
@@ -99,16 +90,4 @@ export function a2aAdminError(error: unknown): NextResponse {
     );
   }
   return authError(error);
-}
-
-export function idempotencyConflict(): NextResponse {
-  return NextResponse.json(
-    {
-      error: {
-        code: "IDEMPOTENCY_CONFLICT",
-        message: "Idempotency-Key was already used with a different request",
-      },
-    },
-    { status: 409 },
-  );
 }
