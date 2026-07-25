@@ -131,18 +131,25 @@ async function runStructuredDebateAgent<T extends object, TResult>(
 
 async function streamModelObject<T extends object>(agent: Agent, prompt: string, schema: z.ZodType<T>): Promise<T> {
   const stream = await agent.stream(prompt, {
-    structuredOutput: { schema },
+    // The production OpenAI-compatible gateway does not reliably support
+    // native response_format JSON schemas. Keep the same prompt-injection
+    // path used by the working Chief Advisor agents.
+    structuredOutput: { schema, jsonPromptInjection: "system" },
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_100, temperature: 0.2 },
   });
+  let latestPartial: Partial<T> = {};
   if (stream.objectStream) {
     for await (const partial of stream.objectStream) {
-      void partial;
+      if (partial && typeof partial === "object") {
+        latestPartial = { ...latestPartial, ...(partial as Partial<T>) };
+      }
     }
   }
-  const result = await stream.object;
-  if (!result || typeof result !== "object") throw new Error("MODEL_OUTPUT_EMPTY");
-  return result as T;
+  const result = await stream.object.catch(() => undefined);
+  if (result && typeof result === "object") return result as T;
+  if (Object.keys(latestPartial).length > 0) return latestPartial as T;
+  throw new Error("MODEL_OUTPUT_EMPTY");
 }
 
 function hasStructuredContent(value: unknown): value is Record<string, unknown> {
