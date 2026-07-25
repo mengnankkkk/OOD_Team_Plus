@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { apiGet, apiPost, FrontendApiError } from "@/features/frontend-migration/api";
 
 export type DebateRole = "neutral" | "bull" | "bear";
@@ -61,8 +62,16 @@ export type DebateReply = {
   pack: DebatePack;
 };
 
+export type DebateActivityRole = "moderator" | "user" | "bull" | "bear";
+export type DebateStreamActivity = {
+  role: DebateActivityRole;
+  phase: "started" | "completed" | "blocked";
+  eventType: string;
+};
+
 export type DebateStreamObserver = {
   onProgress?: (message: string) => void;
+  onActivity?: (activity: DebateStreamActivity) => void;
 };
 
 type DebateApiResult = {
@@ -161,9 +170,23 @@ function watchDebateStream(streamUrl: string, observer: DebateStreamObserver, ex
     const source = new EventSource(streamUrl);
     const timeout = window.setTimeout(() => { source.close(); reject(new Error("Battle 事件流超时")); }, 600_000);
     const finish = () => { window.clearTimeout(timeout); source.close(); resolve(); };
-    for (const type of ["debate.evidence.completed", "debate.agent.completed", "debate.judge.completed", "debate.round.completed", "debate.blocked"]) {
+    for (const type of [
+      "debate.started",
+      "debate.round.started",
+      "debate.evidence.started",
+      "debate.evidence.completed",
+      "debate.turn.completed",
+      "debate.agent.started",
+      "debate.agent.completed",
+      "debate.judge.started",
+      "debate.judge.completed",
+      "debate.round.completed",
+      "debate.blocked",
+    ]) {
       source.addEventListener(type, (event) => {
         const eventPayload = parsePayload(event);
+        const activity = debateStreamActivity(type, eventPayload);
+        if (activity) observer.onActivity?.(activity);
         observer.onProgress?.(debateStreamLabel(type, eventPayload));
         if (shouldFinishDebateStream(type, eventPayload, expectedRoundIndex)) finish();
       });
@@ -226,6 +249,39 @@ export function shouldFinishDebateStream(
   return Number(payload.roundIndex) === expectedRoundIndex;
 }
 
+export function debateStreamActivity(
+  type: string,
+  payload: Record<string, unknown>,
+): DebateStreamActivity | null {
+  if (type === "debate.started" || type === "debate.round.started") {
+    return { role: "moderator", phase: "started", eventType: type };
+  }
+  if (type === "debate.evidence.started" || type === "debate.evidence.completed") {
+    return { role: "moderator", phase: type.endsWith(".completed") ? "completed" : "started", eventType: type };
+  }
+  if (type === "debate.turn.completed" && payload.speaker === "user") {
+    return { role: "user", phase: "completed", eventType: type };
+  }
+  if ((type === "debate.agent.started" || type === "debate.agent.completed") && (payload.speaker === "bull" || payload.speaker === "bear")) {
+    return {
+      role: payload.speaker,
+      phase: type.endsWith(".completed") ? "completed" : "started",
+      eventType: type,
+    };
+  }
+  if (type === "debate.judge.started" || type === "debate.judge.completed" || type === "debate.round.completed") {
+    return {
+      role: "moderator",
+      phase: type === "debate.round.completed" || type.endsWith(".completed") ? "completed" : "started",
+      eventType: type,
+    };
+  }
+  if (type === "debate.blocked") {
+    return { role: "moderator", phase: "blocked", eventType: type };
+  }
+  return null;
+}
+
 function latestTurn(pack: DebatePack, speaker: "bull" | "bear"): DebateTurn | undefined {
   return [...pack.turns].reverse().find((turn) => turn.speaker === speaker);
 }
@@ -240,8 +296,14 @@ function parsePayload(event: Event): Record<string, unknown> {
 
 function debateStreamLabel(type: string, payload: Record<string, unknown>): string {
   const speaker = typeof payload.speaker === "string" ? payload.speaker : "";
+  if (type === "debate.started") return "主持顾问正在安排本轮 Battle";
+  if (type === "debate.round.started") return "主持顾问已开启新一轮";
+  if (type === "debate.evidence.started") return "主持顾问正在整理共同证据";
   if (type === "debate.evidence.completed") return "共同证据板已准备好";
+  if (type === "debate.turn.completed") return "你的问题已进入 Battle";
+  if (type === "debate.agent.started") return speaker === "bull" ? "看多 Agent 正在形成观点" : speaker === "bear" ? "看空 Agent 正在形成观点" : "辩论 Agent 正在形成观点";
   if (type === "debate.agent.completed") return speaker === "bull" ? "多方已发言" : speaker === "bear" ? "空方已发言" : "辩论方已发言";
+  if (type === "debate.judge.started") return "裁判正在汇总双方观点";
   if (type === "debate.judge.completed") return "裁判正在总结本轮";
   if (type === "debate.round.completed") return "本轮 Battle 完成";
   return "Battle 暂时受阻";

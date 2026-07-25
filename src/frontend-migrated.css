@@ -694,19 +694,13 @@
     background: transparent;
     padding: 0;
     color: #111;
-    cursor: pointer;
-    pointer-events: auto;
+    pointer-events: none;
     transform: translate(-50%, -50%);
     transition: filter 180ms ease;
   }
-  .debate-character:hover,
-  .debate-character:focus-visible {
+  .debate-character:hover {
     z-index: 3;
     filter: brightness(1.06);
-    outline: none;
-  }
-  .debate-character:focus-visible .debate-character-portrait {
-    box-shadow: 0 0 0 3px #fff, 0 0 0 6px #111, 0 12px 28px rgb(15 23 42 / 24%);
   }
   .debate-character-moderator { left: 50%; top: 18%; }
   .debate-character-bull { left: 20%; top: 43%; }
@@ -791,35 +785,6 @@
   .debate-character-shoving .debate-character-body,
   .debate-character-pushed .debate-character-body {
     transition-duration: .28s;
-  }
-  .debate-character-reaction {
-    position: absolute;
-    left: 50%;
-    bottom: calc(100% + 14px);
-    z-index: 2;
-    width: max-content;
-    max-width: 190px;
-    transform: translateX(-50%);
-    border: 1px solid #111;
-    border-radius: 6px;
-    background: #fff;
-    padding: 6px 8px;
-    box-shadow: 3px 3px 0 #111;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.35;
-    animation: debate-reaction-in 180ms ease-out both;
-  }
-  .debate-character-reaction::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 100%;
-    width: 10px;
-    height: 8px;
-    transform: translateX(-50%);
-    background: #111;
-    clip-path: polygon(0 0, 100% 0, 50% 100%);
   }
   .debate-bubble {
     position: absolute;
@@ -921,10 +886,6 @@
 @keyframes debate-character-speaking {
   0%, 100% { transform: translateY(0) scale(1); }
   50% { transform: translateY(-4px) scale(1.035); }
-}
-@keyframes debate-reaction-in {
-  from { opacity: 0; transform: translate(-50%, 6px) scale(.94); }
-  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 @keyframes debate-character-shove {
   0% { transform: translateX(0) rotate(0); }
@@ -1105,10 +1066,6 @@
   }
   .debate-character-caption strong { font-size: 9px; }
   .debate-character-caption small { display: none; }
-  .debate-character-reaction {
-    max-width: 140px;
-    font-size: 10px;
-  }
   .debate-bubble {
     width: max-content;
     max-width: min(250px, calc(50vw - 1.5rem));

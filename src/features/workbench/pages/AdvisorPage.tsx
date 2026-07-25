@@ -14,6 +14,7 @@ import {
   startDebateMessage,
   type DebatePack,
   type DebateRole,
+  type DebateStreamActivity,
 } from "@/services/debateService";
 import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, ConversationOutputMode, DebateSuggestion, OnboardingMessage } from "@/types/app/onboarding";
 import { toast } from "sonner";
@@ -48,6 +49,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
+import DebateCharacterStage from "@/features/workbench/components/DebateCharacterStage";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSearchParams } from "@/features/frontend-migration/router";
 import { useNavigate } from "@/features/frontend-migration/router";
@@ -136,6 +138,7 @@ const AdvisorPage = () => {
   const [advisorMode, setAdvisorMode] = useState<AdvisorMode>("normal");
   const [debateUserRole, setDebateUserRole] = useState<DebateRole>("neutral");
   const [activeDebateSessionId, setActiveDebateSessionId] = useState<string | null>(null);
+  const [debateActivity, setDebateActivity] = useState<DebateStreamActivity | null>(null);
   const [pendingDebateContext, setPendingDebateContext] = useState<{ motion: string; targetSymbol: string | null } | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
@@ -198,6 +201,7 @@ const AdvisorPage = () => {
 
       const restoredDebate = restoredDebateState(rows);
       setActiveDebateSessionId(restoredDebate?.debateSessionId ?? null);
+      setDebateActivity(restoredDebate ? { role: "moderator", phase: "completed", eventType: "history.restored" } : null);
       setPendingDebateContext(null);
       if (!restoredDebate) {
         setAdvisorMode("normal");
@@ -249,6 +253,9 @@ const AdvisorPage = () => {
                 : message
             )));
           },
+          onActivity: (activity) => {
+            if (requestId === historyRequestRef.current) setDebateActivity(activity);
+          },
         },
       );
       if (requestId !== historyRequestRef.current) return;
@@ -273,6 +280,7 @@ const AdvisorPage = () => {
     setLoadingHistory(false);
     setActiveSessionId(null);
     setActiveDebateSessionId(null);
+    setDebateActivity(null);
     setPendingDebateContext(null);
     setAdvisorMode("normal");
     setDebateUserRole("neutral");
@@ -330,6 +338,7 @@ const AdvisorPage = () => {
     setMessages([]);
     setActiveSessionId(sessionId);
     setActiveDebateSessionId(null);
+    setDebateActivity(null);
     setPendingDebateContext(null);
     setAdvisorMode("normal");
     setDebateUserRole("neutral");
@@ -411,12 +420,18 @@ const AdvisorPage = () => {
     setDraft("");
     try {
       const result = activeDebateSessionId && !forceNewDebate
-        ? await continueDebateMessage(activeDebateSessionId, text.trim(), role, { onProgress: updateDebateProgress(streamMessageId) })
+        ? await continueDebateMessage(activeDebateSessionId, text.trim(), role, {
+            onProgress: updateDebateProgress(streamMessageId),
+            onActivity: setDebateActivity,
+          })
         : await startDebateMessage(
             text.trim(),
             currentSessionId,
             role,
-            { onProgress: updateDebateProgress(streamMessageId) },
+            {
+              onProgress: updateDebateProgress(streamMessageId),
+              onActivity: setDebateActivity,
+            },
             pendingDebateContext?.motion.trim() === text.trim() ? pendingDebateContext.targetSymbol : null,
           );
       const returnedSid = result.sessionId || currentSessionId;
@@ -465,6 +480,21 @@ const AdvisorPage = () => {
       metadata: { ...item.metadata, streaming: true, streamStatus: status },
     } : item));
   };
+
+  const latestDebatePack = useMemo(
+    () => latestDebatePackFromMessages(messages),
+    [messages],
+  );
+  const stagePack = sending ? null : latestDebatePack;
+  const stageJudgement = stagePack?.judgements.at(-1);
+  const stageBull = stagePack ? latestDebateTurn(stagePack, "bull")?.publicSummary ?? stageJudgement?.bullStrongestPoint ?? null : null;
+  const stageBear = stagePack ? latestDebateTurn(stagePack, "bear")?.publicSummary ?? stageJudgement?.bearStrongestPoint ?? null : null;
+  const stageJudge = stagePack ? stageJudgement?.whyNotFinal ?? null : null;
+  const stageUser = [...messages].reverse().find((message) => message.role === "user")?.content ?? null;
+  const stageMotion = stagePack?.motion ?? pendingDebateContext?.motion ?? null;
+  const stageStatus = [...messages].reverse().find((message) => (
+    message.role === "advisor" && Boolean((message.metadata as AdvisorMessageMeta).streaming)
+  ))?.metadata.streamStatus as string | undefined;
 
   const send = async (text: string, options: { forceDebate?: boolean; debateRole?: DebateRole } = {}) => {
     if (!user || !text.trim() || sending) return;
@@ -625,7 +655,7 @@ const AdvisorPage = () => {
 
   const currentAdvisorMode = ADVISOR_MODES.find((mode) => mode.value === advisorMode) ?? ADVISOR_MODES[0];
 
-  const emptyChatState = messages.length === 0 && !loadingHistory;
+  const emptyChatState = messages.length === 0 && !loadingHistory && advisorMode !== "debate";
   const composerDraft = draft;
   const composerSending = sending;
   const setComposerDraft = setDraft;
@@ -787,7 +817,19 @@ const AdvisorPage = () => {
               </div>
             </div>
           ) : (
-            <ul className="flex w-full max-w-none flex-col gap-5">
+            <>
+              {advisorMode === "debate" ? (
+                <DebateCharacterStage
+                  activeRole={debateActivity?.role ?? "moderator"}
+                  motion={stageMotion}
+                  status={stageStatus}
+                  userMessage={stageUser}
+                  bullMessage={stageBull}
+                  bearMessage={stageBear}
+                  judgeMessage={stageJudge}
+                />
+              ) : null}
+              <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
                 const meta = (msg.metadata ?? {}) as AdvisorMessageMeta;
                 return (
@@ -871,7 +913,8 @@ const AdvisorPage = () => {
                   <div className="inline-block rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">思考中…</div>
                 </li>
               )}
-            </ul>
+              </ul>
+            </>
           )}
         </div>
 
@@ -1167,6 +1210,23 @@ const DebateSide = ({ title, icon: Icon, tone, text }: { title: string; icon: ty
 
 function latestDebateTurn(pack: DebatePack, speaker: "bull" | "bear") {
   return [...pack.turns].reverse().find((turn) => turn.speaker === speaker);
+}
+
+function latestDebatePackFromMessages(messages: OnboardingMessage[]): DebatePack | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "advisor") continue;
+    const pack = message.metadata.debatePack;
+    if (isDebatePack(pack)) return pack;
+  }
+  return null;
+}
+
+function isDebatePack(value: unknown): value is DebatePack {
+  return isRecord(value)
+    && typeof value.debateSessionId === "string"
+    && typeof value.motion === "string"
+    && Array.isArray(value.turns)
+    && Array.isArray(value.judgements);
 }
 
 function evidenceTiltLabel(value: string): string {

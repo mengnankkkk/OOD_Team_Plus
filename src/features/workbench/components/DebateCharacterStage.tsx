@@ -1,7 +1,7 @@
 "use client";
 
 import NextImage from "next/image";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 
 export type DebateCharacterRole = "moderator" | "user" | "bull" | "bear";
@@ -13,18 +13,11 @@ type Drift = {
   duration: number;
 };
 
-type Impact = {
-  actor: DebateCharacterRole;
-  target: DebateCharacterRole;
-  direction: -1 | 1;
-};
-
 type CharacterDefinition = {
   role: DebateCharacterRole;
   label: string;
   detail: string;
   image: string;
-  reactions: string[];
 };
 
 const CHARACTERS: CharacterDefinition[] = [
@@ -33,28 +26,24 @@ const CHARACTERS: CharacterDefinition[] = [
     label: "主持顾问",
     detail: "控制议程",
     image: "/unity-characters/hisa-teacher.png",
-    reactions: ["先把分歧讲清楚。", "请用证据支持判断。", "我们继续下一轮。"],
   },
   {
     role: "bull",
     label: "看多 agent",
     detail: "寻找增长机会",
     image: "/unity-characters/hisa-student.png",
-    reactions: ["我看到了上行空间。", "机会成本也要算进去。", "让我补一条正方证据。"],
   },
   {
     role: "bear",
     label: "看空 agent",
     detail: "审视下行风险",
     image: "/unity-characters/hisa-shark.png",
-    reactions: ["先别忽略尾部风险。", "这个假设需要压力测试。", "我来检查最坏情形。"],
   },
   {
     role: "user",
     label: "你的席位",
     detail: "提出决策问题",
     image: "/unity-characters/hisa.png",
-    reactions: ["我还想听听两边依据。", "请给我可执行的结论。", "这点和我的目标有关。"],
   },
 ];
 
@@ -76,18 +65,23 @@ function nextDrift(index: number): Drift {
 }
 
 export default function DebateCharacterStage({
-  activeRoles,
-  clash,
+  activeRole,
+  motion,
+  status,
+  userMessage,
+  bullMessage,
+  bearMessage,
+  judgeMessage,
 }: {
-  activeRoles: DebateCharacterRole[];
-  clash: boolean;
+  activeRole: DebateCharacterRole;
+  motion?: string | null;
+  status?: string | null;
+  userMessage?: string | null;
+  bullMessage?: string | null;
+  bearMessage?: string | null;
+  judgeMessage?: string | null;
 }) {
   const [drifts, setDrifts] = useState(STILL_DRIFT);
-  const [reaction, setReaction] = useState<{ role: DebateCharacterRole; text: string } | null>(null);
-  const [impact, setImpact] = useState<Impact | null>(null);
-  const interactionCountRef = useRef(0);
-
-  const activeRoleSet = useMemo(() => new Set(activeRoles), [activeRoles]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -107,108 +101,101 @@ export default function DebateCharacterStage({
     return () => window.clearInterval(intervalId);
   }, []);
 
-  useEffect(() => {
-    if (!reaction) return;
-    const timeoutId = window.setTimeout(() => setReaction(null), 2400);
-    return () => window.clearTimeout(timeoutId);
-  }, [reaction]);
-
-  useEffect(() => {
-    if (!impact) return;
-    const timeoutId = window.setTimeout(() => setImpact(null), 720);
-    return () => window.clearTimeout(timeoutId);
-  }, [impact]);
-
-  useEffect(() => {
-    if (!clash) return;
-    let bullStarts = true;
-    const shove = () => {
-      setImpact({
-        actor: bullStarts ? "bull" : "bear",
-        target: bullStarts ? "bear" : "bull",
-        direction: bullStarts ? 1 : -1,
-      });
-      bullStarts = !bullStarts;
-    };
-
-    shove();
-    const intervalId = window.setInterval(shove, 1120);
-    return () => window.clearInterval(intervalId);
-  }, [clash]);
-
-  const getInteractionTarget = (role: DebateCharacterRole, interactionCount: number): DebateCharacterRole => {
-    if (role === "bull") return "bear";
-    if (role === "bear") return "bull";
-    if (role === "moderator") return activeRoleSet.has("bear") ? "bear" : "bull";
-    return interactionCount % 2 === 0 ? "bull" : "bear";
-  };
-
-  const interact = (character: CharacterDefinition) => {
-    const interactionCount = interactionCountRef.current;
-    interactionCountRef.current += 1;
-    const text = character.reactions[interactionCount % character.reactions.length];
-    const target = getInteractionTarget(character.role, interactionCount);
-    const direction: -1 | 1 = character.role === "bear" ? -1 : 1;
-    setReaction({ role: character.role, text });
-    setImpact({ actor: character.role, target, direction });
-  };
+  const clashRole = activeRole === "bull" || activeRole === "bear" ? activeRole : null;
+  const activeRoleSet = new Set([activeRole]);
+  const activityText = status?.trim() || "主持顾问正在等待下一步";
+  const bullBubble = bullMessage ?? (activeRole === "bull" ? activityText : null);
+  const bearBubble = bearMessage ?? (activeRole === "bear" ? activityText : null);
+  const judgeBubble = judgeMessage ?? (activeRole === "moderator" ? activityText : null);
 
   return (
-    <div className="debate-character-layer" aria-label="圆桌角色">
-      {CHARACTERS.map((character) => {
-        const drift = drifts[character.role];
-        const isActive = activeRoleSet.has(character.role);
-        const isShoving = impact?.actor === character.role;
-        const isPushed = impact?.target === character.role;
-        const impactX = isShoving ? 34 * impact.direction : isPushed ? 24 * impact.direction : 0;
-        const impactY = isShoving ? -4 : isPushed ? 5 : 0;
-        const style = {
-          "--character-x": `${drift.x}px`,
-          "--character-y": `${drift.y}px`,
-          "--character-rotation": `${drift.rotation}deg`,
-          "--character-duration": `${drift.duration}s`,
-          "--impact-x": `${impactX}px`,
-          "--impact-y": `${impactY}px`,
-        } as CSSProperties;
+    <div className="debate-room debate-character-stage">
+      <div className="debate-stage relative min-h-[520px] overflow-hidden rounded-lg border border-border bg-white" aria-label="多空 Battle 实时圆桌">
+        <NextImage
+          className="roundtable-scene"
+          src="/debate-roundtable.jpg"
+          alt=""
+          width={1329}
+          height={1183}
+          priority
+        />
+        <div className="absolute left-4 top-4 z-10 max-w-[min(70%,680px)]">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">Live Debate</div>
+          <div className="mt-1 truncate text-sm font-semibold text-neutral-950">{motion || "等待你提出本轮辩题"}</div>
+          <div className="mt-1 text-xs text-neutral-500">{activityText}</div>
+        </div>
+        <div className="debate-character-layer" aria-label="圆桌角色">
+          {CHARACTERS.map((character) => {
+            const drift = drifts[character.role];
+            const isActive = activeRoleSet.has(character.role);
+            const isShoving = clashRole === character.role;
+            const isPushed = clashRole !== null && clashRole !== character.role
+              && (character.role === "bull" || character.role === "bear");
+            const impactDirection = clashRole === "bear" ? -1 : 1;
+            const impactX = isShoving ? 30 * impactDirection : isPushed ? 18 * impactDirection : 0;
+            const impactY = isShoving ? -4 : isPushed ? 4 : 0;
+            const style = {
+              "--character-x": `${drift.x}px`,
+              "--character-y": `${drift.y}px`,
+              "--character-rotation": `${drift.rotation}deg`,
+              "--character-duration": `${drift.duration}s`,
+              "--impact-x": `${impactX}px`,
+              "--impact-y": `${impactY}px`,
+            } as CSSProperties;
 
-        return (
-          <button
-            type="button"
-            key={character.role}
-            className={cn(
-              "debate-character",
-              `debate-character-${character.role}`,
-              isActive && "debate-character-active",
-              isShoving && "debate-character-shoving",
-              isPushed && "debate-character-pushed",
-            )}
-            style={style}
-            onClick={() => interact(character)}
-            aria-label={`${character.label}，${character.detail}${isActive ? "，正在发言" : ""}`}
-          >
-            {reaction?.role === character.role ? (
-              <span className="debate-character-reaction" role="status">
-                {reaction.text}
-              </span>
-            ) : null}
-            <span className="debate-character-body">
-              <span className="debate-character-portrait">
-                <NextImage
-                  src={character.image}
-                  alt=""
-                  fill
-                  sizes="(max-width: 767px) 74px, 104px"
-                  className="debate-character-image"
-                />
-              </span>
-              <span className="debate-character-caption">
-                <strong>{character.label}</strong>
-                <small>{isActive ? "正在发言" : character.detail}</small>
-              </span>
-            </span>
-          </button>
-        );
-      })}
+            return (
+              <div
+                key={character.role}
+                className={cn(
+                  "debate-character",
+                  `debate-character-${character.role}`,
+                  isActive && "debate-character-active",
+                  isShoving && "debate-character-shoving",
+                  isPushed && "debate-character-pushed",
+                )}
+                style={style}
+                aria-label={`${character.label}，${character.detail}${isActive ? "，正在发言" : ""}`}
+              >
+                <span className="debate-character-body">
+                  <span className="debate-character-portrait">
+                    <NextImage
+                      src={character.image}
+                      alt=""
+                      fill
+                      sizes="(max-width: 767px) 74px, 104px"
+                      className="debate-character-image"
+                    />
+                  </span>
+                  <span className="debate-character-caption">
+                    <strong>{character.label}</strong>
+                    <small>{isActive ? "正在发言" : character.detail}</small>
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        {userMessage ? <DebateBubble role="user" message={userMessage} /> : null}
+        {bullBubble ? <DebateBubble role="bull" message={bullBubble} muted={!bullMessage} /> : null}
+        {bearBubble ? <DebateBubble role="bear" message={bearBubble} muted={!bearMessage} /> : null}
+        {judgeBubble ? <DebateBubble role="judge" message={judgeBubble} muted={!judgeMessage} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function DebateBubble({
+  role,
+  message,
+  muted = false,
+}: {
+  role: "user" | "bull" | "bear" | "judge";
+  message: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className={cn("debate-bubble", `debate-bubble-${role}`, muted && "debate-bubble-muted")}>
+      <span>{message}</span>
     </div>
   );
 }

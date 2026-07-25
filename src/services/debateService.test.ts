@@ -4,6 +4,7 @@ import { normalizeDebateSuggestion } from "./advisorService";
 import {
   extractDebateTargetSymbol,
   formatDebateReply,
+  debateStreamActivity,
   isDebatePackSettled,
   selectDebateTargetSymbol,
   shouldFinishDebateStream,
@@ -80,6 +81,26 @@ describe("debateService helpers", () => {
     expect(shouldFinishDebateStream("debate.round.completed", { roundIndex: 2 }, 2)).toBe(true);
     expect(shouldFinishDebateStream("debate.blocked", { roundIndex: 2 }, 2)).toBe(true);
     expect(shouldFinishDebateStream("debate.round.completed", {}, 2)).toBe(false);
+  });
+
+  it("maps persisted debate events to visible Battle roles", () => {
+    expect(debateStreamActivity("debate.agent.started", { speaker: "bull" })).toMatchObject({
+      role: "bull",
+      phase: "started",
+    });
+    expect(debateStreamActivity("debate.agent.completed", { speaker: "bear" })).toMatchObject({
+      role: "bear",
+      phase: "completed",
+    });
+    expect(debateStreamActivity("debate.judge.started", { speaker: "judge" })).toMatchObject({
+      role: "moderator",
+      phase: "started",
+    });
+    expect(debateStreamActivity("debate.turn.completed", { speaker: "user" })).toMatchObject({
+      role: "user",
+      phase: "completed",
+    });
+    expect(debateStreamActivity("debate.agent.completed", { speaker: "orchestrator" })).toBeNull();
   });
 });
 
