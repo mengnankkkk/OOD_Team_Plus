@@ -225,22 +225,22 @@ export default function OnboardingGate() {
   return (
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent
-        className="flex max-h-[92dvh] max-w-3xl flex-col overflow-hidden p-0 [&>button]:hidden"
+        className="h-[calc(100dvh-1rem)] max-h-[860px] w-[calc(100vw-1rem)] max-w-3xl grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:h-[calc(100dvh-2rem)] sm:w-[calc(100vw-2rem)] [&>button]:hidden"
         onEscapeKeyDown={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
       >
-        <DialogHeader className="shrink-0 border-b border-border bg-card px-6 pb-5 pt-6 md:px-8">
+        <DialogHeader className="border-b border-border bg-card px-4 pb-3 pt-4 sm:px-6 sm:pb-5 sm:pt-6 md:px-8">
           <div className="flex items-start gap-3">
-            <div className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary"><ShieldCheck className="size-5" /></div>
+            <div className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary sm:size-10"><ShieldCheck className="size-5" /></div>
             <div>
-              <DialogTitle className="text-xl">完成你的专属理财建档</DialogTitle>
-              <DialogDescription className="mt-2 max-w-2xl leading-6">
+              <DialogTitle className="text-lg sm:text-xl">完成你的专属理财建档</DialogTitle>
+              <DialogDescription className="mt-1.5 max-w-2xl leading-5 sm:mt-2 sm:leading-6">
                 为了避免给出不适合你的建议，需要先完成一次适当性测评和一个目标设置。问卷不会决定收益，只用于控制建议的风险边界。
               </DialogDescription>
             </div>
           </div>
-          <div className="mt-6 flex items-center gap-2">
+          <div className="mt-4 flex items-center gap-2 sm:mt-6">
             {["风险测评", "财务档案", "投资目标"].map((label, index) => (
               <div key={label} className="flex min-w-0 flex-1 items-center gap-2">
                 <div className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold ${step > index ? "bg-primary text-primary-foreground" : step === index ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "bg-muted text-muted-foreground"}`}>
@@ -251,10 +251,10 @@ export default function OnboardingGate() {
               </div>
             ))}
           </div>
-          <div className="mt-4 h-1 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
+          <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted sm:mt-4"><div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 md:px-8">
+        <div data-testid="onboarding-content" className="min-h-0 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-6 md:px-8">
           <div className="mb-5">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">STEP {step + 1} / 3</p>
             <h2 className="mt-1 text-lg font-semibold">{stepTitle}</h2>
@@ -335,7 +335,7 @@ export default function OnboardingGate() {
           ) : null}
         </div>
 
-        <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border bg-card px-6 py-4 md:px-8">
+        <div className="z-10 flex shrink-0 items-center justify-between gap-3 border-t border-border bg-card px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-6 sm:py-4 md:px-8">
           <Button variant="ghost" onClick={() => step === 0 ? undefined : step === 1 ? setStep(0) : setStep(1)} disabled={saving || step === 0}>
             <ChevronLeft className="size-4" />上一步
           </Button>

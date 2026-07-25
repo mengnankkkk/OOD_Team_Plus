@@ -65,7 +65,9 @@ COPY requirements.txt ./requirements.txt
 RUN /opt/pandadata-venv/bin/pip install \
   --index-url "$PYPI_INDEX_URL" \
   --no-cache-dir \
-  --requirement requirements.txt
+  --requirement requirements.txt \
+  && rm -f /opt/pandadata-venv/lib/python3.11/user.json \
+  && ln -s /app/data/pandadata-user.json /opt/pandadata-venv/lib/python3.11/user.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static

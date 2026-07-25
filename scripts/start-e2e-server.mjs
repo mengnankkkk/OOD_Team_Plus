@@ -1,5 +1,5 @@
 import { cpSync, existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
 const distDir = resolve(process.env.NEXT_DIST_DIR ?? ".next-e2e");
@@ -22,7 +22,7 @@ if (!serverPath) throw new Error(`Standalone server.js not found under ${standal
 
 const serverRoot = dirname(serverPath);
 const staticSource = join(distDir, "static");
-const staticTarget = join(serverRoot, ".next", "static");
+const staticTarget = join(serverRoot, basename(distDir), "static");
 if (existsSync(staticSource)) cpSync(staticSource, staticTarget, { recursive: true, force: true });
 
 const publicSource = resolve("public");
