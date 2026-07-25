@@ -1,15 +1,28 @@
 "use client";
 
-import { BarChart3, FilePenLine, FileText, Save, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BarChart3, FilePenLine, FileText, MessageSquareText, Save, Trash2 } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
 import { apiGet, apiMutation, shortDate } from "@/features/workbench/lib/api";
+import { useNavigate } from "@/features/frontend-migration/router";
 
-type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; previewUrl: string; createdAt: string; updatedAt: string };
+type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; previewUrl: string; conversationId?: string | null; createdAt: string; updatedAt: string };
 type Preview = { id: string; type: Artifact["type"]; version: number; markdown?: string; option?: { title?: { text?: string }; xAxis?: { data?: string[] }; series?: Array<{ name?: string; data?: number[] }> } };
 
-export function ArtifactLibrary({ embedded = false }: { embedded?: boolean }) {
+export function ArtifactLibrary({
+  embedded = false,
+  headerActions,
+  refreshToken = 0,
+  autoSelectArtifactId,
+}: {
+  embedded?: boolean;
+  headerActions?: ReactNode;
+  refreshToken?: number;
+  autoSelectArtifactId?: string | null;
+}) {
+  const navigate = useNavigate();
   const list = useApiResource<{ items: Artifact[] }>("/api/v1/generated-artifacts?limit=50");
+  const reloadList = list.reload;
   const [selected, setSelected] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [editing, setEditing] = useState(false);
@@ -19,15 +32,28 @@ export function ArtifactLibrary({ embedded = false }: { embedded?: boolean }) {
   const current = list.data?.items.find((item) => item.id === selected) ?? null;
 
   useEffect(() => {
-    if (!selected && list.data?.items[0]) {
-      const fromUrl = new URLSearchParams(window.location.search).get("selected");
-      setSelected(fromUrl && list.data.items.some((item) => item.id === fromUrl) ? fromUrl : list.data.items[0].id);
+    if (refreshToken > 0) void reloadList();
+  }, [refreshToken, reloadList]);
+
+  useEffect(() => {
+    const items = list.data?.items ?? [];
+    if (!items.length) return;
+    const fromUrl = new URLSearchParams(window.location.search).get("selected");
+    const next = autoSelectArtifactId && items.some((item) => item.id === autoSelectArtifactId)
+      ? autoSelectArtifactId
+      : fromUrl && items.some((item) => item.id === fromUrl)
+        ? fromUrl
+        : selected && items.some((item) => item.id === selected) ? selected : items[0].id;
+    if (next !== selected) {
+      setSelected(next);
+      setEditing(false);
     }
-  }, [list.data, selected]);
+  }, [autoSelectArtifactId, list.data, selected]);
 
   useEffect(() => {
     if (!selected) return;
     setError("");
+    setPreview(null);
     void apiGet<Preview>(`/api/v1/generated-artifacts/${selected}/preview`)
       .then((data) => {
         setPreview(data);
@@ -70,13 +96,16 @@ export function ArtifactLibrary({ embedded = false }: { embedded?: boolean }) {
   return (
     <div className={embedded ? "mt-6 artifact-page" : "page-stack artifact-page"}>
       {embedded ? (
-        <header className="mb-5 border-b-4 border-foreground pb-4">
-          <span className="section-kicker">ARTIFACT LIBRARY / 研究产物</span>
-          <h2 className="mt-2 text-2xl font-semibold">报告产物</h2>
-          <p className="mt-2 text-sm text-muted-foreground">查数结果生成的图表与 Markdown 报告集中保存，支持安全预览、版本化修改和软删除。</p>
+        <header className="mb-5 flex flex-col gap-4 border-b-4 border-foreground pb-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <span className="section-kicker">ARTIFACT LIBRARY / 研究产物</span>
+            <h2 className="mt-2 text-2xl font-semibold">报告产物</h2>
+            <p className="mt-2 text-sm text-muted-foreground">资产 Agent 与查数结果生成的图表、Markdown 报告集中保存在这里。</p>
+          </div>
+          {headerActions ? <div className="flex shrink-0 flex-wrap gap-2">{headerActions}</div> : null}
         </header>
       ) : (
-        <PageHeading eyebrow="ARTIFACT LIBRARY / 研究产物" title="报告产物" description="查数结果生成的图表与 Markdown 报告集中保存，支持安全预览、版本化修改和软删除。" />
+        <PageHeading eyebrow="ARTIFACT LIBRARY / 研究产物" title="报告产物" description="资产 Agent 与查数结果生成的图表、Markdown 报告集中保存在这里。" actions={headerActions} />
       )}
       {error ? <ErrorBlock message={error} /> : null}
       <section className="artifact-layout">
@@ -92,7 +121,7 @@ export function ArtifactLibrary({ embedded = false }: { embedded?: boolean }) {
         <article className="panel artifact-preview">
           <div className="panel-heading">
             <div><span>SAFE PREVIEW</span><h2>{current?.title ?? "选择一个产物"}</h2></div>
-            {current ? <div className="artifact-actions"><button className="button ghost" onClick={() => setEditing((value) => !value)}><FilePenLine size={14} />{editing ? "取消" : "修改"}</button><button className="icon-button danger" onClick={() => void remove()} aria-label="删除"><Trash2 size={15} /></button></div> : null}
+            {current ? <div className="artifact-actions">{current.conversationId ? <button className="button ghost" onClick={() => navigate(`/advisor?conversationId=${encodeURIComponent(current.conversationId!)}`)}><MessageSquareText size={14} />对应对话</button> : null}<button className="button ghost" onClick={() => setEditing((value) => !value)}><FilePenLine size={14} />{editing ? "取消" : "修改"}</button><button className="icon-button danger" onClick={() => void remove()} aria-label="删除"><Trash2 size={15} /></button></div> : null}
           </div>
           {!current ? <EmptyBlock title="等待选择" detail="从左侧选择图表或报告查看内容。" /> : editing ? (
             <div className="artifact-editor">

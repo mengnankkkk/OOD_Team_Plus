@@ -103,6 +103,7 @@ const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
   const [searchParams] = useSearchParams();
+  const requestedConversationId = searchParams.get("conversationId");
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -213,13 +214,17 @@ const AdvisorPage = () => {
       const data = await refreshSessions();
       if (selectionVersion !== historyRequestRef.current) return;
       if (data && data.length) {
-        setActiveSessionId(data[0].sessionId);
-        await loadSessionMessages(data[0].sessionId);
+        const requested = requestedConversationId
+          ? data.find((session) => session.sessionId === requestedConversationId)
+          : null;
+        const next = requested ?? data[0];
+        setActiveSessionId(next.sessionId);
+        await loadSessionMessages(next.sessionId);
       } else {
         resetToNewSession();
       }
     })();
-  }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
+  }, [user, refreshSessions, loadSessionMessages, requestedConversationId, resetToNewSession]);
 
   useEffect(() => {
     const prompt = searchParams.get("prompt")?.trim();

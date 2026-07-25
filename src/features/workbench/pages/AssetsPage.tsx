@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Pencil, PlusCircle, RefreshCw, TrendingUp, Trash2, Upload } from "lucide-react";
+import { FileText, LoaderCircle, Pencil, PlusCircle, RefreshCw, TrendingUp, Trash2, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useHoldings, useHoldingsInvalidator } from "@/hooks/useHoldings";
 import { useUserGoals } from "@/hooks/useUserGoals";
@@ -19,6 +19,10 @@ import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker"
 import { apiPost } from "@/features/frontend-migration/api";
 import { findAShareStock, normalizeAShareCode } from "@/lib/a-share-stocks";
 import { ArtifactLibrary } from "@/features/workbench/components/ArtifactLibrary";
+import GeneratePortfolioReportDialog from "@/components/desktop/GeneratePortfolioReportDialog";
+import PortfolioReportProgress from "@/components/desktop/PortfolioReportProgress";
+import { generatePortfolioReport } from "@/services/portfolioReportService";
+import { useNavigate } from "@/features/frontend-migration/router";
 
 const CLASS_OPTIONS: AssetClass[] = ["cash", "money_market", "bond_fund", "equity_fund", "index_fund", "stock", "other"];
 
@@ -33,9 +37,15 @@ const AssetsPage = () => {
   const { data: holdings = [], isLoading } = useHoldings();
   const { data: goals = [] } = useUserGoals();
   const invalidate = useHoldingsInvalidator();
+  const navigate = useNavigate();
 
   const metrics = useMemo(() => (holdings.length ? computeHealthMetrics(holdings, profile, goals) : null), [holdings, profile, goals]);
   const hasFallbackPrice = holdings.some((holding) => holding.priceStatus === "fallback");
+  const latestPriceAsOf = useMemo(() => holdings
+    .map((holding) => holding.priceAsOf)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null, [holdings]);
 
   const [addOpen, setAddOpen] = useState(false);
   const [csvOpen, setCsvOpen] = useState(false);
@@ -56,7 +66,14 @@ const AssetsPage = () => {
   const [editQuantity, setEditQuantity] = useState("");
   const [editCostBasis, setEditCostBasis] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [reportStatus, setReportStatus] = useState<"RUNNING" | "COMPLETED" | "FAILED" | null>(null);
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportConversationId, setReportConversationId] = useState<string | null>(null);
+  const [reportArtifactId, setReportArtifactId] = useState<string | null>(null);
+  const [artifactRefreshToken, setArtifactRefreshToken] = useState(0);
   const portfolioId = holdings[0]?.accountId ?? "portfolio-demo";
+  const reportGenerating = reportStatus === "RUNNING";
 
   const resetForm = () => {
     setName(""); setSymbol(""); setAssetClass("equity_fund"); setIndustry("");
@@ -194,6 +211,34 @@ const AssetsPage = () => {
     }
   };
 
+  const handleGenerateReport = async (focus: string) => {
+    if (!holdings.length || reportGenerating) return;
+    setReportDialogOpen(false);
+    setReportStatus("RUNNING");
+    setReportMessage("正在读取持仓、用户画像与投资目标");
+    setReportConversationId(null);
+    setReportArtifactId(null);
+    try {
+      const result = await generatePortfolioReport(focus, {
+        onProgress: (message) => setReportMessage(message),
+        onThinking: ({ title, content }) => {
+          const detail = content ? `${title}：${content}` : title;
+          setReportMessage(detail.slice(0, 260));
+        },
+      });
+      setReportConversationId(result.conversationId);
+      setReportArtifactId(result.artifactId);
+      setArtifactRefreshToken((value) => value + 1);
+      setReportStatus("COMPLETED");
+      setReportMessage("Markdown 报告已保存，并已在下方自动打开。");
+      toast.success("资产深度报告已生成");
+    } catch (err: any) {
+      setReportStatus("FAILED");
+      setReportMessage(err?.message ?? "报告生成失败，请稍后重试");
+      toast.error(err?.message ?? "报告生成失败");
+    }
+  };
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -322,7 +367,37 @@ const AssetsPage = () => {
         <DrawdownChart metrics={metrics} loading={isLoading} />
         <FinancialHealthReport metrics={metrics} loading={isLoading} />
       </div>
-      <ArtifactLibrary embedded />
+      <GeneratePortfolioReportDialog
+        open={reportDialogOpen}
+        onOpenChange={setReportDialogOpen}
+        holdingCount={holdings.length}
+        dataTimeLabel={hasFallbackPrice ? "部分行情待更新" : formatPriceTime(latestPriceAsOf)}
+        generating={reportGenerating}
+        onGenerate={handleGenerateReport}
+      />
+      {reportStatus ? (
+        <PortfolioReportProgress
+          status={reportStatus}
+          message={reportMessage}
+          onRetry={() => setReportDialogOpen(true)}
+          onOpenConversation={reportConversationId ? () => navigate(`/advisor?conversationId=${encodeURIComponent(reportConversationId)}`) : undefined}
+        />
+      ) : null}
+      <ArtifactLibrary
+        embedded
+        refreshToken={artifactRefreshToken}
+        autoSelectArtifactId={reportArtifactId}
+        headerActions={(
+          <Button
+            onClick={() => setReportDialogOpen(true)}
+            disabled={isLoading || holdings.length === 0 || reportGenerating}
+            title={holdings.length === 0 ? "请先录入至少一笔持仓" : "基于当前全部持仓生成深度报告"}
+          >
+            {reportGenerating ? <LoaderCircle className="animate-spin" /> : <FileText />}
+            {reportGenerating ? "Agent 分析中" : "生成深度报告"}
+          </Button>
+        )}
+      />
       <section className="paper-card mt-6 overflow-hidden">
         <div className="flex items-center justify-between border-b border-border p-6">
           <div><p className="eyebrow">持仓明细</p><h2 className="mt-1 text-lg font-semibold">{holdings.length} 笔持仓 · {hasFallbackPrice ? "估算总市值" : "总市值"} ¥{Math.round(metrics?.totalAssets ?? 0).toLocaleString("zh-CN")}</h2></div>

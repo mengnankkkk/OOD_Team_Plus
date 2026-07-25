@@ -9,7 +9,7 @@ import { resolveArtifactSource } from "./source";
 
 export type ArtifactType = "ECHARTS_OPTION" | "MARKDOWN";
 
-type ArtifactInput = {
+export type ArtifactInput = {
   userId: string;
   artifactType: ArtifactType;
   title: string;
@@ -18,6 +18,7 @@ type ArtifactInput = {
   sessionId?: string;
   sourceRows?: Record<string, unknown>[];
   sourceColumns?: Array<{ name: string; type?: string }>;
+  markdownContent?: string;
 };
 
 type ArtifactRow = Record<string, unknown>;
@@ -27,7 +28,7 @@ export function createArtifact(input: ArtifactInput) {
   const rows = source.rows;
   const columns = source.columns;
   const content = input.artifactType === "MARKDOWN"
-    ? createMarkdownReport(input.title, rows, columns)
+    ? input.markdownContent ?? createMarkdownReport(input.title, rows, columns)
     : createChartOption(input.title, rows, columns);
   const sanitized = input.artifactType === "MARKDOWN"
     ? sanitizeMarkdown(content as string)
@@ -148,7 +149,7 @@ export function deleteArtifact(userId: string, id: string, expectedVersion: numb
 }
 
 function toArtifactSummary(row: ArtifactRow) {
-  return { id: row.id, type: String(row.artifact_type).toUpperCase(), title: row.title, status: String(row.status).toUpperCase(), currentVersion: row.current_version_no, messageId: row.source_message_id, dataQueryId: row.source_query_id, analysisId: row.agent_run_id, previewUrl: `/api/v1/generated-artifacts/${row.id}/preview`, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, type: String(row.artifact_type).toUpperCase(), title: row.title, status: String(row.status).toUpperCase(), currentVersion: row.current_version_no, messageId: row.source_message_id, dataQueryId: row.source_query_id, conversationId: row.session_id, analysisId: row.agent_run_id, previewUrl: `/api/v1/generated-artifacts/${row.id}/preview`, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function toVersion(row: ArtifactRow) {

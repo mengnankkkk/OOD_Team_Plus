@@ -96,7 +96,7 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
         name: holding.name,
         marketValue: holding.market_value_decimal,
         unrealizedPnl: holding.unrealized_pnl_decimal,
-        weightPercent: holding.weight_bps,
+        weightPercent: Number(holding.weight_bps) / 100,
       })),
     });
   } catch (error) {
@@ -198,14 +198,17 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   });
   persist();
   db.close();
-  if (input.status === "completed" && input.outputMode !== "SQL_ONLY") {
+  if ((input.status === "completed" || input.status === "blocked") && input.outputMode !== "SQL_ONLY") {
+    const artifactTitle = input.outputMode === "CHART"
+      ? "当前持仓分析图表"
+      : input.workflow === "DAILY_PORTFOLIO" ? "资产深度报告" : "当前持仓财务分析报告";
     const artifact = createArtifact({
       userId: input.userId,
       sessionId: input.sessionId,
       sourceMessageId: assistantMessageId,
       sourceQueryId: input.sourceQueryId,
       artifactType: input.outputMode === "CHART" ? "ECHARTS_OPTION" : "MARKDOWN",
-      title: input.outputMode === "CHART" ? "当前持仓分析图表" : "当前持仓财务分析报告",
+      title: artifactTitle,
       sourceRows: input.artifactRows,
       sourceColumns: input.artifactColumns ?? [
         { name: "symbol", type: "string" },
@@ -213,6 +216,9 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
         { name: "unrealizedPnl", type: "number" },
         { name: "weightPercent", type: "number" },
       ],
+      markdownContent: input.outputMode === "FINANCIAL_REPORT"
+        ? buildFinancialReportMarkdown(artifactTitle, input.answer, input.artifactRows)
+        : undefined,
     });
     result.artifact = { artifactId: artifact.artifactId, analysisId: artifact.analysisId, status: artifact.status, previewUrl: `/api/v1/generated-artifacts/${artifact.artifactId}/preview` };
     const resultDb = getDatabase();
@@ -315,4 +321,29 @@ function normalizeOutputMode(value: string | undefined): ConversationOutputMode 
 
 function defaultDisclaimer(): string {
   return "本结果用于投资研究和方案模拟，不构成收益承诺，不会创建真实订单，最终决策由用户自行作出。";
+}
+
+function buildFinancialReportMarkdown(title: string, answer: string, rows: Record<string, unknown>[]): string {
+  const body = answer.trim().startsWith("#")
+    ? answer.trim()
+    : `# ${title}\n\n## Agent 结论\n\n${answer.trim()}`;
+  const appendix = rows.length
+    ? [
+      "## 当前持仓附录",
+      "",
+      "| 标的 | 名称 | 市值 | 浮盈亏 | 权重 |",
+      "| --- | --- | ---: | ---: | ---: |",
+      ...rows.map((row) => `| ${markdownCell(row.symbol)} | ${markdownCell(row.name)} | ${markdownCell(row.marketValue)} | ${markdownCell(row.unrealizedPnl)} | ${markdownPercent(row.weightPercent)} |`),
+    ].join("\n")
+    : "## 当前持仓附录\n\n本次没有可用的持仓明细。";
+  return `${body}\n\n${appendix}\n\n---\n\n本报告由资产顾问 Agent 基于当前持仓生成，用于投资研究和方案模拟，不构成真实交易指令。`;
+}
+
+function markdownCell(value: unknown): string {
+  return String(value ?? "—").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function markdownPercent(value: unknown): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(2).replace(/\.?0+$/u, "")}%` : markdownCell(value);
 }
