@@ -9,7 +9,7 @@ export const BranchScenarioTradeSchema = z.object({
   quantity: positiveDecimalString,
 }).strict();
 
-export const BranchScenarioOptionSchema = z.object({
+const BranchScenarioOptionBaseSchema = z.object({
   label: z.string().min(1).max(120),
   description: z.string().min(1).max(800),
   strategy: z.enum(["HOLD", "BALANCED", "DEFENSIVE", "GROWTH"]),
@@ -23,7 +23,9 @@ export const BranchScenarioOptionSchema = z.object({
   risks: z.array(z.string().min(1)).min(1).max(3),
   assumptions: z.array(z.string().min(1)).min(1).max(8),
   invalidationConditions: z.array(z.string().min(1)).min(1).max(6),
-}).superRefine((option, context) => {
+});
+
+export const BranchScenarioOptionSchema = BranchScenarioOptionBaseSchema.superRefine((option, context) => {
   const directions = new Set<string>();
   for (const trade of option.trades) {
     const key = `${trade.instrumentId}:${trade.action}`;
@@ -46,7 +48,7 @@ export const BranchScenarioPlanSchema = z.object({
 }).strict();
 
 export const BranchScenarioModelPlanSchema = z.object({
-  options: z.array(BranchScenarioOptionSchema.omit({ label: true })).min(1).max(5),
+  options: z.array(BranchScenarioOptionBaseSchema.omit({ label: true })).min(1).max(5),
   delegatedAgents: z.array(z.string().min(1).max(80)).max(12),
   modelSummary: z.string().max(1000).optional(),
 }).strict();
