@@ -225,12 +225,12 @@ export default function OnboardingGate() {
   return (
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent
-        className="max-h-[92vh] max-w-3xl overflow-hidden p-0 [&>button]:hidden"
+        className="flex max-h-[92dvh] max-w-3xl flex-col overflow-hidden p-0 [&>button]:hidden"
         onEscapeKeyDown={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
       >
-        <DialogHeader className="border-b border-border bg-card px-6 pb-5 pt-6 md:px-8">
+        <DialogHeader className="shrink-0 border-b border-border bg-card px-6 pb-5 pt-6 md:px-8">
           <div className="flex items-start gap-3">
             <div className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary"><ShieldCheck className="size-5" /></div>
             <div>
@@ -254,7 +254,7 @@ export default function OnboardingGate() {
           <div className="mt-4 h-1 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
         </DialogHeader>
 
-        <div className="overflow-y-auto px-6 py-6 md:px-8">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 md:px-8">
           <div className="mb-5">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">STEP {step + 1} / 3</p>
             <h2 className="mt-1 text-lg font-semibold">{stepTitle}</h2>
@@ -335,7 +335,7 @@ export default function OnboardingGate() {
           ) : null}
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-border bg-card px-6 py-4 md:px-8">
+        <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border bg-card px-6 py-4 md:px-8">
           <Button variant="ghost" onClick={() => step === 0 ? undefined : step === 1 ? setStep(0) : setStep(1)} disabled={saving || step === 0}>
             <ChevronLeft className="size-4" />上一步
           </Button>

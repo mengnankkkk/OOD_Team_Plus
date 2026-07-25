@@ -13,6 +13,7 @@ import {
   type AdvisorDecision,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
+import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
 import type { RecommendationDraft } from "./types";
 
 export { AgentFindingSchema, AdvisorDecisionSchema } from "./professional-contracts";
@@ -132,6 +133,10 @@ export async function runProfessionalAdvisor(input: {
     if (requiredRoles.includes("EXPLANATION_REPORT")) {
       registerFinding(await runRole(db, input, "EXPLANATION_REPORT", () => explanationReportFinding(findings), { emitEvents: false }));
     }
+    const semanticContext = await loadAdvisorSemanticToolsContext(db, {
+      analysisId: input.analysisId,
+      question: input.content,
+    });
 
     let candidate = deterministicDecision;
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
@@ -146,7 +151,7 @@ export async function runProfessionalAdvisor(input: {
     }
     try {
       const model = await runChiefAdvisor({
-        prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles),
+        prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
         requiredAgents: requiredRoles,
         onAgentStarted: (agent, label) => {
           markModelAttemptStarted(db, roleRunIds.get(agent));
@@ -708,7 +713,16 @@ function actionMatchesDirection(action: AdvisorDecision["action"], direction: Ad
   return ["WATCH", "HOLD", "STOP_ADDING"].includes(action);
 }
 
-function chiefPrompt(question: string, profile: Profile | undefined, holdings: Holding[], target: Instrument | null, research: ResearchState, findings: AgentFinding[], requiredRoles: ProfessionalAgentRole[]): string {
+function chiefPrompt(
+  question: string,
+  profile: Profile | undefined,
+  holdings: Holding[],
+  target: Instrument | null,
+  research: ResearchState,
+  findings: AgentFinding[],
+  requiredRoles: ProfessionalAgentRole[],
+  semanticContext: AdvisorSemanticToolsContext,
+): string {
   return [
     `用户问题：${question}`,
     `必须委派：${requiredRoles.join(", ")}`,
@@ -717,6 +731,7 @@ function chiefPrompt(question: string, profile: Profile | undefined, holdings: H
     `目标标的：${json(target)}`,
     `数据状态：${research.dataState}，数据日期：${research.asOfDate ?? "未知"}`,
     `实时/行情数据摘要：${json(research.quotes)}`,
+    `语义层工具上下文：${json(summarizeAdvisorSemanticToolsContext(semanticContext))}`,
     `确定性节点发现：${json(findings)}`,
     "请动态委派并输出结构化候选；服务端会独立执行发布门和方向保护。",
   ].join("\n");

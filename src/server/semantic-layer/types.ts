@@ -57,6 +57,7 @@ export function tableFrom(row: Row) {
   return {
     id: text(row, "id") ?? "",
     domainId: text(row, "domain_id") ?? "",
+    datasourceKey: text(row, "datasource_key") ?? "",
     schemaName: text(row, "schema_name"),
     physicalTableName: text(row, "physical_table_name") ?? "",
     physicalDescription: text(row, "physical_description"),
