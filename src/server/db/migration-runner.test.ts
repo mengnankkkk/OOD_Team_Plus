@@ -9,9 +9,24 @@ import { backupDatabase, prepareDatabase } from "./migration-runner";
 describe("database migration guard", () => {
   it("executes and records every migration", () => {
     const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
     prepareDatabase(db as never, ":memory:");
     expect(db.pragma("user_version", { simple: true })).toBe(15);
     expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(17);
+    expect(db.prepare(`SELECT name FROM sqlite_master
+      WHERE type='table' AND name IN ('debate_sessions','debate_rounds','debate_turns','debate_arguments','debate_judgements')
+      ORDER BY name`).all()).toEqual([
+      { name: "debate_arguments" },
+      { name: "debate_judgements" },
+      { name: "debate_rounds" },
+      { name: "debate_sessions" },
+      { name: "debate_turns" },
+    ]);
+    db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES ('debate-run','test-user','debate_agent','running','2026-07-25T00:00:00.000Z')").run();
+    expect(() => db.prepare(`INSERT INTO debate_sessions
+      (id,user_id,conversation_id,root_agent_run_id,motion,created_at,updated_at)
+      VALUES ('debate-session','test-user','missing-conversation','debate-run','Motion','2026-07-25T00:00:00.000Z','2026-07-25T00:00:00.000Z')`).run())
+      .toThrow(/FOREIGN KEY constraint failed/u);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
     db.close();
   });

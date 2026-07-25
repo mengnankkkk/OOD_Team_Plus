@@ -1,7 +1,7 @@
 /* eslint-disable max-lines */
 
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { foreignKey, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
   "users",
@@ -173,7 +173,7 @@ export const debateSessions = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    conversationId: text("conversation_id").notNull(),
+    conversationId: text("conversation_id").notNull().references(() => conversationSessions.id, { onDelete: "cascade" }),
     rootAgentRunId: text("root_agent_run_id").notNull(),
     motion: text("motion").notNull(),
     targetInstrumentId: text("target_instrument_id"),
@@ -196,7 +196,7 @@ export const debateRounds = sqliteTable(
   "debate_rounds",
   {
     id: text("id").primaryKey(),
-    debateSessionId: text("debate_session_id").notNull(),
+    debateSessionId: text("debate_session_id").notNull().references(() => debateSessions.id, { onDelete: "cascade" }),
     roundIndex: integer("round_index").notNull(),
     roundFocus: text("round_focus").notNull(),
     userIntent: text("user_intent").notNull(),
@@ -207,6 +207,7 @@ export const debateRounds = sqliteTable(
   },
   (t) => [
     uniqueIndex("idx_debate_rounds_session_index").on(t.debateSessionId, t.roundIndex),
+    uniqueIndex("idx_debate_rounds_session_id").on(t.debateSessionId, t.id),
     index("idx_debate_rounds_session_created").on(t.debateSessionId, t.createdAt),
   ],
 );
@@ -215,8 +216,8 @@ export const debateTurns = sqliteTable(
   "debate_turns",
   {
     id: text("id").primaryKey(),
-    debateSessionId: text("debate_session_id").notNull(),
-    debateRoundId: text("debate_round_id").notNull(),
+    debateSessionId: text("debate_session_id").notNull().references(() => debateSessions.id, { onDelete: "cascade" }),
+    debateRoundId: text("debate_round_id").notNull().references(() => debateRounds.id, { onDelete: "cascade" }),
     speaker: text("speaker").notNull(),
     stance: text("stance").notNull(),
     turnType: text("turn_type").notNull(),
@@ -226,6 +227,11 @@ export const debateTurns = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [
+    foreignKey({
+      name: "fk_debate_turns_session_round",
+      columns: [t.debateSessionId, t.debateRoundId],
+      foreignColumns: [debateRounds.debateSessionId, debateRounds.id],
+    }).onDelete("cascade"),
     index("idx_debate_turns_round_created").on(t.debateRoundId, t.createdAt, t.id),
     index("idx_debate_turns_session_created").on(t.debateSessionId, t.createdAt, t.id),
   ],
@@ -253,8 +259,8 @@ export const debateJudgements = sqliteTable(
   "debate_judgements",
   {
     id: text("id").primaryKey(),
-    debateSessionId: text("debate_session_id").notNull(),
-    debateRoundId: text("debate_round_id").notNull(),
+    debateSessionId: text("debate_session_id").notNull().references(() => debateSessions.id, { onDelete: "cascade" }),
+    debateRoundId: text("debate_round_id").notNull().references(() => debateRounds.id, { onDelete: "cascade" }),
     userClaim: text("user_claim").notNull(),
     bullStrongestPoint: text("bull_strongest_point").notNull(),
     bearStrongestPoint: text("bear_strongest_point").notNull(),
@@ -267,7 +273,14 @@ export const debateJudgements = sqliteTable(
     complianceNote: text("compliance_note").notNull(),
     createdAt: text("created_at").notNull(),
   },
-  (t) => [uniqueIndex("idx_debate_judgements_round").on(t.debateRoundId)],
+  (t) => [
+    foreignKey({
+      name: "fk_debate_judgements_session_round",
+      columns: [t.debateSessionId, t.debateRoundId],
+      foreignColumns: [debateRounds.debateSessionId, debateRounds.id],
+    }).onDelete("cascade"),
+    uniqueIndex("idx_debate_judgements_round").on(t.debateRoundId),
+  ],
 );
 
 export const instruments = sqliteTable("instruments", {

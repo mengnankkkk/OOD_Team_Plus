@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS debate_sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  conversation_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversation_sessions(id) ON DELETE CASCADE,
   root_agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
   motion TEXT NOT NULL,
   target_instrument_id TEXT REFERENCES instruments(id) ON DELETE SET NULL,
@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS debate_rounds (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_debate_rounds_session_index
   ON debate_rounds(debate_session_id, round_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_debate_rounds_session_id
+  ON debate_rounds(debate_session_id, id);
 CREATE INDEX IF NOT EXISTS idx_debate_rounds_session_created
   ON debate_rounds(debate_session_id, created_at);
 
@@ -48,7 +50,9 @@ CREATE TABLE IF NOT EXISTS debate_turns (
   content TEXT NOT NULL,
   public_summary TEXT NOT NULL,
   structured_payload_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (debate_session_id, debate_round_id)
+    REFERENCES debate_rounds(debate_session_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_debate_turns_round_created
@@ -87,7 +91,9 @@ CREATE TABLE IF NOT EXISTS debate_judgements (
   why_not_final TEXT NOT NULL,
   suggested_next_prompts_json TEXT NOT NULL,
   compliance_note TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (debate_session_id, debate_round_id)
+    REFERENCES debate_rounds(debate_session_id, id) ON DELETE CASCADE
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_debate_judgements_round

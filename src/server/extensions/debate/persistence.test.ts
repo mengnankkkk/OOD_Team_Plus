@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDatabase, isoNow } from "@/server/http/context";
 import { seedAuthenticatedUser, TEST_USER_ID } from "@tests/helpers/auth";
 
-import { createDebateJudgement, createDebateRound, createDebateSession, createDebateTurn } from "./persistence";
+import { createDebateArgument, createDebateJudgement, createDebateRound, createDebateSession, createDebateTurn } from "./persistence";
 
 let dbPath = "";
 
@@ -58,6 +58,17 @@ describe("debate persistence", () => {
       publicSummary: "The bull case emphasizes durable demand.",
       structuredPayload: { headline: "Durable demand" },
     });
+    const argumentId = createDebateArgument(db, {
+      debateTurnId: turnId,
+      stance: "bull",
+      claim: "Demand remains resilient.",
+      plainLanguage: "Customers are still buying.",
+      evidenceRefs: ["evidence-demand"],
+      counterEvidenceRefs: ["evidence-slowdown"],
+      assumption: "Demand remains broad.",
+      confidence: 0.72,
+      vulnerability: "Demand may weaken in a recession.",
+    });
     createDebateJudgement(db, {
       debateSessionId: sessionId,
       debateRoundId: roundId,
@@ -74,6 +85,7 @@ describe("debate persistence", () => {
     });
 
     const savedTurn = db.prepare("SELECT * FROM debate_turns WHERE id=?").get(turnId) as Record<string, unknown> | undefined;
+    const savedArgument = db.prepare("SELECT * FROM debate_arguments WHERE id=?").get(argumentId) as Record<string, unknown> | undefined;
     const savedJudgement = db.prepare("SELECT * FROM debate_judgements WHERE debate_round_id=?").get(roundId) as Record<string, unknown> | undefined;
     const savedRound = db.prepare("SELECT status FROM debate_rounds WHERE id=?").get(roundId) as { status?: string } | undefined;
     const savedSession = db.prepare("SELECT current_round_index FROM debate_sessions WHERE id=?").get(sessionId) as { current_round_index?: number } | undefined;
@@ -81,8 +93,78 @@ describe("debate persistence", () => {
 
     expect(savedTurn?.speaker).toBe("bull");
     expect(JSON.parse(String(savedTurn?.structured_payload_json))).toEqual({ headline: "Durable demand" });
+    expect(savedArgument).toMatchObject({
+      stance: "bull",
+      claim: "Demand remains resilient.",
+      plain_language: "Customers are still buying.",
+      assumption: "Demand remains broad.",
+      confidence_decimal: "0.72",
+      vulnerability: "Demand may weaken in a recession.",
+    });
+    expect(JSON.parse(String(savedArgument?.evidence_refs_json))).toEqual(["evidence-demand"]);
+    expect(JSON.parse(String(savedArgument?.counter_evidence_refs_json))).toEqual(["evidence-slowdown"]);
     expect(savedJudgement?.evidence_tilt).toBe("balanced");
     expect(savedRound?.status).toBe("completed");
     expect(savedSession?.current_round_index).toBe(1);
+  });
+
+  it("rejects turns and judgements whose session does not own the round", () => {
+    const db = getDatabase();
+    const now = isoNow();
+    db.prepare(`INSERT INTO conversation_sessions
+      (id,user_id,title,status,created_at,updated_at,row_version)
+      VALUES ('conversation_debate_a',?,'Battle A','active',?,?,1),
+             ('conversation_debate_b',?,'Battle B','active',?,?,1)`).run(TEST_USER_ID, now, now, TEST_USER_ID, now, now);
+    db.prepare(`INSERT INTO agent_runs
+      (id,user_id,type,status,session_id,created_at)
+      VALUES ('analysis_debate_a',?,'debate_agent','running','conversation_debate_a',?),
+             ('analysis_debate_b',?,'debate_agent','running','conversation_debate_b',?)`).run(TEST_USER_ID, now, TEST_USER_ID, now);
+
+    const sessionA = createDebateSession(db, {
+      userId: TEST_USER_ID,
+      conversationId: "conversation_debate_a",
+      rootAgentRunId: "analysis_debate_a",
+      motion: "Session A motion",
+      userDebateRole: "neutral",
+    });
+    const sessionB = createDebateSession(db, {
+      userId: TEST_USER_ID,
+      conversationId: "conversation_debate_b",
+      rootAgentRunId: "analysis_debate_b",
+      motion: "Session B motion",
+      userDebateRole: "neutral",
+    });
+    const roundB = createDebateRound(db, {
+      debateSessionId: sessionB,
+      roundIndex: 1,
+      roundFocus: "Session B focus",
+      userIntent: "ask_both",
+    });
+
+    expect(() => createDebateTurn(db, {
+      debateSessionId: sessionA,
+      debateRoundId: roundB,
+      speaker: "bull",
+      stance: "bull",
+      turnType: "opening",
+      content: "This turn has a mismatched round.",
+      publicSummary: "Mismatched turn.",
+      structuredPayload: {},
+    })).toThrow(/FOREIGN KEY constraint failed/u);
+    expect(() => createDebateJudgement(db, {
+      debateSessionId: sessionA,
+      debateRoundId: roundB,
+      userClaim: "Mismatched judgement.",
+      bullStrongestPoint: "Bull point.",
+      bearStrongestPoint: "Bear point.",
+      keyDisagreement: "The session and round do not match.",
+      responseQuality: { bull: "direct", bear: "direct" },
+      evidenceTilt: "balanced",
+      confidence: 0.5,
+      whyNotFinal: "The relationship is invalid.",
+      suggestedNextPrompts: ["Use a round from the same session."],
+      complianceNote: "For research only.",
+    })).toThrow(/FOREIGN KEY constraint failed/u);
+    db.close();
   });
 });
