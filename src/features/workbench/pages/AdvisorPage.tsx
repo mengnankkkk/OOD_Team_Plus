@@ -35,6 +35,7 @@ import {
 import { cn } from "@/lib/utils";
 import AdvisorTrace from "@/components/desktop/AdvisorTrace";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useSearchParams } from "@/features/frontend-migration/router";
 
 const SUGGESTIONS = [
   "我想三年后在杭州付首付，月入 2 万，帮我建档",
@@ -89,6 +90,7 @@ const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
 
 const AdvisorPage = () => {
   const { user, refreshProfile } = useAuth();
+  const [searchParams] = useSearchParams();
   const [sessions, setSessions] = useState<AdvisorSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
@@ -109,6 +111,7 @@ const AdvisorPage = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
+  const appliedPromptRef = useRef<string | null>(null);
 
   const visibleSessions = useMemo(() => {
     const keyword = sessionSearch.trim().toLowerCase();
@@ -188,6 +191,15 @@ const AdvisorPage = () => {
       }
     })();
   }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
+
+  useEffect(() => {
+    const prompt = searchParams.get("prompt")?.trim();
+    if (!prompt || appliedPromptRef.current === prompt) return;
+    appliedPromptRef.current = prompt;
+    resetToNewSession();
+    setDraft(prompt.slice(0, 4_000));
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [resetToNewSession, searchParams]);
 
   useEffect(() => {
     const list = listRef.current;

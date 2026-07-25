@@ -25,15 +25,15 @@ export async function listWatchlistItems(): Promise<WatchlistItem[]> {
   return result.items.map((row) => ({
     id: String(row.id), name: String(row.name ?? row.symbol ?? ""), symbol: String(row.symbol ?? ""),
     reason: row.reason == null ? null : String(row.reason), planned_horizon: row.planned_horizon == null ? null : String(row.planned_horizon),
-    drawdown_threshold: null, row_version: Number(row.row_version ?? 1),
+    drawdown_threshold: row.drawdown_threshold_bps == null ? null : Number(row.drawdown_threshold_bps) / 100, row_version: Number(row.row_version ?? 1),
   }));
 }
 
-export async function addWatchlistItem(input: { name: string; symbol: string; reason?: string; plannedHorizon?: string }): Promise<void> {
+export async function addWatchlistItem(input: { name: string; symbol: string; reason?: string; plannedHorizon?: string; drawdownThresholdPct?: number }): Promise<void> {
   const watchlist = await ensureDefaultWatchlist();
   const instrument = await resolveInstrument(input);
   if (!instrument) throw new Error("未找到可交易标的，请检查代码或名称");
-  await apiPost(`/api/v1/watchlists/${watchlist.id}/items`, { instrumentId: instrument.instrumentId, reason: input.reason || undefined, plannedHorizon: input.plannedHorizon || undefined });
+  await apiPost(`/api/v1/watchlists/${watchlist.id}/items`, { instrumentId: instrument.instrumentId, reason: input.reason || undefined, plannedHorizon: input.plannedHorizon || undefined, drawdownThresholdPct: input.drawdownThresholdPct });
 }
 
 async function resolveInstrument(input: { name: string; symbol: string }): Promise<Instrument | null> {

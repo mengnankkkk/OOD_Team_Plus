@@ -30,7 +30,7 @@ Money Whisperer 是一套单机部署的个人投资研究与资产分析工作�
 - PandaData dry-run/live call、失败分类、数据新鲜度、市场快照和证据关联。
 - 智能查数、查询历史、结果分块、图表/Markdown 产物、预览和编辑。
 - 推荐卡、决策日志、模拟工作区、分支树、候选、执行、切换、撤回。
-- 研究搜索、RSS 阅读与管理、自选、观察条件、通知中心、通知偏好。
+- 研究搜索、RSS 阅读与管理、自选、观察条件、真实行情提醒中心、通知偏好。
 - 管理端系统健康、语义层 Metadata、RSS 源、Demo Seed/Reset。
 
 ## 目录结构
@@ -100,6 +100,8 @@ doppler run -- docker compose up -d
 ```
 
 应用数据写入命名 volume `money-whisperer-data`，容器内数据库默认路径为 `/app/data/money-whisperer.db`。
+
+提醒调度器随 Node 常驻进程启动，每小时使用 Pandadata 刷新活动持仓与自选标的；规则、降级行为和去重策略见 [提醒中心上线说明](./docs/notification-center.md)。
 
 ## 安全边界
 

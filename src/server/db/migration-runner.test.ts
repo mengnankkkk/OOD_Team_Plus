@@ -10,8 +10,8 @@ describe("database migration guard", () => {
   it("executes and records every migration", () => {
     const db = new Database(":memory:");
     prepareDatabase(db as never, ":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(14);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(16);
+    expect(db.pragma("user_version", { simple: true })).toBe(15);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(17);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
     db.close();
   });
