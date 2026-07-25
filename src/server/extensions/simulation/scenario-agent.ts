@@ -4,8 +4,10 @@ import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config
 
 import {
   BranchScenarioContextSchema,
+  BranchScenarioModelPlanSchema,
   BranchScenarioPlanSchema,
   type BranchScenarioAgentInput,
+  type BranchScenarioModelPlan,
   type BranchScenarioOption,
   type BranchScenarioPlan,
 } from "./scenario-contracts";
@@ -37,15 +39,19 @@ export async function runBranchScenarioAgent(
     callbacks.onAgentStarted?.("SCENARIO_PLANNER", "提出互斥的 A/B/C 分支方案");
     callbacks.onAgentStarted?.("COMPLIANCE_REVIEWER", "检查模拟边界、证据和失效条件");
     const agent = createBranchScenarioAgent();
-    const output = await agent.generate<BranchScenarioPlan>(buildPrompt(input), {
+    const output = await agent.generate<BranchScenarioModelPlan>(buildPrompt(input), {
       maxSteps: 10,
       modelSettings: { maxOutputTokens: 2_400, temperature: 0.1 },
       structuredOutput: {
-        schema: BranchScenarioPlanSchema,
-        instructions: "只输出符合 schema 的 JSON。交易中禁止输出 price 字段，所有价格由服务端冻结。",
+        schema: BranchScenarioModelPlanSchema,
+        instructions: "只输出符合 schema 的 JSON。不要输出 provider 或 label；交易中禁止输出 price 字段，所有价格由服务端冻结。",
       },
     });
-    const plan = BranchScenarioPlanSchema.parse({ ...output.object, provider: "CHIEF_ADVISOR" });
+    const plan = BranchScenarioPlanSchema.parse({
+      ...output.object,
+      provider: "CHIEF_ADVISOR",
+      options: output.object.options.map((option, index) => ({ ...option, label: scenarioLabel(option.strategy, index) })),
+    });
     for (const role of ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "SCENARIO_PLANNER", "COMPLIANCE_REVIEWER"]) {
       callbacks.onAgentCompleted?.(role, "已完成分支模拟阶段");
     }
@@ -178,10 +184,15 @@ function positiveHalf(value: string): string | null {
 function buildPrompt(input: BranchScenarioAgentInput): string {
   return [
     "请为资产分支模拟生成候选方案。",
-    "输出必须是 BranchScenarioPlan JSON，不要 Markdown，不要隐藏思维链。",
+    "输出必须符合结构化 schema，不要 Markdown，不要隐藏思维链。provider 和 label 由服务端生成，禁止输出这两个字段。",
     "模型只负责场景理解和交易意图，禁止填写 price；不得创造不在 instruments 中的标的。",
     JSON.stringify(input),
   ].join("\n");
+}
+
+function scenarioLabel(strategy: BranchScenarioOption["strategy"], index: number): string {
+  const title = strategy === "HOLD" ? "保持观察" : strategy === "BALANCED" ? "风险预算再平衡" : strategy === "DEFENSIVE" ? "压力约束降险" : "增长情景";
+  return `${String.fromCharCode(65 + index)} · ${title}`;
 }
 
 function safeMessage(error: unknown): string {
