@@ -40,6 +40,11 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await onboarding.getByRole("button", { name: "进入下一步" }).click();
   await onboarding.getByLabel("目标金额（元）").fill("300000");
   await onboarding.getByLabel("目标日期").fill("2030-12-31");
+  await onboarding.getByRole("button", { name: "进入下一步" }).click();
+  await onboarding.getByLabel("标的名称").fill("Apple");
+  await onboarding.getByLabel("代码").fill("AAPL");
+  await onboarding.getByLabel("持有数量 / 份额").fill("2");
+  await onboarding.getByLabel("持仓成本价").fill("140");
   await onboarding.getByRole("button", { name: "完成建档并进入工作台" }).click();
   await expect(onboarding).toBeHidden();
 
@@ -52,13 +57,6 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await expect(page.getByText("财务档案已保存")).toBeVisible();
 
   await page.goto("/assets");
-  await page.getByRole("button", { name: "手工录入" }).click();
-  await page.getByLabel("标的名称").fill("Apple");
-  await page.getByLabel("代码（可选）").fill("AAPL");
-  await page.getByLabel("持有数量 / 份额").fill("2");
-  await page.getByLabel("当前单价 / 净值").fill("155");
-  await page.getByLabel("成本（可选）").fill("140");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText("Apple", { exact: true })).toBeVisible();
 
   await page.goto("/query");

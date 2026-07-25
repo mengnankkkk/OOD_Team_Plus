@@ -30,6 +30,7 @@ type InstrumentSearchPage = {
 };
 
 type Props = {
+  idPrefix?: string;
   name: string;
   symbol: string;
   onChange: (next: { name: string; symbol: string; stock: InstrumentSearchResult | null }) => void;
@@ -45,6 +46,7 @@ type Props = {
 const SEARCH_PAGE_SIZE = 8;
 
 export default function AShareInstrumentPicker({
+  idPrefix = "a-share-instrument",
   name,
   symbol,
   onChange,
@@ -176,10 +178,11 @@ export default function AShareInstrumentPicker({
   return (
     <div className="grid gap-4">
       <div className="space-y-2">
-        <Label>{searchLabel}</Label>
+        <Label htmlFor={`${idPrefix}-search`}>{searchLabel}</Label>
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
+            id={`${idPrefix}-search`}
             value={searchText}
             onFocus={() => setSuggestOpen(true)}
             onChange={(event) => handleSearchChange(event.target.value)}
@@ -216,12 +219,12 @@ export default function AShareInstrumentPicker({
       </div>
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
         <div className="space-y-2">
-          <Label htmlFor="a-share-instrument-name">{nameLabel}</Label>
-          <Input id="a-share-instrument-name" value={name} onChange={(event) => handleNameChange(event.target.value)} placeholder={namePlaceholder} />
+          <Label htmlFor={`${idPrefix}-name`}>{nameLabel}</Label>
+          <Input id={`${idPrefix}-name`} value={name} onChange={(event) => handleNameChange(event.target.value)} placeholder={namePlaceholder} />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="a-share-instrument-symbol">{symbolLabel}</Label>
-          <Input id="a-share-instrument-symbol" value={symbol} onChange={(event) => handleSymbolChange(event.target.value)} placeholder={symbolPlaceholder} />
+          <Label htmlFor={`${idPrefix}-symbol`}>{symbolLabel}</Label>
+          <Input id={`${idPrefix}-symbol`} value={symbol} onChange={(event) => handleSymbolChange(event.target.value)} placeholder={symbolPlaceholder} />
         </div>
       </div>
     </div>
