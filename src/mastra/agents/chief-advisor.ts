@@ -6,31 +6,35 @@ import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config
 import { AgentFindingSchema, AdvisorDecisionSchema, type AgentFinding, type AdvisorDecision } from "@/server/extensions/advisor/professional-contracts";
 
 const ChiefAgentFindingSchema = z.object({
-  agent: AgentFindingSchema.shape.agent,
-  conclusion: AgentFindingSchema.shape.conclusion,
-  supportEvidence: AgentFindingSchema.shape.supportEvidence,
-  counterEvidence: AgentFindingSchema.shape.counterEvidence,
-  missingInformation: AgentFindingSchema.shape.missingInformation,
-  risks: AgentFindingSchema.shape.risks,
-  confidence: AgentFindingSchema.shape.confidence,
-  needsAnotherAgent: z.boolean(),
+  agent: AgentFindingSchema.shape.agent.optional(),
+  conclusion: z.string().optional(),
+  supportEvidence: z.array(z.unknown()).optional(),
+  counterEvidence: z.array(z.unknown()).optional(),
+  missingInformation: z.array(z.unknown()).optional(),
+  risks: z.array(z.unknown()).optional(),
+  confidence: z.number().optional(),
+  needsAnotherAgent: z.boolean().optional(),
   suggestedNextAgent: AgentFindingSchema.shape.suggestedNextAgent.nullable().optional(),
 });
 
 type ChiefAgentFinding = z.infer<typeof ChiefAgentFindingSchema>;
 
 const ChiefAdvisorDecisionSchema = z.object({
-  action: AdvisorDecisionSchema.shape.action,
-  requestedDirection: AdvisorDecisionSchema.shape.requestedDirection,
-  summary: AdvisorDecisionSchema.shape.summary,
-  suitability: AdvisorDecisionSchema.shape.suitability,
-  confidence: AdvisorDecisionSchema.shape.confidence,
-  rationales: AdvisorDecisionSchema.shape.rationales,
-  counterEvidence: AdvisorDecisionSchema.shape.counterEvidence,
-  risks: AdvisorDecisionSchema.shape.risks,
-  portfolioImpact: AdvisorDecisionSchema.shape.portfolioImpact,
-  invalidationConditions: AdvisorDecisionSchema.shape.invalidationConditions,
-  compliance: AdvisorDecisionSchema.shape.compliance,
+  action: AdvisorDecisionSchema.shape.action.optional(),
+  requestedDirection: AdvisorDecisionSchema.shape.requestedDirection.optional(),
+  summary: z.string().optional(),
+  suitability: AdvisorDecisionSchema.shape.suitability.optional(),
+  confidence: z.number().optional(),
+  rationales: z.array(z.unknown()).optional(),
+  counterEvidence: z.array(z.unknown()).optional(),
+  risks: z.array(z.unknown()).optional(),
+  portfolioImpact: z.string().optional(),
+  invalidationConditions: z.array(z.unknown()).optional(),
+  compliance: z.object({
+    approved: z.boolean().optional(),
+    decision: AdvisorDecisionSchema.shape.compliance.shape.decision.optional(),
+    reason: z.string().optional(),
+  }).optional(),
 });
 
 export type ChiefAdvisorResult = {
@@ -124,6 +128,7 @@ export async function runChiefAdvisor(input: {
     throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
   }
 
+  let latestDecisionPartial: Partial<AdvisorDecision> = {};
   const decisionStream = await chief.stream<AdvisorDecision>(chiefDecisionPrompt(input.prompt, findings), {
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_600, temperature: 0.1 },
@@ -134,12 +139,15 @@ export async function runChiefAdvisor(input: {
     },
   });
   const consumeDecisionText = consumeTextStream(decisionStream.textStream, (text) => input.onStreamEvent?.({ type: "decision.chunk", text }));
-  const consumeDecisionObject = consumeObjectStream<AdvisorDecision>(decisionStream.objectStream, (partial) => input.onStreamEvent?.({ type: "decision.object", partial }));
-  const decisionObject = await decisionStream.object;
-  await Promise.allSettled([consumeDecisionText, consumeDecisionObject]);
+  const consumeDecisionObject = consumeObjectStream<AdvisorDecision>(decisionStream.objectStream, (partial) => {
+    latestDecisionPartial = { ...latestDecisionPartial, ...partial };
+    input.onStreamEvent?.({ type: "decision.object", partial });
+  });
+  const [decisionResult] = await Promise.allSettled([decisionStream.object, consumeDecisionText, consumeDecisionObject]);
+  if (decisionResult.status === "rejected") throw decisionResult.reason;
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: AdvisorDecisionSchema.parse(decisionObject), findings, delegatedAgents: [...delegated] };
+  return { decision: coerceModelDecision(decisionResult.value, latestDecisionPartial), findings, delegatedAgents: [...delegated] };
 }
 
 async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
@@ -206,6 +214,39 @@ function coerceModelFinding(
       : missingInformation.length > 0 || Boolean(suggestedNextAgent),
     ...(suggestedNextAgent ? { suggestedNextAgent } : {}),
   });
+}
+
+function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDecision>): AdvisorDecision {
+  const merged = {
+    ...normalizeRecord(streamedPartial),
+    ...normalizeRecord(value),
+  } as Record<string, unknown>;
+  const compliance = isPlainRecord(merged.compliance) ? merged.compliance : {};
+  return AdvisorDecisionSchema.parse({
+    action: merged.action ?? "WATCH",
+    requestedDirection: merged.requestedDirection ?? "ANALYZE",
+    summary: nonEmptyString(merged.summary, "模型未能形成完整结论，已按观察处理"),
+    suitability: merged.suitability ?? "LOW",
+    confidence: coerceConfidence(merged.confidence),
+    rationales: coerceStringArray(merged.rationales).slice(0, 3).length ? coerceStringArray(merged.rationales).slice(0, 3) : ["证据不足，无法形成更积极的建议"],
+    counterEvidence: coerceStringArray(merged.counterEvidence).slice(0, 3).length ? coerceStringArray(merged.counterEvidence).slice(0, 3) : ["模型未提供反方证据，按保守门控处理"],
+    risks: coerceStringArray(merged.risks).slice(0, 3).length ? coerceStringArray(merged.risks).slice(0, 3) : ["模型输出不完整"],
+    portfolioImpact: nonEmptyString(merged.portfolioImpact, "暂不改变组合，等待完整证据"),
+    invalidationConditions: coerceStringArray(merged.invalidationConditions).slice(0, 6).length ? coerceStringArray(merged.invalidationConditions).slice(0, 6) : ["出现新的实时数据或完整风险信息"],
+    compliance: {
+      approved: typeof compliance.approved === "boolean" ? compliance.approved : false,
+      decision: compliance.decision ?? "DOWNGRADED",
+      reason: nonEmptyString(compliance.reason, "模型输出不完整，无法通过发布门").slice(0, 500),
+    },
+  });
+}
+
+function normalizeRecord(value: unknown): Record<string, unknown> {
+  return isPlainRecord(value) ? value : {};
+}
+
+function nonEmptyString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function coerceStringArray(value: unknown): string[] {
