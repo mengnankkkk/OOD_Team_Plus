@@ -36,6 +36,25 @@ describe("database migration guard", () => {
     ]));
     expect((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rss_item_instruments'").get() as { name: string } | undefined)?.name)
       .toBe("rss_item_instruments");
+
+    const conditionForeignKeys = db.prepare("PRAGMA foreign_key_list(observation_conditions)").all() as Array<{
+      from: string;
+      on_delete: string;
+      table: string;
+    }>;
+    expect(conditionForeignKeys).toContainEqual(expect.objectContaining({
+      from: "watchlist_item_id",
+      on_delete: "SET NULL",
+      table: "watchlist_items",
+    }));
+
+    const indexes = (table: string) =>
+      (db.prepare(`PRAGMA index_list("${table}")`).all() as Array<{ name: string }>).map((index) => index.name);
+    expect(indexes("observation_conditions")).toContain("idx_observation_conditions_watchlist_item");
+    expect(indexes("rss_item_instruments")).toEqual(expect.arrayContaining([
+      "idx_rss_item_instruments_unique",
+      "idx_rss_item_instruments_instrument",
+    ]));
     db.close();
   });
 

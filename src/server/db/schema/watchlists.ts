@@ -184,8 +184,8 @@ export const rssItemInstruments = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [
-    uniqueIndex("idx_rss_item_instruments_rss_instrument").on(t.rssItemId, t.instrumentId),
-    index("idx_rss_item_instruments_instrument_created").on(t.instrumentId, t.createdAt),
+    uniqueIndex("idx_rss_item_instruments_unique").on(t.rssItemId, t.instrumentId),
+    index("idx_rss_item_instruments_instrument").on(t.instrumentId, t.createdAt),
   ],
 );
 

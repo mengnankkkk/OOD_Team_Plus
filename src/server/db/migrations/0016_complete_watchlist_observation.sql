@@ -25,6 +25,7 @@ UPDATE watchlist_items
 SET
   status = 'removed',
   removed_at = COALESCE(removed_at, updated_at, created_at),
+  updated_at = COALESCE(updated_at, created_at),
   row_version = row_version + 1
 WHERE id IN (
   SELECT id
@@ -37,7 +38,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_items_active_instrument
   WHERE status = 'active';
 
 ALTER TABLE observation_conditions
-  ADD COLUMN watchlist_item_id TEXT REFERENCES watchlist_items(id) ON DELETE CASCADE;
+  ADD COLUMN watchlist_item_id TEXT REFERENCES watchlist_items(id) ON DELETE SET NULL;
 
 ALTER TABLE observation_conditions
   ADD COLUMN severity TEXT NOT NULL DEFAULT 'attention'
@@ -55,8 +56,8 @@ ALTER TABLE observation_conditions
 ALTER TABLE observation_conditions
   ADD COLUMN last_triggered_at TEXT;
 
-CREATE INDEX IF NOT EXISTS idx_observation_conditions_watchlist_item_status_created
-  ON observation_conditions(watchlist_item_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_observation_conditions_watchlist_item
+  ON observation_conditions(watchlist_item_id, status, created_at);
 
 CREATE TABLE IF NOT EXISTS rss_item_instruments (
   id TEXT PRIMARY KEY,
@@ -68,11 +69,11 @@ CREATE TABLE IF NOT EXISTS rss_item_instruments (
   created_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_item_instruments_rss_instrument
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_item_instruments_unique
   ON rss_item_instruments(rss_item_id, instrument_id);
 
-CREATE INDEX IF NOT EXISTS idx_rss_item_instruments_instrument_created
-  ON rss_item_instruments(instrument_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rss_item_instruments_instrument
+  ON rss_item_instruments(instrument_id, created_at);
 
 INSERT OR IGNORE INTO observation_conditions (
   id,
@@ -106,4 +107,14 @@ SELECT
 FROM watchlist_items AS item
 JOIN watchlists AS watchlist ON watchlist.id = item.watchlist_id
 WHERE item.status = 'active'
-  AND item.drawdown_threshold_bps IS NOT NULL;
+  AND watchlist.status = 'active'
+  AND item.drawdown_threshold_bps IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM observation_conditions AS existing
+    WHERE existing.watchlist_item_id = item.id
+      AND existing.condition_type = 'DRAWDOWN_REACH'
+      AND existing.status = 'active'
+      AND CAST(existing.threshold_decimal AS REAL) = ABS(item.drawdown_threshold_bps) / 10000.0
+      AND COALESCE(existing.window_days, 20) = 20
+  );
