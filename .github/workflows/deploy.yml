@@ -399,10 +399,25 @@ jobs:
             "$BASE_URL/api/a2a/tasks?limit=1")"
           test "$STATUS" = "200"
           jq -e '.items | type == "array"' /tmp/a2a-tasks.json >/dev/null
+          RESEARCH_BODY="$(jq -nc --arg messageId "deploy-research-$GITHUB_SHA" '{
+            message: {
+              messageId: $messageId,
+              parts: [{ kind: "text", text: "Verify the external A2A knowledge base research path." }],
+              metadata: {
+                capabilityId: "research_search",
+                operation: "start",
+                input: {
+                  query: "A2A capability gateway",
+                  adapters: ["KNOWLEDGE_BASE"],
+                  maximumResults: 3
+                }
+              }
+            }
+          }')"
           RESEARCH_TASK="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
             -H "content-type: application/json" \
-            -d '{"message":{"messageId":"deploy-research-'\"$GITHUB_SHA\"'","parts":[{"kind":"text","text":"Verify the external A2A knowledge base research path."}],"metadata":{"capabilityId":"research_search","operation":"start","input":{"query":"A2A capability gateway","adapters":["KNOWLEDGE_BASE"],"maximumResults":3}}}}' \
+            -d "$RESEARCH_BODY" \
             "$BASE_URL/api/a2a/message:send")"
           RESEARCH_TASK_ID="$(jq -er '.id' <<<"$RESEARCH_TASK")"
           RESEARCH_STATE=""
