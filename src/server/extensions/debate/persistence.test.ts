@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDatabase, isoNow } from "@/server/http/context";
 import { seedAuthenticatedUser, TEST_USER_ID } from "@tests/helpers/auth";
 
-import { createDebateArgument, createDebateJudgement, createDebateRound, createDebateSession, createDebateTurn } from "./persistence";
+import { createDebateArgument, createDebateJudgement, createDebateRoot, createDebateRound, createDebateSession, createDebateTurn } from "./persistence";
 
 let dbPath = "";
 
@@ -24,6 +24,43 @@ afterEach(() => {
 });
 
 describe("debate persistence", () => {
+  it("creates the root run and debate session atomically", () => {
+    const db = getDatabase();
+    const now = isoNow();
+    db.prepare(`INSERT INTO conversation_sessions
+      (id,user_id,title,status,created_at,updated_at,row_version)
+      VALUES ('conversation_debate_root',?,'Battle Root','active',?,?,1)`).run(TEST_USER_ID, now, now);
+
+    const result = createDebateRoot(db, {
+      userId: TEST_USER_ID,
+      conversationId: "conversation_debate_root",
+      motion: "是否加仓 510300",
+      targetSymbol: "510300.OF",
+      userDebateRole: "neutral",
+    });
+    const rootRun = db.prepare("SELECT status FROM agent_runs WHERE id=?").get(result.analysisId) as { status?: string };
+    const session = db.prepare("SELECT root_agent_run_id FROM debate_sessions WHERE id=?").get(result.debateSessionId) as { root_agent_run_id?: string };
+    db.close();
+
+    expect(rootRun.status).toBe("running");
+    expect(session.root_agent_run_id).toBe(result.analysisId);
+  });
+
+  it("rolls back the root run when the debate session insert fails", () => {
+    const db = getDatabase();
+
+    expect(() => createDebateRoot(db, {
+      userId: TEST_USER_ID,
+      conversationId: "missing_conversation",
+      motion: "无效辩题",
+      userDebateRole: "neutral",
+    })).toThrow();
+
+    const count = db.prepare("SELECT COUNT(*) AS count FROM agent_runs WHERE type='debate_agent'").get() as { count: number };
+    db.close();
+    expect(count.count).toBe(0);
+  });
+
   it("persists session, round, turn, and judgement records", () => {
     const db = getDatabase();
     const now = isoNow();
@@ -104,7 +141,7 @@ describe("debate persistence", () => {
     expect(JSON.parse(String(savedArgument?.evidence_refs_json))).toEqual(["evidence-demand"]);
     expect(JSON.parse(String(savedArgument?.counter_evidence_refs_json))).toEqual(["evidence-slowdown"]);
     expect(savedJudgement?.evidence_tilt).toBe("balanced");
-    expect(savedRound?.status).toBe("completed");
+    expect(savedRound?.status).toBe("running");
     expect(savedSession?.current_round_index).toBe(1);
   });
 

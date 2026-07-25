@@ -10,6 +10,8 @@ const ATTRIBUTED_PREFIXES = [
   "as reported by ",
   "the report ",
   "management ",
+  "多方建议",
+  "空方建议",
 ];
 const ADVICE_PREFIXES = [
   "my recommendation is",
@@ -29,11 +31,42 @@ const ENGLISH_ACTIONS = new Set([
   "exit", "exiting", "add", "adding", "reduce", "reducing",
 ]);
 const CHINESE_ACTIONS = ["买入", "卖出", "加仓", "减仓"];
-const CHINESE_PREFIXES = ["立即", "马上", "应该", "必须"];
+const CHINESE_PREFIXES = ["立即", "马上", "建议", "应该", "必须"];
 const QUOTE_STARTS = new Set(['"', "'", "“", "‘", "«"]);
+const CHINESE_ATTRIBUTION = /^(?:用户|分析师|多方|空方|报告|管理层)(?:认为|表示|主张|建议|指出|称)/u;
+const ENGLISH_ATTRIBUTION = /^(?:(?:the )?(?:user|analyst|bull(?: case)?|bear(?: case)?|report|management))\s+(?:says?|argues?|claims?|recommends?|suggests?|reports?)\b/iu;
 
-export function neutralizeJudgeNarrative(value: string, fallback: string): string {
-  return hasLeadingTradeDirective(value) ? fallback : value;
+export function neutralizeTradeDirective(value: string, fallback: string): string {
+  return hasTradeDirective(value) ? fallback : value;
+}
+
+export const neutralizeJudgeNarrative = neutralizeTradeDirective;
+
+function hasTradeDirective(value: string): boolean {
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  if (!normalized) return false;
+  return normalized.split(/[.!?。！？\n]+/u).some((sentence) => hasTradeDirectiveSentence(sentence));
+}
+
+function hasTradeDirectiveSentence(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized || isQuoted(normalized)) return false;
+  return normalized
+    .split(/[,，;；:：]+|\b(?:but|however)\b|(?:但是|但|而)/iu)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+    .some((clause) => (
+      !isQuotedOrAttributed(clause)
+      && (hasLeadingTradeDirective(clause) || hasEmbeddedTradeDirective(clause))
+    ));
+}
+
+function hasEmbeddedTradeDirective(value: string): boolean {
+  const lower = value.toLowerCase();
+  const englishDirective = /\b(?:you|we)\s+(?:should|must)\s+(?:immediately\s+)?(?:buy|sell|hold|trade|exit|add|reduce)\b/u;
+  const englishRecommendation = /\bi\s+recommend(?:\s+that)?(?:\s+you)?\s+(?:to\s+)?(?:buy|sell|hold|trade|exit|add|reduce|buying|selling|holding|trading|exiting|adding|reducing)\b/u;
+  const chineseDirective = /(?:你|用户)?(?:应该|必须|建议)\s*(?:立即|马上)?\s*(?:买入|卖出|加仓|减仓)/u;
+  return englishDirective.test(lower) || englishRecommendation.test(lower) || chineseDirective.test(value);
 }
 
 function hasLeadingTradeDirective(value: string): boolean {
@@ -47,7 +80,14 @@ function hasLeadingTradeDirective(value: string): boolean {
 
 function isQuotedOrAttributed(value: string): boolean {
   const lower = value.toLowerCase();
-  return QUOTE_STARTS.has(value[0] ?? "") || ATTRIBUTED_PREFIXES.some((prefix) => lower.startsWith(prefix));
+  return isQuoted(value)
+    || ATTRIBUTED_PREFIXES.some((prefix) => lower.startsWith(prefix))
+    || CHINESE_ATTRIBUTION.test(value)
+    || ENGLISH_ATTRIBUTION.test(value);
+}
+
+function isQuoted(value: string): boolean {
+  return QUOTE_STARTS.has(value[0] ?? "");
 }
 
 function stripAdvicePrefix(value: string): { remainder: string; usedAdvicePrefix: boolean } {

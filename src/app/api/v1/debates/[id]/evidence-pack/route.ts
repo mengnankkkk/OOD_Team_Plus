@@ -23,6 +23,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     WHERE ei.user_id=? AND (ar.id=? OR ar.root_run_id=?) ORDER BY ei.created_at,ei.id`)
     .all(userId, session.root_agent_run_id, session.root_agent_run_id) as Row[];
   db.close();
+  const rootRun = agentRuns.find((run) => run.id === session.root_agent_run_id);
+  const rootResult = parseJson<Record<string, unknown>>(String(rootRun?.result_json ?? ""), {});
+  const publication = isRecord(rootResult.publication) ? rootResult.publication : null;
 
   return NextResponse.json({
     data: {
@@ -35,6 +38,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       agentTrace: agentRuns.map(formatAgentRun),
       evidence: evidence.map(formatEvidence),
       events: getSseEvents(String(session.root_agent_run_id)).map((event) => ({ id: event.id, type: event.type, payload: event.payload, createdAt: event.createdAt })),
+      publication,
       disclaimer: "多空 Battle 用于投资研究和方案模拟，不代表未来收益，不构成交易指令。",
     },
     meta: meta(),
@@ -72,4 +76,8 @@ function formatAgentRun(run: Row): Record<string, unknown> {
 
 function formatEvidence(item: Row): Record<string, unknown> {
   return { id: item.id, kind: item.kind, stance: item.stance, title: item.title, summary: item.statement ?? item.summary, quality: item.quality };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -16,13 +17,34 @@ describe("debate contracts", () => {
       motion: "The company can sustain its current growth rate.",
       roundFocus: "Test the bull case against weakening evidence.",
       requiredAgents: ["evidence", "bull", "bear", "judge"],
-      speakingOrder: ["evidence", "bull", "bear", "bull", "judge"],
+      speakingOrder: ["evidence", "bull", "bear", "bull", "bear", "judge"],
       needsFreshData: true,
       reasonForFocus: "Recent guidance and valuation data need to be reconciled.",
     });
 
     expect(plan.userIntent).toBe("support_bull");
-    expect(plan.speakingOrder).toEqual(["evidence", "bull", "bear", "bull", "judge"]);
+    expect(plan.speakingOrder).toEqual(["evidence", "bull", "bear", "bull", "bear", "judge"]);
+  });
+
+  it("requires both advocates to receive a rebuttal turn", () => {
+    const result = DebateRoundPlanSchema.safeParse({
+      userDebateRole: "neutral",
+      userIntent: "ask_both",
+      motion: "是否继续持有 AAPL",
+      roundFocus: "比较估值与趋势风险",
+      requiredAgents: ["evidence", "bull", "bear", "judge"],
+      speakingOrder: ["evidence", "bull", "bear", "judge"],
+      needsFreshData: false,
+      reasonForFocus: "用户需要同时理解支持与反对依据。",
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.message)).toEqual(expect.arrayContaining([
+        "Every debate round must give bull a rebuttal turn",
+        "Every debate round must give bear a rebuttal turn",
+      ]));
+    }
   });
 
   it("rejects user and orchestrator speakers from a round plan", () => {
@@ -220,6 +242,33 @@ describe("debate contracts", () => {
       ...basePlan,
       requiredAgents: ["evidence", "bull"],
       speakingOrder: ["evidence", "judge"],
+    })).toThrow();
+  });
+
+  it("requires every round to include evidence, both advocates, and the judge", () => {
+    const basePlan = {
+      userDebateRole: "neutral",
+      userIntent: "ask_both",
+      motion: "The motion is debatable.",
+      roundFocus: "Compare both sides.",
+      needsFreshData: false,
+      reasonForFocus: "The user asked for a balanced review.",
+    };
+
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      requiredAgents: ["evidence", "bull", "judge"],
+      speakingOrder: ["evidence", "bull", "judge"],
+    })).toThrow();
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      requiredAgents: ["bull", "bear", "judge"],
+      speakingOrder: ["bull", "bear", "judge"],
+    })).toThrow();
+    expect(() => DebateRoundPlanSchema.parse({
+      ...basePlan,
+      requiredAgents: ["evidence", "bull", "bear", "judge"],
+      speakingOrder: ["evidence", "bull", "judge"],
     })).toThrow();
   });
 

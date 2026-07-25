@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { SSE_EVENT_TYPES } from "./event-persister";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { seedAuthenticatedUser, TEST_USER_ID } from "@tests/helpers/auth";
+import { getDatabase, isoNow } from "@/server/http/context";
+
+import { getSseEvents, persistSseEvent, SSE_EVENT_TYPES } from "./event-persister";
+
+let dbPath = "";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${dbPath}${suffix}`, { force: true });
+});
 
 describe("SSE_EVENT_TYPES", () => {
   it("has the expected values", () => {
@@ -42,6 +57,37 @@ describe("SSE_EVENT_TYPES", () => {
       "debate.judge.completed",
       "debate.round.completed",
       "debate.blocked",
+    ]);
+  });
+
+  it("groups child-run events under their persisted root run", () => {
+    dbPath = join(tmpdir(), `money-whisperer-sse-root-${randomUUID()}.db`);
+    vi.stubEnv("DB_PATH", dbPath);
+    seedAuthenticatedUser();
+    const db = getDatabase();
+    const now = isoNow();
+    db.prepare(`INSERT INTO conversation_sessions
+      (id,user_id,title,status,created_at,updated_at,row_version)
+      VALUES ('conversation_sse',?,'SSE','active',?,?,1)`).run(TEST_USER_ID, now, now);
+    db.prepare(`INSERT INTO agent_runs
+      (id,user_id,type,status,session_id,root_run_id,created_at)
+      VALUES ('analysis_root',?,'debate_agent','running','conversation_sse',NULL,?),
+             ('analysis_child',?,'advisor_publication','running','conversation_sse','analysis_root',?)`)
+      .run(TEST_USER_ID, now, TEST_USER_ID, now);
+    db.close();
+
+    persistSseEvent({
+      analysisId: "analysis_child",
+      type: "advisor.thinking",
+      payload: { publicationGate: true },
+    });
+
+    expect(getSseEvents("analysis_root")).toEqual([
+      expect.objectContaining({
+        analysisId: "analysis_child",
+        type: "advisor.thinking",
+        payload: { publicationGate: true },
+      }),
     ]);
   });
 });

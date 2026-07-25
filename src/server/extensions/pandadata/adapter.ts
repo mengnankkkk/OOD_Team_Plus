@@ -58,7 +58,7 @@ export async function callPandaData(
 
   const pythonPath = options.pythonPath ?? process.env.PANDADATA_PYTHON ?? "python";
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const configuredBaseUrl = process.env.JAVA_SERVICE_BASE_URL?.trim();
+  const configuredBaseUrl = configuredValue(process.env.JAVA_SERVICE_BASE_URL, process.env.PANDADATA_BASE_URL);
   if (!configuredBaseUrl || /^(?:your_value_here|default_placeholder)$/iu.test(configuredBaseUrl)) {
     throw pandaError("PANDADATA_AUTH_FAILED", "PandaData is not configured: JAVA_SERVICE_BASE_URL must be set in the deployment secret store.", false, { phase: "CONFIG" });
   }
@@ -110,6 +110,10 @@ export async function callPandaData(
       durationMs: Date.now() - liveCallStartedAt,
     });
   }
+}
+
+function configuredValue(...values: Array<string | undefined>): string | null {
+  return values.map((value) => value?.trim()).find((value) => value && !/^(?:your_value_here|default_placeholder)$/iu.test(value)) ?? null;
 }
 
 function parseRows(stdout: string): Array<Record<string, unknown>> {

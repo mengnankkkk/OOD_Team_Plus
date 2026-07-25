@@ -4,6 +4,7 @@ export const DebateUserRoleSchema = z.enum(["neutral", "bull", "bear"]);
 export const DebateSpeakerSchema = z.enum(["user", "bull", "bear", "judge", "orchestrator", "evidence"]);
 export const DebateStanceSchema = z.enum(["bull", "bear", "neutral"]);
 export const DebateAgentSchema = z.enum(["evidence", "bull", "bear", "judge", "chief_advisor"]);
+export const DebateSpeakingAgentSchema = z.enum(["evidence", "bull", "bear", "judge"]);
 export const DebateUserIntentSchema = z.enum([
   "ask_both",
   "support_bull",
@@ -85,7 +86,7 @@ export const DebateRoundPlanSchema = z.object({
   motion: z.string().min(1),
   roundFocus: z.string().min(1),
   requiredAgents: z.array(DebateAgentSchema).min(1),
-  speakingOrder: z.array(DebateAgentSchema).min(1),
+  speakingOrder: z.array(DebateSpeakingAgentSchema).min(1),
   needsFreshData: z.boolean(),
   reasonForFocus: z.string().min(1),
 }).superRefine((plan, context) => {
@@ -106,6 +107,34 @@ export const DebateRoundPlanSchema = z.object({
       });
     }
   });
+
+  for (const agent of ["evidence", "bull", "bear", "judge"] as const) {
+    if (!plan.requiredAgents.includes(agent)) {
+      context.addIssue({
+        code: "custom",
+        path: ["requiredAgents"],
+        message: `Every debate round requires ${agent}`,
+      });
+    }
+    if (!plan.speakingOrder.includes(agent)) {
+      context.addIssue({
+        code: "custom",
+        path: ["speakingOrder"],
+        message: `Every debate round must schedule ${agent}`,
+      });
+    }
+  }
+
+  for (const advocate of ["bull", "bear"] as const) {
+    const appearances = plan.speakingOrder.filter((agent) => agent === advocate).length;
+    if (appearances < 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["speakingOrder"],
+        message: `Every debate round must give ${advocate} a rebuttal turn`,
+      });
+    }
+  }
 });
 
 const advocateTurnTypes = new Set(["opening", "support", "rebuttal", "cross_examination", "answer"]);
@@ -172,6 +201,7 @@ export type DebateUserRole = z.infer<typeof DebateUserRoleSchema>;
 export type DebateSpeaker = z.infer<typeof DebateSpeakerSchema>;
 export type DebateStance = z.infer<typeof DebateStanceSchema>;
 export type DebateAgent = z.infer<typeof DebateAgentSchema>;
+export type DebateSpeakingAgent = z.infer<typeof DebateSpeakingAgentSchema>;
 export type DebateUserIntent = z.infer<typeof DebateUserIntentSchema>;
 export type DebateTurnType = z.infer<typeof DebateTurnTypeSchema>;
 export type DebateEvidenceTilt = z.infer<typeof DebateEvidenceTiltSchema>;

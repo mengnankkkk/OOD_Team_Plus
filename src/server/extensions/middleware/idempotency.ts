@@ -9,31 +9,72 @@ export interface IdempotencyRecord {
   requestHash?: string;
   responseJson: string;
   createdAt: string;
+  active?: boolean;
   conflict?: boolean;
 }
 
 export async function checkIdempotency(ownerKey: string, routeCode: string, idempotencyKey: string, requestHash?: string): Promise<IdempotencyRecord | null> {
   const db = getDatabase();
-  const row = db.prepare("SELECT user_id, operation, idempotency_key, request_hash, response_json, created_at FROM idempotency_records WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(ownerKey, routeCode, idempotencyKey) as { user_id: string; operation: string; idempotency_key: string; request_hash?: string; response_json?: string; created_at: string } | undefined;
-  db.close();
-  if (!row) return null;
-  return { ownerKey: row.user_id, routeCode: row.operation, idempotencyKey: row.idempotency_key, requestHash: row.request_hash, responseJson: row.response_json ?? "", createdAt: row.created_at, conflict: Boolean(requestHash && (!row.request_hash || requestHash !== row.request_hash || !row.response_json)) };
+  try {
+    const row = db.prepare("SELECT user_id, operation, idempotency_key, request_hash, response_json, created_at FROM idempotency_records WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(ownerKey, routeCode, idempotencyKey) as IdempotencyRow | undefined;
+    return row ? toIdempotencyRecord(row, requestHash) : null;
+  } finally {
+    db.close();
+  }
 }
 
 export async function saveIdempotency(record: IdempotencyRecord): Promise<void> {
   const db = getDatabase();
-  db.prepare("INSERT INTO idempotency_records (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, operation, idempotency_key) DO NOTHING").run(createId("idem"), record.ownerKey, record.routeCode, record.idempotencyKey, safeResponseResource(record.responseJson), record.responseJson, record.requestHash ?? hashIdempotencyRequest(record.responseJson), record.createdAt);
-  db.close();
+  try {
+    db.prepare(`INSERT INTO idempotency_records
+      (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, operation, idempotency_key) DO UPDATE SET
+        resource_id=excluded.resource_id,
+        response_json=excluded.response_json
+      WHERE idempotency_records.request_hash=excluded.request_hash
+        AND idempotency_records.response_json IS NULL`)
+      .run(createId("idem"), record.ownerKey, record.routeCode, record.idempotencyKey, safeResponseResource(record.responseJson), record.responseJson, record.requestHash ?? hashIdempotencyRequest(record.responseJson), record.createdAt);
+  } finally {
+    db.close();
+  }
 }
 
-export async function beginIdempotentRequest(ownerKey: string, routeCode: string, idempotencyKey: string, requestBody: unknown) {
+export async function beginIdempotentRequest(ownerKey: string, routeCode: string, idempotencyKey: string, requestBody: unknown, options: { reserve?: boolean } = {}) {
   const requestHash = hashIdempotencyRequest(requestBody);
-  const existing = await checkIdempotency(ownerKey, routeCode, idempotencyKey, requestHash);
-  return { requestHash, existing };
+  if (!options.reserve) {
+    const existing = await checkIdempotency(ownerKey, routeCode, idempotencyKey, requestHash);
+    return { requestHash, existing };
+  }
+  const db = getDatabase();
+  try {
+    for (;;) {
+      const reserved = db.prepare("INSERT INTO idempotency_records (id, user_id, operation, idempotency_key, resource_id, response_json, request_hash, created_at) VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?) ON CONFLICT(user_id, operation, idempotency_key) DO NOTHING")
+        .run(createId("idem"), ownerKey, routeCode, idempotencyKey, requestHash, isoNow());
+      if (reserved.changes === 1) return { requestHash, existing: null };
+      const row = db.prepare("SELECT user_id, operation, idempotency_key, request_hash, response_json, created_at FROM idempotency_records WHERE user_id = ? AND operation = ? AND idempotency_key = ?")
+        .get(ownerKey, routeCode, idempotencyKey) as IdempotencyRow | undefined;
+      if (row) return { requestHash, existing: toIdempotencyRecord(row, requestHash) };
+    }
+  } finally {
+    db.close();
+  }
 }
 
 export async function saveIdempotentResponse(ownerKey: string, routeCode: string, idempotencyKey: string, requestHash: string, response: unknown) {
   await saveIdempotency({ ownerKey, routeCode, idempotencyKey, requestHash, responseJson: JSON.stringify(response), createdAt: isoNow() });
+}
+
+export async function releaseIdempotentRequest(ownerKey: string, routeCode: string, idempotencyKey: string, requestHash: string): Promise<void> {
+  const db = getDatabase();
+  try {
+    db.prepare(`DELETE FROM idempotency_records
+      WHERE user_id=? AND operation=? AND idempotency_key=?
+        AND request_hash=? AND response_json IS NULL`)
+      .run(ownerKey, routeCode, idempotencyKey, requestHash);
+  } finally {
+    db.close();
+  }
 }
 
 export function parseIdempotentResponse(record: IdempotencyRecord): unknown {
@@ -65,4 +106,26 @@ function safeResponseResource(responseJson: string): string {
   } catch {
     return "response";
   }
+}
+
+type IdempotencyRow = {
+  user_id: string;
+  operation: string;
+  idempotency_key: string;
+  request_hash?: string;
+  response_json?: string;
+  created_at: string;
+};
+
+function toIdempotencyRecord(row: IdempotencyRow, requestHash?: string): IdempotencyRecord {
+  return {
+    ownerKey: row.user_id,
+    routeCode: row.operation,
+    idempotencyKey: row.idempotency_key,
+    requestHash: row.request_hash,
+    responseJson: row.response_json ?? "",
+    createdAt: row.created_at,
+    active: Boolean(!row.response_json && row.request_hash && (!requestHash || requestHash === row.request_hash)),
+    conflict: Boolean(requestHash && (!row.request_hash || requestHash !== row.request_hash)),
+  };
 }

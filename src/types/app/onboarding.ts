@@ -42,6 +42,13 @@ export interface AdvisorSessionSummary {
   firstActivityAt: string;
 }
 
+export interface DebateSuggestion {
+  recommended: boolean;
+  motion: string;
+  reason: string;
+  targetSymbol?: string | null;
+}
+
 export interface AdvisorReply {
   reply: string;
   profileUpdate: Record<string, unknown> | null;
@@ -51,4 +58,5 @@ export interface AdvisorReply {
   recommendationId: string | null;
   clarificationId: string | null;
   artifact: { artifactId?: string; previewUrl?: string; status?: string } | null;
+  debateSuggestion: DebateSuggestion | null;
 }

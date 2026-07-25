@@ -3,6 +3,53 @@ import type { SqliteDb } from "@/server/db/client.runtime";
 
 import type { DebateArgument, DebateJudgement, DebateTurn, DebateUserIntent, DebateUserRole } from "./contracts";
 
+export function createDebateRoot(db: SqliteDb, input: {
+  userId: string;
+  conversationId: string;
+  motion: string;
+  targetInstrumentId?: string | null;
+  targetSymbol?: string | null;
+  userDebateRole: DebateUserRole;
+  initialUserMessage?: {
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
+}): { analysisId: string; debateSessionId: string } {
+  const now = isoNow();
+  const analysisId = createId("analysis");
+  let debateSessionId = "";
+  const transaction = db.transaction(() => {
+    db.prepare(`INSERT INTO agent_runs
+      (id,user_id,type,status,session_id,agent_type,objective,created_at,started_at)
+      VALUES (?,?,'debate_agent','running',?,'debate_orchestrator',?,?,?)`).run(
+      analysisId,
+      input.userId,
+      input.conversationId,
+      input.motion.slice(0, 500),
+      now,
+      now,
+    );
+    debateSessionId = createDebateSession(db, {
+      ...input,
+      rootAgentRunId: analysisId,
+    });
+    if (input.initialUserMessage) {
+      db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)")
+        .run(
+          createId("message"),
+          input.conversationId,
+          "user",
+          input.initialUserMessage.content,
+          now,
+          analysisId,
+          json({ ...input.initialUserMessage.metadata, debateSessionId }),
+        );
+    }
+  });
+  transaction();
+  return { analysisId, debateSessionId };
+}
+
 export function createDebateSession(db: SqliteDb, input: {
   userId: string;
   conversationId: string;
@@ -116,8 +163,6 @@ export function createDebateJudgement(db: SqliteDb, input: DebateJudgement & { d
       input.complianceNote,
       now,
     );
-    db.prepare("UPDATE debate_rounds SET status='completed',judge_summary_json=?,completed_at=? WHERE id=?")
-      .run(json(input), now, input.debateRoundId);
     db.prepare("UPDATE debate_sessions SET updated_at=? WHERE id=?").run(now, input.debateSessionId);
   });
   transaction();

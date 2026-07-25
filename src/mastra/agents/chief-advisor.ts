@@ -1,9 +1,16 @@
+/* eslint-disable max-lines */
 import { Agent } from "@mastra/core/agent";
-import type { ReadableStream as NodeReadableStream } from "stream/web";
 import { z } from "zod";
 
 import { getDeepSeekModelConfig } from "@/server/extensions/advisor/model-config";
-import { AgentFindingSchema, AdvisorDecisionSchema, type AgentFinding, type AdvisorDecision } from "@/server/extensions/advisor/professional-contracts";
+import {
+  AgentFindingSchema,
+  AdvisorDecisionSchema,
+  DebateSuggestionSchema,
+  type AgentFinding,
+  type AdvisorDecision,
+  type DebateSuggestion,
+} from "@/server/extensions/advisor/professional-contracts";
 
 const ChiefAgentFindingSchema = z.object({
   agent: AgentFindingSchema.shape.agent.optional(),
@@ -35,14 +42,21 @@ const ChiefAdvisorDecisionSchema = z.object({
     decision: AdvisorDecisionSchema.shape.compliance.shape.decision.optional(),
     reason: z.string().optional(),
   }).optional(),
+  debateSuggestion: DebateSuggestionSchema.partial().optional(),
 });
 
-type ChiefAdvisorDecision = z.infer<typeof ChiefAdvisorDecisionSchema>;
+export type ChiefAdvisorDecisionIntegrity = {
+  complete: boolean;
+  defaultedFields: string[];
+  reasons: string[];
+};
 
 export type ChiefAdvisorResult = {
   decision: AdvisorDecision;
+  decisionIntegrity: ChiefAdvisorDecisionIntegrity;
   findings: AgentFinding[];
   delegatedAgents: AgentFinding["agent"][];
+  fallbackAgents: AgentFinding["agent"][];
 };
 
 export type ChiefAdvisorStreamEvent =
@@ -73,6 +87,7 @@ export function createChiefAdvisorAgent() {
       "dry-run、过期数据、fixture 或模型故障不能形成 ACTIVE 建议。",
       "没有反方证据、组合影响或合规批准时必须降级或阻断。",
       "任何结果仅用于模拟，不连接券商，不创建真实订单。",
+      "最终决策必须额外输出 debateSuggestion：判断当前问题是否适合让用户进入多空 Battle。只有存在清晰、可比较的观点或行动分歧时 recommended 才为 true；预算整理、资料解释、画像建档或缺少明确议题时为 false。motion 要写成小白能理解的具体辩题，reason 说明为什么适合或暂不适合。",
     ].join("\n"),
   });
 }
@@ -80,6 +95,7 @@ export function createChiefAdvisorAgent() {
 export async function runChiefAdvisor(input: {
   prompt: string;
   requiredAgents: AgentFinding["agent"][];
+  fallbackFindings?: AgentFinding[];
   onAgentStarted?: (agent: AgentFinding["agent"], label: string) => void;
   onAgentCompleted?: (finding: AgentFinding) => void;
   onAgentFailed?: (agent: AgentFinding["agent"], error: unknown) => void;
@@ -88,6 +104,7 @@ export async function runChiefAdvisor(input: {
   const chief = createChiefAdvisorAgent();
   const findings: AgentFinding[] = [];
   const delegated = new Set<AgentFinding["agent"]>();
+  const fallbackAgents = new Set<AgentFinding["agent"]>();
   const specialists = createSpecialistAgents();
   const failures: Array<{ role: AgentFinding["agent"]; error: unknown }> = [];
 
@@ -112,7 +129,15 @@ export async function runChiefAdvisor(input: {
         lastError = error;
       }
     }
-    if (!finding) throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+    if (!finding) {
+      const fallback = input.fallbackFindings?.find((candidate) => candidate.agent === role);
+      if (fallback) {
+        fallbackAgents.add(role);
+        input.onAgentFailed?.(role, lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`));
+        return fallback;
+      }
+      throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+    }
     input.onAgentCompleted?.(finding);
     return finding;
   };
@@ -147,6 +172,7 @@ export async function runChiefAdvisor(input: {
   if (failures.length) throw new AggregateError(failures.map((failure) => failure.error), `Required model agents failed: ${failures.map((failure) => failure.role).join(",")}`);
 
   let modelDecision: AdvisorDecision | undefined;
+  let decisionIntegrity: ChiefAdvisorDecisionIntegrity | undefined;
   let lastDecisionError: unknown;
   for (let attempt = 0; attempt < 2 && !modelDecision; attempt += 1) {
     try {
@@ -156,27 +182,17 @@ export async function runChiefAdvisor(input: {
       const modelObject = await streamModelObject(chief, decisionPrompt, ChiefAdvisorDecisionSchema, (partial) => {
         input.onStreamEvent?.({ type: "decision.object", partial: normalizeRecord(partial) as Partial<AdvisorDecision> });
       });
-      modelDecision = coerceModelDecision(modelObject);
+      const coerced = coerceModelDecision(modelObject);
+      modelDecision = coerced.decision;
+      decisionIntegrity = coerced.integrity;
     } catch (error) {
       lastDecisionError = error;
     }
   }
-  if (!modelDecision) throw lastDecisionError ?? new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR");
+  if (!modelDecision || !decisionIntegrity) throw lastDecisionError ?? new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR");
   const missingRequired = input.requiredAgents.filter((role) => !delegated.has(role));
   if (missingRequired.length) throw new Error(`Chief Advisor omitted mandatory agents: ${missingRequired.join(",")}`);
-  return { decision: modelDecision, findings, delegatedAgents: [...delegated] };
-}
-
-async function streamModelText(agent: Agent, prompt: string, maxOutputTokens: number, onText: (text: string) => void): Promise<string> {
-  const stream = await agent.stream(prompt, { maxSteps: 1, modelSettings: { maxOutputTokens, temperature: 0.1 } });
-  let streamedText = "";
-  await consumeFullTextStream(stream.fullStream, (text) => {
-    streamedText += text;
-    onText(text);
-  });
-  if (streamedText.trim()) return streamedText;
-  const completedText = await stream.text.catch(() => "");
-  return typeof completedText === "string" ? completedText : "";
+  return { decision: modelDecision, decisionIntegrity, findings, delegatedAgents: [...delegated], fallbackAgents: [...fallbackAgents] };
 }
 
 async function streamModelObject<T extends object>(
@@ -186,7 +202,7 @@ async function streamModelObject<T extends object>(
   onPartial: (partial: Partial<T>) => void,
 ): Promise<T> {
   const stream = await agent.stream(prompt, {
-    structuredOutput: { schema },
+    structuredOutput: { schema, jsonPromptInjection: "system" },
     maxSteps: 1,
     modelSettings: { maxOutputTokens: 1_400, temperature: 0.1 },
   });
@@ -195,63 +211,9 @@ async function streamModelObject<T extends object>(
       if (partial && typeof partial === "object") onPartial(partial as Partial<T>);
     }
   }
-  const result = await stream.object;
+  const result = await stream.object.catch(() => undefined);
   if (!result || typeof result !== "object") throw new Error("MODEL_OUTPUT_EMPTY");
   return result as T;
-}
-
-async function consumeFullTextStream(stream: NodeReadableStream<unknown>, onChunk: (text: string) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (!value || typeof value !== "object") continue;
-      const chunk = value as { type?: string; payload?: { text?: unknown } };
-      if ((chunk.type === "text-delta" || chunk.type === "text") && typeof chunk.payload?.text === "string") onChunk(chunk.payload.text);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function parseModelJson(value: string): unknown {
-  const text = value.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
-  if (!text) throw new Error("MODEL_OUTPUT_EMPTY");
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1)) as unknown;
-    throw new Error("MODEL_OUTPUT_INVALID_JSON");
-  }
-}
-
-async function consumeTextStream(stream: NodeReadableStream<string>, onChunk: (text: string) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value) onChunk(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-async function consumeObjectStream<T extends object>(stream: NodeReadableStream<Partial<T>>, onPartial: (partial: Partial<T>) => void): Promise<void> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value && Object.keys(value).length > 0) onPartial(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 function normalizeChiefFinding(value: unknown): Partial<AgentFinding> {
@@ -294,13 +256,27 @@ function coerceModelFinding(
   });
 }
 
-function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDecision> = {}): AdvisorDecision {
+function coerceModelDecision(
+  value: unknown,
+  streamedPartial: Partial<AdvisorDecision> = {},
+): { decision: AdvisorDecision; integrity: ChiefAdvisorDecisionIntegrity } {
   const merged = {
     ...normalizeRecord(streamedPartial),
     ...normalizeRecord(value),
   } as Record<string, unknown>;
+  const strictResult = AdvisorDecisionSchema.safeParse(merged);
+  const defaultedFields = strictResult.success
+    ? []
+    : [...new Set(strictResult.error.issues.map((issue) => issue.path.map(String).join(".") || "decision"))];
+  const integrity: ChiefAdvisorDecisionIntegrity = {
+    complete: strictResult.success,
+    defaultedFields,
+    reasons: defaultedFields.length
+      ? [`Chief Advisor 结构化输出未通过完整 schema，coercion 补全或修正字段：${defaultedFields.join(", ")}`]
+      : [],
+  };
   const compliance = isPlainRecord(merged.compliance) ? merged.compliance : {};
-  return AdvisorDecisionSchema.parse({
+  const decision = AdvisorDecisionSchema.parse({
     action: merged.action ?? "WATCH",
     requestedDirection: merged.requestedDirection ?? "ANALYZE",
     summary: nonEmptyString(merged.summary, "模型未能形成完整结论，已按观察处理"),
@@ -311,11 +287,51 @@ function coerceModelDecision(value: unknown, streamedPartial: Partial<AdvisorDec
     risks: coerceStringArray(merged.risks).slice(0, 3).length ? coerceStringArray(merged.risks).slice(0, 3) : ["模型输出不完整"],
     portfolioImpact: nonEmptyString(merged.portfolioImpact, "暂不改变组合，等待完整证据"),
     invalidationConditions: coerceStringArray(merged.invalidationConditions).slice(0, 6).length ? coerceStringArray(merged.invalidationConditions).slice(0, 6) : ["出现新的实时数据或完整风险信息"],
+    debateSuggestion: coerceDebateSuggestion(merged.debateSuggestion),
     compliance: {
       approved: typeof compliance.approved === "boolean" ? compliance.approved : false,
       decision: compliance.decision ?? "DOWNGRADED",
       reason: nonEmptyString(compliance.reason, "模型输出不完整，无法通过发布门").slice(0, 500),
     },
+  });
+  if (!integrity.complete) {
+    return {
+      integrity,
+      decision: {
+        ...decision,
+        compliance: {
+          approved: false,
+          decision: decision.compliance.decision === "BLOCKED" ? "BLOCKED" : "DOWNGRADED",
+          reason: [...new Set([decision.compliance.reason, ...integrity.reasons])].join("；").slice(0, 500),
+        },
+      },
+    };
+  }
+  if (decision.compliance.decision !== "APPROVED" && decision.compliance.approved) {
+    return {
+      integrity,
+      decision: {
+        ...decision,
+        compliance: { ...decision.compliance, approved: false },
+      },
+    };
+  }
+  return { decision, integrity };
+}
+
+function coerceDebateSuggestion(value: unknown): DebateSuggestion {
+  const candidate = isPlainRecord(value) ? value : {};
+  const recommended = candidate.recommended === true;
+  return DebateSuggestionSchema.parse({
+    recommended,
+    motion: nonEmptyString(
+      candidate.motion,
+      recommended ? "当前观点是否值得继续持有或采取行动？" : "当前问题暂不适合进入多空 Battle",
+    ),
+    reason: nonEmptyString(
+      candidate.reason,
+      recommended ? "当前问题存在可比较的多空判断，适合让用户同时听取两方依据。" : "当前问题还没有形成清晰的多空议题，先完成基础信息整理更有帮助。",
+    ),
   });
 }
 
@@ -351,6 +367,7 @@ function chiefDecisionPrompt(prompt: string, findings: AgentFinding[]): string {
   return [
     "以下是用户问题、服务端事实和已经显式执行完成的专业子 Agent 发现。",
     "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实；不得在证据不足时给出 ACTIVE 交易承诺。",
+    "最终 JSON 必须包含 debateSuggestion：recommended、motion、reason。",
     prompt,
     `专业子 Agent 发现：${JSON.stringify(findings)}`,
   ].join("\n\n");

@@ -14,9 +14,10 @@ import {
   type DebateAgent,
   type DebateJudgement,
   type DebateRoundPlan,
+  type DebateSpeakingAgent,
   type DebateStance,
 } from "@/server/extensions/debate/contracts";
-import { neutralizeJudgeNarrative } from "./debate-judge-safety";
+import { neutralizeTradeDirective } from "./debate-judge-safety";
 
 const DEFAULT_DEBATE_AGENTS: DebateAgent[] = ["evidence", "bull", "bear", "judge"];
 const JUDGE_FALLBACKS = {
@@ -26,6 +27,19 @@ const JUDGE_FALLBACKS = {
   notFinal: "The evidence and assumptions remain incomplete, so this discussion cannot settle the question.",
   prompt: "Ask for fresh research that could change the current conclusion.",
   compliance: "This is research and simulation for education, not individualized investment advice or an instruction to trade.",
+} as const;
+const ADVOCATE_FALLBACKS = {
+  headline: "This side's evidence still needs a balanced research review.",
+  response: "The available evidence supports analysis, not a direct trading instruction.",
+  claim: "This argument should be tested against the shared evidence.",
+  plainLanguage: "In plain language, this side still needs evidence before drawing a conclusion.",
+  assumption: "The argument depends on an assumption that should be checked with evidence.",
+  vulnerability: "Fresh evidence could weaken this argument.",
+  attack: "The opposing case should explain which evidence supports its central assumption.",
+  weakness: "This side remains vulnerable to missing or conflicting evidence.",
+  question: "Which evidence would most directly weaken your conclusion?",
+  summary: "This is one research perspective, and its assumptions still need scrutiny.",
+  followUp: "Ask which fresh evidence would change this side's view.",
 } as const;
 
 export const DebateRoundPlanOutputSchema = z.object({
@@ -80,13 +94,15 @@ export const DebateJudgementOutputSchema = z.object({
 
 export function coerceDebateRoundPlan(value: unknown): DebateRoundPlan {
   const record = normalizeRecord(value);
-  const scheduledAgents = debateAgentsFrom(record.speakingOrder);
+  const scheduledModelAgents = debateAgentsFrom(record.speakingOrder);
+  const scheduledAgents = scheduledModelAgents.filter((agent): agent is DebateSpeakingAgent => agent !== "chief_advisor");
   const modelRequiredAgents = debateAgentsFrom(record.requiredAgents);
   const requiredAgents = uniqueDebateAgents(
-    modelRequiredAgents.length ? modelRequiredAgents : DEFAULT_DEBATE_AGENTS,
-    scheduledAgents,
+    DEFAULT_DEBATE_AGENTS,
+    modelRequiredAgents,
+    scheduledModelAgents,
   );
-  const speakingOrder = scheduledAgents.length ? scheduledAgents : [...requiredAgents];
+  const speakingOrder = completeSpeakingOrder(scheduledAgents);
 
   return DebateRoundPlanSchema.parse({
     userDebateRole: parseEnum(DebateUserRoleSchema, record.userDebateRole) ?? "neutral",
@@ -108,14 +124,14 @@ export function coerceAdvocateSpeech(stance: "bull" | "bear", value: unknown): A
 
   return AdvocateSpeechSchema.parse({
     stance,
-    headline: nonEmptyString(record.headline, `${stanceLabel(stance)} case: test the evidence before accepting the thesis.`),
-    directResponseToUser: nonEmptyString(record.directResponseToUser, "Your claim deserves a direct comparison of the available evidence and its limitations."),
+    headline: advocateNarrative(record.headline, ADVOCATE_FALLBACKS.headline),
+    directResponseToUser: advocateNarrative(record.directResponseToUser, ADVOCATE_FALLBACKS.response),
     arguments: argumentsForStance.length ? argumentsForStance : [coerceAdvocateArgument(stance, {})],
-    strongestAttackOnOpponent: nonEmptyString(record.strongestAttackOnOpponent, "The opposing case must explain which evidence would invalidate its core assumption."),
-    admittedWeakness: nonEmptyString(record.admittedWeakness, "This case remains vulnerable to evidence that the central assumption does not hold."),
-    questionForOpponent: nonEmptyString(record.questionForOpponent, "Which specific evidence would most directly challenge your conclusion?"),
-    plainLanguageSummary: nonEmptyString(record.plainLanguageSummary, "This is one side of the debate, so its assumptions and counter-evidence still need scrutiny."),
-    suggestedUserFollowUp: nonEmptyString(record.suggestedUserFollowUp, "Ask for the strongest evidence against this case and what would change the conclusion."),
+    strongestAttackOnOpponent: advocateNarrative(record.strongestAttackOnOpponent, ADVOCATE_FALLBACKS.attack),
+    admittedWeakness: advocateNarrative(record.admittedWeakness, ADVOCATE_FALLBACKS.weakness),
+    questionForOpponent: advocateNarrative(record.questionForOpponent, ADVOCATE_FALLBACKS.question),
+    plainLanguageSummary: advocateNarrative(record.plainLanguageSummary, ADVOCATE_FALLBACKS.summary),
+    suggestedUserFollowUp: advocateNarrative(record.suggestedUserFollowUp, ADVOCATE_FALLBACKS.followUp),
   });
 }
 
@@ -124,8 +140,8 @@ export function coerceDebateJudgement(value: unknown): DebateJudgement {
   const responseQuality = normalizeRecord(record.responseQuality);
   const suggestedNextPrompts = stringArray(record.suggestedNextPrompts)
     .slice(0, 3)
-    .map((prompt) => neutralizeJudgeNarrative(prompt, JUDGE_FALLBACKS.prompt));
-  const complianceNote = neutralizeJudgeNarrative(
+    .map((prompt) => neutralizeTradeDirective(prompt, JUDGE_FALLBACKS.prompt));
+  const complianceNote = neutralizeTradeDirective(
     nonEmptyString(record.complianceNote, JUDGE_FALLBACKS.compliance),
     JUDGE_FALLBACKS.compliance,
   );
@@ -155,21 +171,25 @@ export function coerceDebateJudgement(value: unknown): DebateJudgement {
 
 function coerceAdvocateArgument(stance: "bull" | "bear", value: unknown): AdvocateSpeech["arguments"][number] {
   const record = normalizeRecord(value);
-  const claim = nonEmptyString(record.claim, `${stanceLabel(stance)} case requires a specific, testable claim.`);
+  const claim = advocateNarrative(record.claim, `${stanceLabel(stance)} case: ${ADVOCATE_FALLBACKS.claim}`);
   return {
     stance,
     claim,
-    plainLanguage: nonEmptyString(record.plainLanguage, claim),
+    plainLanguage: advocateNarrative(record.plainLanguage, ADVOCATE_FALLBACKS.plainLanguage),
     evidenceRefs: stringArray(record.evidenceRefs),
     counterEvidenceRefs: stringArray(record.counterEvidenceRefs),
-    assumption: nonEmptyString(record.assumption, "The evidence remains relevant to the user's current question."),
+    assumption: advocateNarrative(record.assumption, ADVOCATE_FALLBACKS.assumption),
     confidence: coerceConfidence(record.confidence),
-    vulnerability: nonEmptyString(record.vulnerability, "New evidence that weakens the assumption would reduce confidence in this argument."),
+    vulnerability: advocateNarrative(record.vulnerability, ADVOCATE_FALLBACKS.vulnerability),
   };
 }
 
 function judgeNarrative(value: unknown, fallback: string): string {
-  return neutralizeJudgeNarrative(nonEmptyString(value, fallback), fallback);
+  return neutralizeTradeDirective(nonEmptyString(value, fallback), fallback);
+}
+
+function advocateNarrative(value: unknown, fallback: string): string {
+  return neutralizeTradeDirective(nonEmptyString(value, fallback), fallback);
 }
 
 function uniqueDebateAgents(...agentLists: DebateAgent[][]): DebateAgent[] {
@@ -182,6 +202,13 @@ function debateAgentsFrom(value: unknown): DebateAgent[] {
     const parsed = DebateAgentSchema.safeParse(candidate);
     return parsed.success ? [parsed.data] : [];
   });
+}
+
+function completeSpeakingOrder(value: DebateSpeakingAgent[]): DebateSpeakingAgent[] {
+  const advocates = [...new Set(value.filter((agent) => agent === "bull" || agent === "bear"))];
+  if (!advocates.includes("bull")) advocates.push("bull");
+  if (!advocates.includes("bear")) advocates.push("bear");
+  return ["evidence", ...advocates, ...advocates, "judge"];
 }
 
 function parseEnum<T>(schema: z.ZodType<T>, value: unknown): T | undefined {

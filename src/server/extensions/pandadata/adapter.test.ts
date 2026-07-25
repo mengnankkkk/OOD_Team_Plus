@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFile = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFile }));
@@ -7,7 +7,13 @@ vi.mock("node:util", () => ({ promisify: () => execFile }));
 import { callPandaData } from "@/server/extensions/pandadata/adapter";
 
 describe("callPandaData", () => {
-  beforeEach(() => execFile.mockReset());
+  beforeEach(() => {
+    execFile.mockReset();
+    vi.stubEnv("PANDADATA_BASE_URL", "https://pandadata.example.test");
+    vi.stubEnv("JAVA_SERVICE_BASE_URL", "");
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it("rejects methods outside the documented contract catalog", async () => {
     await expect(callPandaData("drop_table" as never, {})).rejects.toMatchObject({

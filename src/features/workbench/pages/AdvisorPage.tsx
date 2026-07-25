@@ -6,7 +6,16 @@ import {
   listOnboardingMessages,
   sendAdvisorMessageStream,
 } from "@/services/advisorService";
-import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, ConversationOutputMode, OnboardingMessage } from "@/types/app/onboarding";
+import {
+  continueDebateMessage,
+  isDebatePackSettled,
+  loadDebatePack,
+  resumeDebateMessage,
+  startDebateMessage,
+  type DebatePack,
+  type DebateRole,
+} from "@/services/debateService";
+import type { AdvisorSessionSummary, AdvisorTrace as AdvisorTraceModel, ConversationOutputMode, DebateSuggestion, OnboardingMessage } from "@/types/app/onboarding";
 import { toast } from "sonner";
 import {
   Archive,
@@ -14,6 +23,7 @@ import {
   Check,
   ChevronDown,
   FileText,
+  Gavel,
   Image,
   MoreHorizontal,
   MessageSquarePlus,
@@ -26,8 +36,11 @@ import {
   Search,
   Send,
   Share2,
+  Swords,
   Sparkles,
   Table2,
+  TrendingDown,
+  TrendingUp,
   Trash2,
   Upload,
   X,
@@ -81,10 +94,26 @@ const ACTION_TOOLS = [
 ];
 
 type AdvisorMode = "normal" | "debate";
+type DebateSuggestionWithTarget = DebateSuggestion & { targetSymbol?: string | null };
+type AdvisorMessageMeta = {
+  profileUpdate?: Record<string, unknown>;
+  trace?: AdvisorTraceModel;
+  streaming?: boolean;
+  streamStatus?: string;
+  thinkingSteps?: Array<{ key: string; title: string; content: string }>;
+  debatePack?: DebatePack;
+  debateSuggestion?: DebateSuggestion;
+};
 
 const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
   { value: "normal", label: "普通模式" },
   { value: "debate", label: "辩论模式" },
+];
+
+const DEBATE_ROLES: Array<{ value: DebateRole; label: string; icon: typeof Swords }> = [
+  { value: "neutral", label: "中立", icon: Swords },
+  { value: "bull", label: "站多", icon: TrendingUp },
+  { value: "bear", label: "站空", icon: TrendingDown },
 ];
 
 const AdvisorPage = () => {
@@ -96,6 +125,9 @@ const AdvisorPage = () => {
   const [sending, setSending] = useState(false);
   const [outputMode] = useState<ConversationOutputMode>("SQL_ONLY");
   const [advisorMode, setAdvisorMode] = useState<AdvisorMode>("normal");
+  const [debateUserRole, setDebateUserRole] = useState<DebateRole>("neutral");
+  const [activeDebateSessionId, setActiveDebateSessionId] = useState<string | null>(null);
+  const [pendingDebateContext, setPendingDebateContext] = useState<{ motion: string; targetSymbol: string | null } | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -152,6 +184,69 @@ const AdvisorPage = () => {
       const rows = await listOnboardingMessages(user.id, sessionId);
       if (requestId !== historyRequestRef.current) return;
       setMessages(rows);
+      setLoadingHistory(false);
+
+      const restoredDebate = restoredDebateState(rows);
+      setActiveDebateSessionId(restoredDebate?.debateSessionId ?? null);
+      setPendingDebateContext(null);
+      if (!restoredDebate) {
+        setAdvisorMode("normal");
+        setDebateUserRole("neutral");
+        return;
+      }
+
+      setAdvisorMode("debate");
+      setDebateUserRole(restoredDebate.userRole);
+      const restoredPackPromise = loadDebatePack(restoredDebate.debateSessionId);
+      const restoredRows = await attachDebatePacks(rows, (debateSessionId) => (
+        debateSessionId === restoredDebate.debateSessionId
+          ? restoredPackPromise
+          : loadDebatePack(debateSessionId)
+      ));
+      if (requestId !== historyRequestRef.current) return;
+      setMessages(restoredRows);
+
+      const restoredPack = await restoredPackPromise.catch(() => null);
+      if (
+        !restoredPack
+        || restoredDebate.roundIndex === null
+        || isDebatePackSettled(restoredPack, restoredDebate.roundIndex)
+      ) return;
+
+      const streamMessageId = `debate-resume-${restoredDebate.debateSessionId}-${restoredDebate.roundIndex}`;
+      setMessages((current) => [...current, {
+        id: streamMessageId,
+        role: "advisor",
+        content: "多空双方正在继续本轮 Battle…",
+        metadata: {
+          streaming: true,
+          streamStatus: "正在恢复多空 Battle",
+          debateSessionId: restoredDebate.debateSessionId,
+          roundIndex: restoredDebate.roundIndex,
+        },
+        createdAt: new Date().toISOString(),
+        sessionId,
+      }]);
+      await resumeDebateMessage(
+        restoredDebate.debateSessionId,
+        restoredDebate.roundIndex,
+        {
+          onProgress: (status) => {
+            if (requestId !== historyRequestRef.current) return;
+            setMessages((current) => current.map((message) => (
+              message.id === streamMessageId
+                ? { ...message, metadata: { ...message.metadata, streamStatus: status } }
+                : message
+            )));
+          },
+        },
+      );
+      if (requestId !== historyRequestRef.current) return;
+      const completedRows = await listOnboardingMessages(user.id, sessionId);
+      if (requestId !== historyRequestRef.current) return;
+      const completedRestoredRows = await attachDebatePacks(completedRows);
+      if (requestId !== historyRequestRef.current) return;
+      setMessages(completedRestoredRows);
     } catch (err: any) {
       if (requestId !== historyRequestRef.current) return;
       toast.error(err?.message ?? "对话加载失败");
@@ -167,6 +262,10 @@ const AdvisorPage = () => {
     setSessionMenuId(null);
     setLoadingHistory(false);
     setActiveSessionId(null);
+    setActiveDebateSessionId(null);
+    setPendingDebateContext(null);
+    setAdvisorMode("normal");
+    setDebateUserRole("neutral");
   }, []);
 
   const handleNewSession = useCallback(() => {
@@ -207,6 +306,10 @@ const AdvisorPage = () => {
     setSessionMenuId(null);
     setMessages([]);
     setActiveSessionId(sessionId);
+    setActiveDebateSessionId(null);
+    setPendingDebateContext(null);
+    setAdvisorMode("normal");
+    setDebateUserRole("neutral");
     await loadSessionMessages(sessionId);
   };
 
@@ -261,8 +364,95 @@ const AdvisorPage = () => {
     }
   };
 
-  const send = async (text: string) => {
+  const sendDebate = async (text: string, role: DebateRole, forceNewDebate = false) => {
     if (!user || !text.trim() || sending) return;
+    setSending(true);
+    const currentSessionId = activeSessionId;
+    const optimistic: OnboardingMessage = {
+      id: `local-debate-${Date.now()}`,
+      role: "user",
+      content: text.trim(),
+      metadata: { debateRole: role },
+      createdAt: new Date().toISOString(),
+      sessionId: currentSessionId,
+    };
+    const streamMessageId = `debate-stream-${Date.now()}`;
+    setMessages((m) => [...m, optimistic, {
+      id: streamMessageId,
+      role: "advisor",
+      content: "",
+      metadata: { streaming: true, streamStatus: "正在开启多空 Battle" },
+      createdAt: new Date().toISOString(),
+      sessionId: currentSessionId,
+    }]);
+    setDraft("");
+    try {
+      const result = activeDebateSessionId && !forceNewDebate
+        ? await continueDebateMessage(activeDebateSessionId, text.trim(), role, { onProgress: updateDebateProgress(streamMessageId) })
+        : await startDebateMessage(
+            text.trim(),
+            currentSessionId,
+            role,
+            { onProgress: updateDebateProgress(streamMessageId) },
+            pendingDebateContext?.motion.trim() === text.trim() ? pendingDebateContext.targetSymbol : null,
+          );
+      const returnedSid = result.sessionId || currentSessionId;
+      const roundId = latestDebateRoundId(result.pack);
+      const messageMetadata = {
+        debateMotion: result.pack.motion,
+        publication: result.pack.publication,
+      };
+      const messagePack = roundId
+        ? selectDebateRoundPack(result.pack, roundId, messageMetadata)
+        : result.pack;
+      if (returnedSid && returnedSid !== currentSessionId) setActiveSessionId(returnedSid);
+      setAdvisorMode("debate");
+      setActiveDebateSessionId(result.debateSessionId);
+      setPendingDebateContext(null);
+      setMessages((m) => m.map((item) => item.id === optimistic.id || item.id === streamMessageId
+        ? { ...item, sessionId: returnedSid ?? currentSessionId }
+        : item));
+      setMessages((m) => m.map((item) => item.id === streamMessageId ? {
+        ...item,
+        id: `debate-${Date.now()}`,
+        role: "advisor",
+        content: result.reply,
+        metadata: {
+          debatePack: messagePack,
+          debateSessionId: result.debateSessionId,
+          roundId,
+          ...messageMetadata,
+        },
+        createdAt: new Date().toISOString(),
+        sessionId: returnedSid ?? currentSessionId,
+      } : item));
+      void refreshSessions();
+    } catch (err: any) {
+      toast.error(err?.message ?? "多空 Battle 暂时无响应");
+      setMessages((m) => m.filter((x) => x.id !== optimistic.id && x.id !== streamMessageId));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const updateDebateProgress = (messageId: string) => (status: string) => {
+    setMessages((items) => items.map((item) => item.id === messageId ? {
+      ...item,
+      content: item.content || "多空双方正在准备观点…",
+      metadata: { ...item.metadata, streaming: true, streamStatus: status },
+    } : item));
+  };
+
+  const send = async (text: string, options: { forceDebate?: boolean; debateRole?: DebateRole } = {}) => {
+    if (!user || !text.trim() || sending) return;
+    if (options.forceDebate || advisorMode === "debate") {
+      await sendDebate(
+        text,
+        resolveDebateSendRole(debateUserRole, options.debateRole),
+        options.forceDebate ?? false,
+      );
+      return;
+    }
     setSending(true);
     const currentSessionId = activeSessionId;
     const optimistic: OnboardingMessage = {
@@ -288,7 +478,7 @@ const AdvisorPage = () => {
       },
     ]);
     try {
-      const { reply, profileUpdate, trace, sessionId: returnedSid, recommendationId, artifact, clarificationId } = await sendAdvisorMessageStream(
+      const { reply, profileUpdate, trace, sessionId: returnedSid, recommendationId, artifact, clarificationId, debateSuggestion } = await sendAdvisorMessageStream(
         text.trim(),
         currentSessionId,
         outputMode,
@@ -339,6 +529,7 @@ const AdvisorPage = () => {
       if (recommendationId) meta.recommendationId = recommendationId;
       if (artifact) meta.artifact = artifact;
       if (clarificationId) meta.clarificationId = clarificationId;
+      if (debateSuggestion) meta.debateSuggestion = debateSuggestion;
       setMessages((m) => m.map((item) => item.id === streamMessageId ? {
           ...item,
           id: `advisor-${Date.now()}`,
@@ -370,6 +561,23 @@ const AdvisorPage = () => {
       : trimmed;
     send(composed);
     setAttachment(null);
+  };
+
+  const startBattleFromSuggestion = (suggestion: DebateSuggestion) => {
+    if (sending) return;
+    const setup = suggestedBattleDraft(suggestion as DebateSuggestionWithTarget, debateUserRole);
+    setAdvisorMode("debate");
+    setActiveDebateSessionId(null);
+    setPendingDebateContext({ motion: setup.motion, targetSymbol: setup.targetSymbol });
+    setDraft(setup.motion);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const prepareDebatePrompt = (prompt: string, role: DebateRole = debateUserRole) => {
+    setAdvisorMode("debate");
+    setDebateUserRole(role);
+    setDraft(prompt);
+    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const handleToolAction = (tool: (typeof ACTION_TOOLS)[number] | (typeof PLUS_UPLOAD_TOOLS)[number]) => {
@@ -547,7 +755,7 @@ const AdvisorPage = () => {
           ) : (
             <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
-                const meta = (msg.metadata ?? {}) as { profileUpdate?: Record<string, unknown>; trace?: AdvisorTraceModel; streaming?: boolean; streamStatus?: string; thinkingSteps?: Array<{ key: string; title: string; content: string }> };
+                const meta = (msg.metadata ?? {}) as AdvisorMessageMeta;
                 return (
                   <li key={msg.id} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role !== "user" && (
@@ -590,6 +798,12 @@ const AdvisorPage = () => {
                         ) : null}
                       </div>
                       {msg.role === "advisor" && meta.trace ? <AdvisorTrace trace={meta.trace} /> : null}
+                      {msg.role === "advisor" && meta.debateSuggestion?.recommended ? (
+                        <DebateSuggestionCard suggestion={meta.debateSuggestion} onStart={startBattleFromSuggestion} />
+                      ) : null}
+                      {msg.role === "advisor" && meta.debatePack ? (
+                        <DebateBattleCard pack={meta.debatePack} onPrompt={prepareDebatePrompt} />
+                      ) : null}
                     </div>
                   </li>
                 );
@@ -727,7 +941,10 @@ const AdvisorPage = () => {
                       {ADVISOR_MODES.map((mode) => (
                         <DropdownMenuItem
                           key={mode.value}
-                          onSelect={() => setAdvisorMode(mode.value)}
+                          onSelect={() => {
+                            setAdvisorMode(mode.value);
+                            if (mode.value === "normal") setPendingDebateContext(null);
+                          }}
                           className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm focus:bg-neutral-100"
                         >
                           <span>{mode.label}</span>
@@ -736,6 +953,28 @@ const AdvisorPage = () => {
                       ))}
                     </DropdownMenuContent>
                   </DropdownMenu>
+                  {advisorMode === "debate" ? (
+                    <div className="flex shrink-0 items-center rounded-full bg-neutral-100 p-0.5">
+                      {DEBATE_ROLES.map((role) => {
+                        const Icon = role.icon;
+                        const active = debateUserRole === role.value;
+                        return (
+                          <button
+                            key={role.value}
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              setDebateUserRole(role.value);
+                            }}
+                            className={cn("flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors", active ? "bg-white text-blue-700 shadow-sm" : "text-neutral-600 hover:text-neutral-950")}
+                          >
+                            <Icon className="size-3.5" />
+                            <span>{role.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   {ACTION_TOOLS.map((tool) => {
                     const Icon = tool.icon;
                     return (
@@ -784,5 +1023,255 @@ const AdvisorPage = () => {
     </div>
   );
 };
+
+const DebateSuggestionCard = ({ suggestion, onStart }: { suggestion: DebateSuggestion; onStart: (suggestion: DebateSuggestion) => void }) => (
+  <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-950">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 font-semibold">
+          <Swords className="size-4" />
+          <span>这题适合多空 Battle</span>
+        </div>
+        <p className="mt-1 leading-5 text-blue-900/80">{suggestion.reason}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onStart(suggestion)}
+        className="shrink-0 rounded-full bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+      >
+        开启辩论
+      </button>
+    </div>
+  </div>
+);
+
+const DebateBattleCard = ({ pack, onPrompt }: { pack: DebatePack; onPrompt: (prompt: string, role?: DebateRole) => void }) => {
+  const judgement = pack.judgements.at(-1);
+  const bull = latestDebateTurn(pack, "bull")?.publicSummary ?? judgement?.bullStrongestPoint ?? "多方还没有形成有效发言。";
+  const bear = latestDebateTurn(pack, "bear")?.publicSummary ?? judgement?.bearStrongestPoint ?? "空方还没有形成有效发言。";
+  const evidenceFacts = debateEvidenceFacts(pack);
+  const prompts = judgement?.suggestedNextPrompts ?? [];
+  return (
+    <div className="mt-3 overflow-hidden rounded-lg border border-border bg-card text-xs shadow-sm">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
+          <Swords className="size-4 text-blue-600" />
+          <span className="truncate">Battle · {pack.motion}</span>
+        </div>
+        <span className="rounded-full bg-muted px-2 py-1 text-[10px] text-muted-foreground">{pack.status}</span>
+      </div>
+      <div className="grid gap-2 p-3 md:grid-cols-3">
+        <DebateSide title="多方" icon={TrendingUp} tone="text-emerald-700" text={bull} />
+        <DebateSide title="空方" icon={TrendingDown} tone="text-rose-700" text={bear} />
+        <DebateSide title="裁判" icon={Gavel} tone="text-blue-700" text={judgement?.whyNotFinal ?? "裁判总结暂缺。"} />
+      </div>
+      {evidenceFacts.length ? (
+        <div className="border-t border-border px-3 py-3">
+          <div className="font-semibold text-foreground">共同证据</div>
+          <ul className="mt-1.5 space-y-1 text-muted-foreground">
+            {evidenceFacts.map((fact) => <li key={fact}>· {fact}</li>)}
+          </ul>
+        </div>
+      ) : null}
+      {judgement ? (
+        <div className="border-t border-border px-3 py-2 text-muted-foreground">
+          证据天平：{evidenceTiltLabel(judgement.evidenceTilt)} · 关键分歧：{judgement.keyDisagreement}
+        </div>
+      ) : null}
+      {pack.publication ? (
+        <div className="border-t border-border px-3 py-3">
+          <div className="flex items-center gap-2 font-semibold text-blue-700">
+            <Check className="size-4" />
+            <span>Chief Advisor 发布门 · {pack.publication.status}</span>
+          </div>
+          <p className="mt-1.5 leading-5 text-foreground">{pack.publication.answer}</p>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2 border-t border-border px-3 py-3">
+        <button type="button" onClick={() => onPrompt("我站多方，请帮我补强多方观点。", "bull")} className="rounded-full border border-emerald-200 px-3 py-1.5 text-emerald-700 hover:bg-emerald-50">我站多方</button>
+        <button type="button" onClick={() => onPrompt("我站空方，请帮我继续质询多方。", "bear")} className="rounded-full border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50">我站空方</button>
+        {prompts.map((prompt) => (
+          <button key={prompt} type="button" onClick={() => onPrompt(prompt, "neutral")} className="rounded-full border border-border px-3 py-1.5 text-foreground hover:bg-muted">{prompt}</button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const DebateSide = ({ title, icon: Icon, tone, text }: { title: string; icon: typeof Swords; tone: string; text: string }) => (
+  <div className="rounded-md border border-border bg-background/60 p-3">
+    <div className={cn("flex items-center gap-2 font-semibold", tone)}>
+      <Icon className="size-4" />
+      <span>{title}</span>
+    </div>
+    <p className="mt-2 leading-5 text-foreground">{text}</p>
+  </div>
+);
+
+function latestDebateTurn(pack: DebatePack, speaker: "bull" | "bear") {
+  return [...pack.turns].reverse().find((turn) => turn.speaker === speaker);
+}
+
+function evidenceTiltLabel(value: string): string {
+  if (value === "bull_slightly_stronger") return "多方略强";
+  if (value === "bear_slightly_stronger") return "空方略强";
+  if (value === "balanced") return "暂时打平";
+  return "证据不足";
+}
+
+export async function attachDebatePacks(
+  messages: OnboardingMessage[],
+  loader: (debateSessionId: string) => Promise<DebatePack> = loadDebatePack,
+): Promise<OnboardingMessage[]> {
+  const debateSessionIds = Array.from(new Set(messages.flatMap((message) => {
+    const value = message.metadata.debateSessionId;
+    return typeof value === "string" && value ? [value] : [];
+  })));
+  const loaded = await Promise.all(debateSessionIds.map(async (debateSessionId) => {
+    try {
+      return [debateSessionId, await loader(debateSessionId)] as const;
+    } catch {
+      return null;
+    }
+  }));
+  const packs = new Map(
+    loaded.filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+  );
+
+  return messages.map((message) => {
+    if (message.role !== "advisor") return message;
+    const debateSessionId = message.metadata.debateSessionId;
+    const pack = typeof debateSessionId === "string" ? packs.get(debateSessionId) : undefined;
+    const roundId = debateRoundIdFromMetadata(message.metadata);
+    return pack
+      ? {
+          ...message,
+          metadata: {
+            ...message.metadata,
+            debatePack: roundId ? selectDebateRoundPack(pack, roundId, message.metadata) : pack,
+          },
+        }
+      : message;
+  });
+}
+
+export function resolveDebateSendRole(
+  selectedRole: DebateRole,
+  explicitRole?: DebateRole,
+): DebateRole {
+  return explicitRole ?? selectedRole;
+}
+
+export function restoredDebateSessionId(messages: OnboardingMessage[]): string | null {
+  return restoredDebateState(messages)?.debateSessionId ?? null;
+}
+
+export function restoredDebateState(messages: OnboardingMessage[]): {
+  debateSessionId: string;
+  userRole: DebateRole;
+  roundIndex: number | null;
+} | null {
+  const reversed = [...messages].reverse();
+  const debateSessionId = reversed.map((message) => message.metadata?.debateSessionId)
+    .find((value): value is string => typeof value === "string" && Boolean(value));
+  if (!debateSessionId) return null;
+
+  const role = reversed
+    .filter((message) => message.metadata?.debateSessionId === debateSessionId)
+    .map((message) => message.metadata?.userRole ?? message.metadata?.debateRole)
+    .find(isDebateRole);
+  const roundIndex = reversed
+    .filter((message) => message.metadata?.debateSessionId === debateSessionId)
+    .map((message) => message.metadata?.roundIndex)
+    .find((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
+  return { debateSessionId, userRole: role ?? "neutral", roundIndex: roundIndex ?? null };
+}
+
+export function suggestedBattleDraft(
+  suggestion: DebateSuggestionWithTarget,
+  userRole: DebateRole,
+): { motion: string; targetSymbol: string | null; userRole: DebateRole } {
+  return {
+    motion: suggestion.motion,
+    targetSymbol: typeof suggestion.targetSymbol === "string" && suggestion.targetSymbol.trim()
+      ? suggestion.targetSymbol.trim()
+      : null,
+    userRole,
+  };
+}
+
+export function selectDebateRoundPack(
+  pack: DebatePack,
+  roundId: string,
+  metadata: Record<string, unknown> = {},
+): DebatePack {
+  const targetRound = pack.rounds.find((round) => round.id === roundId);
+  const motion = typeof metadata.debateMotion === "string" && metadata.debateMotion.trim()
+    ? metadata.debateMotion
+    : pack.motion;
+  const status = typeof targetRound?.status === "string" ? targetRound.status : pack.status;
+  return {
+    ...pack,
+    motion,
+    status,
+    rounds: pack.rounds.filter((round) => round.id === roundId),
+    turns: pack.turns.filter((turn) => turn.roundId === roundId),
+    judgements: pack.judgements.filter((judgement) => judgement.roundId === roundId),
+    events: pack.events.filter((event) => {
+      const payload = event.payload;
+      return isRecord(payload) && payload.roundId === roundId;
+    }),
+    evidence: [],
+    publication: (metadata.publication as DebatePack["publication"] | undefined) ?? null,
+  };
+}
+
+export function debateEvidenceFacts(pack: DebatePack | undefined): string[] {
+  if (!pack) return [];
+  const evidenceTurn = [...pack.turns].reverse().find((turn) => turn.speaker === "evidence");
+  const board = isRecord(evidenceTurn?.structuredPayload.board) ? evidenceTurn.structuredPayload.board : null;
+  const facts = board
+    ? ["profileFacts", "portfolioFacts", "marketFacts"].flatMap((key) => (
+        Array.isArray(board[key]) ? board[key] : []
+      ))
+    : [];
+  const normalized = facts.flatMap((fact) => {
+    if (typeof fact === "string" && fact.trim()) return [fact.trim()];
+    if (!isRecord(fact)) return [];
+    for (const key of ["statement", "summary", "title"] as const) {
+      const value = fact[key];
+      if (typeof value === "string" && value.trim()) return [value.trim()];
+    }
+    return [];
+  });
+  if (normalized.length) return normalized.slice(0, 3);
+  return pack.evidence.flatMap((item) => {
+    for (const key of ["summary", "statement", "title"] as const) {
+      const value = item[key];
+      if (typeof value === "string" && value.trim()) return [value.trim()];
+    }
+    return [];
+  }).slice(0, 3);
+}
+
+function latestDebateRoundId(pack: DebatePack): string | null {
+  const judgementRoundId = pack.judgements.at(-1)?.roundId;
+  if (judgementRoundId) return judgementRoundId;
+  const roundId = pack.rounds.at(-1)?.id;
+  return typeof roundId === "string" && roundId ? roundId : null;
+}
+
+function debateRoundIdFromMetadata(metadata: Record<string, unknown>): string | null {
+  const value = metadata.roundId ?? metadata.debateRoundId;
+  return typeof value === "string" && value ? value : null;
+}
+
+function isDebateRole(value: unknown): value is DebateRole {
+  return value === "neutral" || value === "bull" || value === "bear";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export default AdvisorPage;

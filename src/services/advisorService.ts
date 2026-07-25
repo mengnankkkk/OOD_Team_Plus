@@ -1,6 +1,7 @@
+/* eslint-disable max-lines */
 import { apiGet, apiPatch, apiPost, FrontendApiError } from "@/features/frontend-migration/api";
 import { createClientId } from "@/lib/client-id";
-import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOutputMode, OnboardingMessage, TraceSpan } from "@/types/app/onboarding";
+import type { AdvisorReply, AdvisorSessionSummary, AdvisorTrace, ConversationOutputMode, DebateSuggestion, OnboardingMessage, TraceSpan } from "@/types/app/onboarding";
 
 type ConversationRow = { id: string; title: string; created_at: string; updated_at: string; row_version: number; last_message_preview?: string };
 type MessageRow = { id: string; role: string; content: string; metadata_json?: string; created_at: string; session_id?: string; agent_run_id?: string | null };
@@ -11,6 +12,7 @@ type StreamStarted = {
   recommendationId?: string | null;
   artifact?: AdvisorReply["artifact"];
   clarificationId?: string | null;
+  debateSuggestion?: unknown;
 };
 type AdvisorStreamObserver = {
   onSessionId?: (sessionId: string) => void;
@@ -103,6 +105,7 @@ export async function sendAdvisorMessage(message: string, sessionId: string | nu
     recommendationId: typeof result.recommendationId === "string" ? result.recommendationId : null,
     artifact: result.artifact && typeof result.artifact === "object" ? result.artifact as AdvisorReply["artifact"] : null,
     clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
+    debateSuggestion: normalizeDebateSuggestion(result.debateSuggestion),
   };
 }
 
@@ -140,6 +143,23 @@ export async function sendAdvisorMessageStream(
     recommendationId: typeof metadata.recommendationId === "string" ? metadata.recommendationId : result.recommendationId ?? null,
     artifact: result.artifact && typeof result.artifact === "object" ? result.artifact : null,
     clarificationId: typeof result.clarificationId === "string" ? result.clarificationId : null,
+    debateSuggestion: normalizeDebateSuggestion(metadata.debateSuggestion ?? result.debateSuggestion),
+  };
+}
+
+export function normalizeDebateSuggestion(value: unknown): DebateSuggestion | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<DebateSuggestion>;
+  if (candidate.recommended !== true) return null;
+  const motion = typeof candidate.motion === "string" ? candidate.motion.trim() : "";
+  const reason = typeof candidate.reason === "string" ? candidate.reason.trim() : "";
+  if (!motion || !reason) return null;
+  const targetSymbol = typeof candidate.targetSymbol === "string" ? candidate.targetSymbol.trim() : candidate.targetSymbol;
+  return {
+    recommended: true,
+    motion,
+    reason,
+    ...(targetSymbol === null ? { targetSymbol: null } : targetSymbol ? { targetSymbol } : {}),
   };
 }
 

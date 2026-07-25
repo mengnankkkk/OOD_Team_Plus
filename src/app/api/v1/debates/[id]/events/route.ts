@@ -18,7 +18,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
 function streamDebateEvents(req: NextRequest, analysisId: string): Response {
   const encoder = new TextEncoder();
-  const initialLastEventId = req.headers.get("Last-Event-ID");
+  const initialLastEventId = req.headers.get("Last-Event-ID") ?? req.nextUrl.searchParams.get("after");
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let lastEventId = initialLastEventId;

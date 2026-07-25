@@ -21,8 +21,22 @@ beforeEach(() => {
     (id,user_id,title,status,created_at,updated_at,row_version)
     VALUES ('conversation_debate',?,'Battle','active','2026-07-25T00:00:00.000Z','2026-07-25T00:00:00.000Z',1)`).run(TEST_USER_ID);
   db.prepare(`INSERT INTO agent_runs
-    (id,user_id,type,status,session_id,created_at,completed_at)
-    VALUES ('analysis_debate',?,'debate_agent','completed','conversation_debate','2026-07-25T00:00:00.000Z','2026-07-25T00:00:01.000Z')`).run(TEST_USER_ID);
+    (id,user_id,type,status,session_id,result_json,created_at,completed_at)
+    VALUES ('analysis_debate',?,'debate_agent','completed','conversation_debate',?,'2026-07-25T00:00:00.000Z','2026-07-25T00:00:01.000Z')`).run(
+    TEST_USER_ID,
+    JSON.stringify({
+      publication: {
+        analysisId: "analysis_publication",
+        status: "DEGRADED",
+        direction: "HOLD",
+        action: "WATCH",
+        answer: "当前只适合观察。",
+        recommendationId: null,
+        missingInformation: [],
+        provider: "CHIEF_ADVISOR",
+      },
+    }),
+  );
   db.prepare(`INSERT INTO debate_sessions
     (id,user_id,conversation_id,root_agent_run_id,motion,user_debate_role,status,current_round_index,created_at,updated_at)
     VALUES ('debate_1',?,'conversation_debate','analysis_debate','是否加仓','neutral','active',1,'2026-07-25T00:00:00.000Z','2026-07-25T00:00:00.000Z')`).run(TEST_USER_ID);
@@ -67,6 +81,7 @@ describe("GET /api/v1/debates/:id/evidence-pack", () => {
     expect(body.data.turns[0].speaker).toBe("bull");
     expect(body.data.judgements[0].evidenceTilt).toBe("balanced");
     expect(body.data.judgements[0].responseQuality).toEqual({ bull: "direct", bear: "direct" });
+    expect(body.data.publication).toMatchObject({ status: "DEGRADED", action: "WATCH" });
     expect(body.data.disclaimer).toContain("不构成交易指令");
   });
 });

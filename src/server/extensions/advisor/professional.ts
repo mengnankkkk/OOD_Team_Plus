@@ -1,6 +1,10 @@
 import Decimal from "decimal.js";
 
-import { runChiefAdvisor, type ChiefAdvisorStreamEvent } from "@/mastra/agents/chief-advisor";
+import {
+  runChiefAdvisor,
+  type ChiefAdvisorDecisionIntegrity,
+  type ChiefAdvisorStreamEvent,
+} from "@/mastra/agents/chief-advisor";
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
@@ -9,8 +13,10 @@ import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 import {
   AgentFindingSchema,
   AdvisorDecisionSchema,
+  attachTrustedTargetSymbol,
   type AgentFinding,
   type AdvisorDecision,
+  type DebateSuggestion,
   type ProfessionalAgentRole,
 } from "./professional-contracts";
 import { loadAdvisorSemanticToolsContext, summarizeAdvisorSemanticToolsContext, type AdvisorSemanticToolsContext } from "./semantic-tools";
@@ -71,19 +77,22 @@ export type ProfessionalAdvisorResult = {
   recommendation: RecommendationDraft | null;
   answer: string;
   provider: "CHIEF_ADVISOR" | "DETERMINISTIC_FALLBACK";
+  debateSuggestion: DebateSuggestion;
 };
 
 export async function runProfessionalAdvisor(input: {
   userId: string;
   sessionId: string;
   analysisId: string;
+  rootAnalysisId?: string;
   content: string;
   targetSymbol?: string;
 }): Promise<ProfessionalAdvisorResult> {
   const db = getDatabase();
   const now = isoNow();
+  const rootAnalysisId = input.rootAnalysisId ?? input.analysisId;
   db.prepare(`UPDATE agent_runs SET session_id=?,root_run_id=?,agent_type='chief_advisor',objective=?,started_at=COALESCE(started_at,?)
-    WHERE id=? AND user_id=?`).run(input.sessionId, input.analysisId, input.content.slice(0, 500), now, input.analysisId, input.userId);
+    WHERE id=? AND user_id=?`).run(input.sessionId, rootAnalysisId, input.content.slice(0, 500), now, input.analysisId, input.userId);
   const profile = db.prepare("SELECT risk_level,investment_amount_decimal,horizon,max_drawdown_decimal,preferences_json FROM user_profiles WHERE user_id=?").get(input.userId) as Profile | undefined;
   const snapshot = db.prepare("SELECT * FROM portfolio_snapshots WHERE user_id=? ORDER BY as_of DESC,created_at DESC LIMIT 1").get(input.userId) as Record<string, unknown> | undefined;
   const holdings = snapshot ? db.prepare(`SELECT hs.instrument_id,i.symbol,i.name,i.asset_type,i.sector,
@@ -142,55 +151,62 @@ export async function runProfessionalAdvisor(input: {
     let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
     let modelFallback = true;
     let unresolvedConflict = false;
+    let decisionIntegrity: ChiefAdvisorDecisionIntegrity | undefined;
     const streamSnippets = new Map<string, string>();
     if (!process.env.DEEPSEEK_API_KEY?.trim()) {
-      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_REQUIRED", retryable: true } });
-      db.prepare("UPDATE agent_runs SET model_provider='missing',failure_code=?,failure_message=? WHERE id=?")
-        .run("MODEL_REQUIRED", "DeepSeek model service is required; deterministic fallback is disabled.", input.analysisId);
-      throw new Error("DeepSeek model service is required; deterministic fallback is disabled.");
-    }
-    try {
-      const model = await runChiefAdvisor({
-        prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
-        requiredAgents: requiredRoles,
-        onAgentStarted: (agent, label) => {
-          markModelAttemptStarted(db, roleRunIds.get(agent), label);
-          persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
-        },
-        onAgentCompleted: (finding) => {
-          persistModelFinding(db, roleRunIds.get(finding.agent), finding);
-          persistSseEvent({ analysisId: input.analysisId, type: "advisor.thinking", payload: {
-            phase: "specialist", agent: finding.agent, title: `${finding.agent} 已形成完整公开结论`, content: finding.conclusion,
-          } });
-          persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
-        },
-        onAgentFailed: (agent, error) => {
-          persistSseEvent({
-            analysisId: input.analysisId,
-            type: "agent.failed",
-            payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
-          });
-          persistModelAttemptFailure(db, roleRunIds.get(agent), findings.find((finding) => finding.agent === agent), error);
-        },
-        onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
-      });
-      findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
-      const preserved = preserveDirection(model.decision, deterministicDecision);
-      unresolvedConflict = preserved.conflict;
-      candidate = preserved.decision;
-      if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
-      provider = "CHIEF_ADVISOR";
-      modelFallback = false;
-    } catch (error) {
       persistSseEvent({
         analysisId: input.analysisId,
         type: "advisor.thinking",
-        payload: { phase: "model_failed", title: "真实模型服务未完成", content: "本次不会使用确定性/mock 结果补成成功，请修复模型输出或重试。" },
+        payload: {
+          phase: "model_unavailable",
+          title: "模型服务未配置，进入降级建议",
+          content: "已保留画像、数据、组合风险与合规节点结果；发布门不会把降级结论标记为 ACTIVE。",
+        },
       });
-      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true, message: safeMessage(error) } });
-      db.prepare("UPDATE agent_runs SET model_provider='deepseek',failure_code=?,failure_message=? WHERE id=?")
-        .run("MODEL_UNAVAILABLE", safeMessage(error), input.analysisId);
-      throw error;
+      persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_REQUIRED", retryable: true } });
+    } else {
+      try {
+        const model = await runChiefAdvisor({
+          prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
+          requiredAgents: requiredRoles,
+          fallbackFindings: findings,
+          onAgentStarted: (agent, label) => {
+            markModelAttemptStarted(db, roleRunIds.get(agent), label);
+            persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
+          },
+          onAgentCompleted: (finding) => {
+            persistModelFinding(db, roleRunIds.get(finding.agent), finding);
+            persistSseEvent({ analysisId: input.analysisId, type: "advisor.thinking", payload: {
+              phase: "specialist", agent: finding.agent, title: `${finding.agent} 已形成完整公开结论`, content: finding.conclusion,
+            } });
+            persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
+          },
+          onAgentFailed: (agent, error) => {
+            persistSseEvent({
+              analysisId: input.analysisId,
+              type: "agent.failed",
+              payload: { agent, code: "MODEL_OUTPUT_INVALID", retryable: true, message: safeMessage(error) },
+            });
+            persistModelAttemptFailure(db, roleRunIds.get(agent), findings.find((finding) => finding.agent === agent), error);
+          },
+          onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
+        });
+        findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
+        const preserved = preserveDirection(model.decision, deterministicDecision);
+        unresolvedConflict = preserved.conflict;
+        candidate = preserved.decision;
+        if (unresolvedConflict) persistConflict(db, input.analysisId, candidate, model.decision);
+        provider = "CHIEF_ADVISOR";
+        modelFallback = model.fallbackAgents.length > 0;
+        decisionIntegrity = model.decisionIntegrity;
+      } catch (error) {
+        persistSseEvent({
+          analysisId: input.analysisId,
+          type: "advisor.thinking",
+          payload: { phase: "model_failed", title: "模型服务暂时未完成，进入降级建议", content: "已保留服务端专业节点结果；发布门不会把降级结论标记为 ACTIVE。" },
+        });
+        persistSseEvent({ analysisId: input.analysisId, type: "agent.failed", payload: { code: "MODEL_UNAVAILABLE", retryable: true, message: safeMessage(error) } });
+      }
     }
 
     const status = enforcePublicationStatus({
@@ -201,15 +217,21 @@ export async function runProfessionalAdvisor(input: {
       modelFallback,
       unresolvedConflict,
       marketDataRequired: requiredRoles.includes("DATA_RESEARCH"),
+      decisionIntegrity,
     });
+    const publicationReasons = publicationSafetyReasons(candidate, decisionIntegrity);
     const recommendation = target
       ? buildRecommendationDraft({ status, candidate, target, holding: targetHolding, profile, research, snapshot })
       : null;
     persistFindings(db, input.userId, input.analysisId, findings, research.executions);
     db.prepare("UPDATE agent_runs SET model_provider=?,model_name=?,output_summary=?,compliance_json=? WHERE id=?")
       .run(provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic", process.env.DEEPSEEK_MODEL ?? null,
-        candidate.summary, json({ status, approved: status === "ACTIVE", simulationOnly: true }), input.analysisId);
-    persistSseEvent({ analysisId: input.analysisId, type: "compliance.completed", payload: { status, dataState: research.dataState, modelFallback, unresolvedConflict } });
+        candidate.summary, json({ status, approved: status === "ACTIVE", simulationOnly: true, reasons: publicationReasons }), input.analysisId);
+    persistSseEvent({
+      analysisId: input.analysisId,
+      type: "compliance.completed",
+      payload: { status, dataState: research.dataState, modelFallback, unresolvedConflict, reasons: publicationReasons },
+    });
     const missingInformation = [...new Set([...criticalMissing, ...findings.flatMap((finding) => finding.missingInformation)])];
     return {
       runId: input.analysisId,
@@ -219,8 +241,9 @@ export async function runProfessionalAdvisor(input: {
       findings,
       missingInformation,
       recommendation,
-      answer: formatAnswer(candidate, status, findings, research.dataState),
+      answer: formatAnswer(candidate, status, findings, research.dataState, publicationReasons),
       provider,
+      debateSuggestion: attachTrustedTargetSymbol(candidate.debateSuggestion, target?.symbol),
     };
   } finally {
     db.close();
@@ -229,7 +252,7 @@ export async function runProfessionalAdvisor(input: {
 
 async function runRole(
   db: ReturnType<typeof getDatabase>,
-  input: { userId: string; sessionId: string; analysisId: string },
+  input: { userId: string; sessionId: string; analysisId: string; rootAnalysisId?: string },
   role: ProfessionalAgentRole,
   operation: (childRunId: string) => AgentFinding | Promise<AgentFinding>,
   options: { emitEvents?: boolean } = {},
@@ -240,7 +263,7 @@ async function runRole(
   db.prepare(`INSERT INTO agent_runs
     (id,user_id,type,status,session_id,parent_run_id,root_run_id,agent_type,objective,started_at,created_at)
     VALUES (?,?,'professional_agent','running',?,?,?,?,?,?,?)`).run(
-    childRunId, input.userId, input.sessionId, input.analysisId, input.analysisId, role.toLowerCase(), role, startedAt, startedAt,
+    childRunId, input.userId, input.sessionId, input.analysisId, input.rootAnalysisId ?? input.analysisId, role.toLowerCase(), role, startedAt, startedAt,
   );
   if (emitEvents) persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent: role, childRunId } });
   try {
@@ -479,6 +502,11 @@ function deterministicDecisionFor(input: {
     portfolioImpact: input.targetHolding ? `当前标的权重为 ${new Decimal(input.targetHolding.weight_bps).div(100).toString()}%，执行后必须重算组合与压力测试` : "新增标的会改变现金、集中度和压力损失，执行前必须模拟",
     invalidationConditions: ["画像或持仓发生变化", "数据过期或数据源不可用", "投资逻辑或合规结论发生变化"],
     compliance: { approved: false, decision: "DOWNGRADED", reason: "确定性 fallback 只提出候选，发布状态由服务端计算" },
+    debateSuggestion: {
+      recommended: false,
+      motion: "当前问题暂不适合进入多空 Battle",
+      reason: "确定性候选没有足够的语义判断，先由顾问完成结构化分析。",
+    },
   });
 }
 
@@ -538,14 +566,30 @@ export function enforcePublicationStatus(input: {
   modelFallback: boolean;
   unresolvedConflict: boolean;
   marketDataRequired: boolean;
+  decisionIntegrity?: ChiefAdvisorDecisionIntegrity;
 }): PublicationStatus {
   if (input.criticalMissing.length || input.candidate.compliance.decision === "BLOCKED" || input.unresolvedConflict) return "BLOCKED";
   if (input.marketDataRequired && input.dataState !== "LIVE_FRESH") return "BLOCKED";
+  if (input.candidate.compliance.decision !== "APPROVED") return "DEGRADED";
   const hasCounterEvidence = input.findings.some((finding) => finding.counterEvidence.length > 0) && input.candidate.counterEvidence.length > 0;
   const hasPortfolioImpact = input.candidate.portfolioImpact.trim().length > 0;
   const dataRequirementSatisfied = input.dataState === "LIVE_FRESH" || (!input.marketDataRequired && input.dataState === "NOT_REQUIRED");
-  if (!input.modelFallback && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
+  const decisionComplete = input.decisionIntegrity?.complete ?? true;
+  if (!input.modelFallback && decisionComplete && dataRequirementSatisfied && hasCounterEvidence && hasPortfolioImpact && input.candidate.compliance.approved) return "ACTIVE";
   return "DEGRADED";
+}
+
+function publicationSafetyReasons(
+  candidate: AdvisorDecision,
+  decisionIntegrity: ChiefAdvisorDecisionIntegrity | undefined,
+): string[] {
+  const reasons = [...(decisionIntegrity?.reasons ?? [])];
+  if (candidate.compliance.decision !== "APPROVED") {
+    reasons.push(`Chief Advisor 合规决策为 ${candidate.compliance.decision}：${candidate.compliance.reason}`);
+  } else if (!candidate.compliance.approved) {
+    reasons.push(`Chief Advisor 未批准发布：${candidate.compliance.reason}`);
+  }
+  return [...new Set(reasons)];
 }
 
 function preserveDirection(model: AdvisorDecision, fallback: AdvisorDecision): { decision: AdvisorDecision; conflict: boolean } {
@@ -740,7 +784,13 @@ function chiefPrompt(
   ].join("\n");
 }
 
-function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, findings: AgentFinding[], dataState: DataState): string {
+function formatAnswer(
+  decision: AdvisorDecision,
+  status: PublicationStatus,
+  findings: AgentFinding[],
+  dataState: DataState,
+  publicationReasons: string[],
+): string {
   const research = findings.find((finding) => finding.agent === "DATA_RESEARCH");
   const risk = findings.find((finding) => finding.agent === "PORTFOLIO_RISK");
   const compliance = findings.find((finding) => finding.agent === "COMPLIANCE_REVIEWER");
@@ -752,6 +802,7 @@ function formatAnswer(decision: AdvisorDecision, status: PublicationStatus, find
     `风险复核：${risk?.conclusion ?? "尚未形成组合风险结论"}`,
     `反方证据：${decision.counterEvidence.join("；")}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
+    ...(publicationReasons.length ? [`发布门保留原因：${publicationReasons.join("；")}`] : []),
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
 }

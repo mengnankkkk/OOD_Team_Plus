@@ -1,8 +1,10 @@
+/* eslint-disable max-lines */
 import { createArtifact } from "@/server/extensions/artifacts/service";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
 import { createClarification } from "./clarification-service";
-import { runProfessionalAdvisor } from "./professional";
+import { runProfessionalAdvisor, type ProfessionalAdvisorResult } from "./professional";
+import type { DebateSuggestion } from "./professional-contracts";
 
 import type {
   AdvisorContext,
@@ -23,7 +25,32 @@ type PreparedNewRun = {
   outputMode: ConversationOutputMode;
 };
 
-export async function runConversationAgent(input: AdvisorRunInput) {
+type ConversationAgentResult = {
+  messageId: string;
+  assistantMessageId?: string;
+  analysis: { analysisId: string; type: "ADVISORY"; status: string; streamUrl: string };
+  outputMode: ConversationOutputMode;
+  answer: string | null;
+  recommendationId: string | null;
+  missingQuestions: string[];
+  dataQueryId: string | null;
+  debateSuggestion: DebateSuggestion | null;
+  clarificationId?: string;
+  artifact?: { artifactId: string; analysisId: string; status: string; previewUrl: string };
+};
+
+export type AdvisorPublicationResult = {
+  analysisId: string;
+  status: ProfessionalAdvisorResult["status"];
+  direction: ProfessionalAdvisorResult["direction"];
+  action: ProfessionalAdvisorResult["action"];
+  answer: string;
+  recommendationId: string | null;
+  missingInformation: string[];
+  provider: ProfessionalAdvisorResult["provider"];
+};
+
+export async function runConversationAgent(input: AdvisorRunInput): Promise<ConversationAgentResult> {
   const prepared = prepareRun(input);
   if (prepared.replayed) return prepared.result;
   return executePreparedConversationAgent(input, prepared);
@@ -48,8 +75,98 @@ export function startConversationAgent(input: AdvisorRunInput) {
       recommendationId: null,
       missingQuestions: [],
       dataQueryId: null,
+      debateSuggestion: null,
     },
   };
+}
+
+export async function runAdvisorPublicationGate(input: {
+  userId: string;
+  sessionId: string;
+  rootAnalysisId: string;
+  content: string;
+  targetSymbol?: string | null;
+}): Promise<AdvisorPublicationResult> {
+  const analysisId = createId("analysis");
+  const now = isoNow();
+  const db = getDatabase();
+  db.prepare(`INSERT INTO agent_runs
+    (id,user_id,type,status,session_id,parent_run_id,root_run_id,agent_type,objective,created_at,started_at)
+    VALUES (?,?,'advisor_publication','running',?,?,?,?,?,?,?)`).run(
+    analysisId,
+    input.userId,
+    input.sessionId,
+    input.rootAnalysisId,
+    input.rootAnalysisId,
+    "chief_advisor",
+    input.content.slice(0, 500),
+    now,
+    now,
+  );
+  db.close();
+  persistSseEvent({ analysisId: input.rootAnalysisId, type: "agent.delegated", payload: { agent: "CHIEF_ADVISOR", childRunId: analysisId, publicationGate: true } });
+
+  try {
+    const professional = await runProfessionalAdvisor({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      analysisId,
+      rootAnalysisId: input.rootAnalysisId,
+      content: input.content,
+      targetSymbol: input.targetSymbol ?? undefined,
+    });
+    const recommendationId = professional.recommendation ? createId("recommendation") : null;
+    const result: AdvisorPublicationResult = {
+      analysisId,
+      status: professional.status,
+      direction: professional.direction,
+      action: professional.action,
+      answer: professional.answer,
+      recommendationId,
+      missingInformation: professional.missingInformation,
+      provider: professional.provider,
+    };
+    const completedAt = isoNow();
+    const compliance = professional.recommendation?.compliance ?? {
+      status: professional.status,
+      reasons: professional.missingInformation,
+      disclaimer: defaultDisclaimer(),
+    };
+    const resultDb = getDatabase();
+    try {
+      const persist = resultDb.transaction(() => {
+        if (professional.recommendation && recommendationId) {
+          persistRecommendation(
+            resultDb,
+            input.userId,
+            input.sessionId,
+            analysisId,
+            recommendationId,
+            professional.recommendation,
+            professional.status,
+            completedAt,
+            input.rootAnalysisId,
+          );
+        }
+        resultDb.prepare("UPDATE agent_runs SET status=?,completed_at=?,output_summary=?,result_json=?,compliance_json=? WHERE id=? AND user_id=?")
+          .run(professional.status === "BLOCKED" ? "blocked" : "completed", completedAt, professional.answer, json(result), json(compliance), analysisId, input.userId);
+      });
+      persist();
+    } finally {
+      resultDb.close();
+    }
+    if (recommendationId) persistSseEvent({ analysisId: input.rootAnalysisId, type: "recommendation.created", payload: { recommendationId, childRunId: analysisId, publicationGate: true } });
+    persistSseEvent({ analysisId: input.rootAnalysisId, type: "agent.completed", payload: { agent: "CHIEF_ADVISOR", childRunId: analysisId, publicationGate: true, status: professional.status, recommendationId } });
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Chief Advisor publication failed";
+    const failedDb = getDatabase();
+    failedDb.prepare("UPDATE agent_runs SET status='failed',completed_at=?,failure_code='ADVISOR_PUBLICATION_FAILED',failure_message=? WHERE id=? AND user_id=?")
+      .run(isoNow(), message.slice(0, 500), analysisId, input.userId);
+    failedDb.close();
+    persistSseEvent({ analysisId: input.rootAnalysisId, type: "agent.failed", payload: { agent: "CHIEF_ADVISOR", childRunId: analysisId, publicationGate: true, code: "ADVISOR_PUBLICATION_FAILED" } });
+    throw error;
+  }
 }
 
 async function executePreparedConversationAgent(input: AdvisorRunInput, prepared: PreparedNewRun) {
@@ -72,11 +189,12 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
       userMessageId,
       outputMode,
       answer: waitingForUser ? formatClarificationAnswer(missingQuestions) : professional.answer,
-      status: waitingForUser ? "waiting_for_user" : professional.status === "BLOCKED" ? "blocked" : "completed",
+      status: waitingForUser ? "waiting_for_user" : "completed",
       provider: professional.provider,
       missingQuestions,
       recommendation: waitingForUser ? null : professional.recommendation,
       recommendationStatus: professional.status,
+      debateSuggestion: professional.debateSuggestion,
       artifactRows: context.holdings.map((holding) => ({
         symbol: holding.symbol,
         name: holding.name,
@@ -112,7 +230,7 @@ function prepareRun(input: AdvisorRunInput) {
       }
       const run = db.prepare("SELECT result_json FROM agent_runs WHERE id=? AND user_id=?").get(prior.agent_run_id, input.userId) as { result_json?: string } | undefined;
       db.close();
-      if (run?.result_json) return { replayed: true as const, result: parseJson(run.result_json, {}) };
+      if (run?.result_json) return { replayed: true as const, result: parseJson<ConversationAgentResult>(run.result_json, {} as ConversationAgentResult) };
       throw new Error("RUN_ALREADY_ACTIVE");
     }
   }
@@ -147,12 +265,12 @@ function loadAdvisorContext(userId: string): AdvisorContext {
   return { profile: profile ?? null, goals, snapshot: snapshot ?? null, holdings, instruments };
 }
 
-function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }) {
+function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
   persistAdvisorAnswerStream(input.analysisId, input.answer, input.recommendationStatus);
-  const result: Record<string, unknown> = {
+  const result: ConversationAgentResult = {
     messageId: input.userMessageId,
     assistantMessageId,
     analysis: { analysisId: input.analysisId, type: "ADVISORY", status: input.status.toUpperCase(), streamUrl: `/api/v1/analyses/${input.analysisId}/events` },
@@ -161,13 +279,14 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     recommendationId,
     missingQuestions: input.missingQuestions,
     dataQueryId: input.sourceQueryId ?? null,
+    debateSuggestion: input.debateSuggestion,
   };
   const compliance = input.recommendation?.compliance ?? { status: input.recommendationStatus, reasons: input.missingQuestions, disclaimer: defaultDisclaimer() };
   const db = getDatabase();
   const clarificationId = input.status === "waiting_for_user" ? createClarification(db, input) : null;
   if (clarificationId) result.clarificationId = clarificationId;
   const persist = db.transaction(() => {
-    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)").run(assistantMessageId, input.sessionId, "assistant", input.answer, now, input.analysisId, json({ provider: input.provider, recommendationId, outputMode: input.outputMode, compliance }));
+    db.prepare("INSERT INTO messages (id,session_id,role,content,created_at,agent_run_id,metadata_json) VALUES (?,?,?,?,?,?,?)").run(assistantMessageId, input.sessionId, "assistant", input.answer, now, input.analysisId, json({ provider: input.provider, recommendationId, outputMode: input.outputMode, compliance, debateSuggestion: input.debateSuggestion }));
     if (input.recommendation && recommendationId) persistRecommendation(db, input.userId, input.sessionId, input.analysisId, recommendationId, input.recommendation, input.recommendationStatus, now);
     db.prepare("UPDATE agent_runs SET status=?, completed_at=?, result_json=?, compliance_json=? WHERE id=? AND user_id=?").run(input.status, input.status === "waiting_for_user" ? null : now, json(result), json(compliance), input.analysisId, input.userId);
     db.prepare("UPDATE conversation_sessions SET updated_at=? WHERE id=? AND user_id=?").run(now, input.sessionId, input.userId);
@@ -196,8 +315,8 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
     resultDb.close();
   }
   if (recommendationId) persistSseEvent({ analysisId: input.analysisId, type: "recommendation.created", payload: { recommendationId, status: input.recommendation?.compliance.status } });
-  if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider } });
-  if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED" } });
+  if (input.status === "completed") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, debateSuggestion: input.debateSuggestion } });
+  if (input.status === "blocked") persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { assistantMessageId, recommendationId, provider: input.provider, status: "BLOCKED", debateSuggestion: input.debateSuggestion } });
   return result;
 }
 
@@ -233,7 +352,7 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
   }
 }
 
-function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: string, sessionId: string, analysisId: string, recommendationId: string, draft: RecommendationDraft, status: "ACTIVE" | "DEGRADED" | "BLOCKED", now: string) {
+function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: string, sessionId: string, analysisId: string, recommendationId: string, draft: RecommendationDraft, status: "ACTIVE" | "DEGRADED" | "BLOCKED", now: string, evidenceRootAnalysisId = analysisId) {
   db.prepare(`INSERT INTO recommendations
     (id,user_id,conversation_id,analysis_id,instrument_id,action,suitability,summary,confidence_decimal,position_range_json,first_position,add_conditions_json,reference_range_json,stop_loss,take_profit,horizon,expires_at,reasons_json,counter_evidence_json,risks_json,alternatives_json,invalidation,compliance_json,data_as_of,provenance_json,status,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,
@@ -247,7 +366,7 @@ function persistRecommendation(db: ReturnType<typeof getDatabase>, userId: strin
   );
   db.prepare(`UPDATE evidence_items SET recommendation_id=?
     WHERE user_id=? AND agent_run_id IN (SELECT id FROM agent_runs WHERE id=? OR root_run_id=?)`)
-    .run(recommendationId, userId, analysisId, analysisId);
+    .run(recommendationId, userId, evidenceRootAnalysisId, evidenceRootAnalysisId);
 }
 
 function clarificationQuestions(missing: string[]): string[] {

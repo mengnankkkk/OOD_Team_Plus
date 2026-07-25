@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -24,7 +25,7 @@ describe("debate agent coercion", () => {
     expect(DebateRoundPlanSchema.parse(plan)).toEqual(plan);
     expect(plan.userDebateRole).toBe("bear");
     expect(plan.userIntent).toBe("challenge_bull");
-    expect(plan.speakingOrder).toEqual(["evidence", "bear", "bull", "judge"]);
+    expect(plan.speakingOrder).toEqual(["evidence", "bear", "bull", "bear", "bull", "judge"]);
     expect(plan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge"]));
 
     const fallbackPlan = coerceDebateRoundPlan({});
@@ -34,26 +35,26 @@ describe("debate agent coercion", () => {
     expect(fallbackPlan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge"]));
   });
 
-  it("adds every valid scheduled agent to the required agents", () => {
+  it("keeps chief advisor as a publication agent outside the speaking order", () => {
     const plan = coerceDebateRoundPlan({
       requiredAgents: ["evidence", "bull", "bear", "judge"],
       speakingOrder: ["evidence", "chief_advisor", "bull", "bear", "judge"],
     });
 
     expect(DebateRoundPlanSchema.parse(plan)).toEqual(plan);
-    expect(plan.speakingOrder).toEqual(["evidence", "chief_advisor", "bull", "bear", "judge"]);
+    expect(plan.speakingOrder).toEqual(["evidence", "bull", "bear", "bull", "bear", "judge"]);
     expect(plan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge", "chief_advisor"]));
   });
 
-  it("preserves a narrower valid model plan", () => {
+  it("expands a narrow model plan into a balanced round", () => {
     const plan = coerceDebateRoundPlan({
       requiredAgents: ["bull"],
       speakingOrder: ["bull"],
     });
 
     expect(DebateRoundPlanSchema.parse(plan)).toEqual(plan);
-    expect(plan.requiredAgents).toEqual(["bull"]);
-    expect(plan.speakingOrder).toEqual(["bull"]);
+    expect(plan.requiredAgents).toEqual(expect.arrayContaining(["evidence", "bull", "bear", "judge"]));
+    expect(plan.speakingOrder).toEqual(["evidence", "bull", "bear", "bull", "bear", "judge"]);
   });
 
   it("coerces advocate speech into the requested stance and keeps it contract-valid", () => {
@@ -96,6 +97,42 @@ describe("debate agent coercion", () => {
 
     expect(fallbackSpeech.admittedWeakness).not.toHaveLength(0);
     expect(fallbackSpeech.arguments[0]?.counterEvidenceRefs).toEqual([]);
+  });
+
+  it("neutralizes advocate-authored trade directives while preserving attributed claims", () => {
+    const directives = coerceAdvocateSpeech("bull", {
+      headline: "立即买入 AAPL",
+      directResponseToUser: "Based on the evidence you should buy AAPL",
+      arguments: [{
+        claim: "You must add AAPL",
+        plainLanguage: "综合来看你应该加仓 AAPL",
+        assumption: "The evidence means you should hold AAPL",
+        vulnerability: "风险变化说明你必须卖出 AAPL",
+      }],
+      strongestAttackOnOpponent: "I recommend selling AAPL",
+      admittedWeakness: "应该减仓 AAPL",
+      questionForOpponent: "You should buy AAPL",
+      plainLanguageSummary: "综合证据看你应该买入 AAPL",
+      suggestedUserFollowUp: "马上买入 AAPL",
+    });
+    const attributed = coerceAdvocateSpeech("bear", {
+      directResponseToUser: "The bull says you should buy AAPL, but the evidence is incomplete.",
+      plainLanguageSummary: "多方认为你应该买入 AAPL，但证据不足。",
+    });
+
+    expect(directives.headline).toMatch(/evidence|research/i);
+    expect(directives.directResponseToUser).toMatch(/evidence|research/i);
+    expect(directives.arguments[0]?.claim).toMatch(/evidence|research/i);
+    expect(directives.arguments[0]?.plainLanguage).toMatch(/evidence|research/i);
+    expect(directives.arguments[0]?.assumption).toMatch(/evidence|research/i);
+    expect(directives.arguments[0]?.vulnerability).toMatch(/evidence|research/i);
+    expect(directives.strongestAttackOnOpponent).toMatch(/evidence|research/i);
+    expect(directives.admittedWeakness).toMatch(/evidence|research/i);
+    expect(directives.questionForOpponent).toMatch(/evidence|research/i);
+    expect(directives.plainLanguageSummary).toMatch(/evidence|research/i);
+    expect(directives.suggestedUserFollowUp).toMatch(/evidence|research/i);
+    expect(attributed.directResponseToUser).toBe("The bull says you should buy AAPL, but the evidence is incomplete.");
+    expect(attributed.plainLanguageSummary).toBe("多方认为你应该买入 AAPL，但证据不足。");
   });
 
   it("returns a bounded, non-final judgement with research and simulation guidance", () => {
@@ -225,6 +262,50 @@ describe("debate agent coercion", () => {
     expect(safe.bullStrongestPoint).toBe("The analyst said to buy AAPL after earnings.");
     expect(safe.bearStrongestPoint).toBe('"Buy AAPL" is a quoted user claim.');
     expect(safe.keyDisagreement).toBe("The recommendation section discusses holding-period risk.");
+  });
+
+  it("neutralizes embedded trade directives while preserving attributed recommendations", () => {
+    const directives = coerceDebateJudgement({
+      bullStrongestPoint: "综合来看，建议买入 AAPL。",
+      bearStrongestPoint: "Based on the evidence, YOU SHOULD BUY AAPL.",
+      keyDisagreement: "权衡风险后，应该减仓 510300。",
+      whyNotFinal: "After reviewing the downside, I ReCoMmEnD selling AAPL.",
+      suggestedNextPrompts: ["多方建议买入，但证据不足。Based on the evidence, you should BUY AAPL."],
+    });
+    const attributed = coerceDebateJudgement({
+      bullStrongestPoint: "多方建议买入，但证据不足。",
+      bearStrongestPoint: "The bull case says you should buy AAPL, but the evidence is incomplete.",
+      keyDisagreement: "多方认为你应该买入 AAPL，但空方认为证据不足。",
+    });
+    const mixed = coerceDebateJudgement({
+      keyDisagreement: "多方认为你应该买入 AAPL，但你必须卖出 AAPL。",
+      whyNotFinal: "The bull says you should buy AAPL, but you must sell AAPL.",
+    });
+
+    expect(directives.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.keyDisagreement).toMatch(/evidence|research/i);
+    expect(directives.whyNotFinal).toMatch(/evidence|research/i);
+    expect(directives.suggestedNextPrompts[0]).toBe("Ask for fresh research that could change the current conclusion.");
+    expect(attributed.bullStrongestPoint).toBe("多方建议买入，但证据不足。");
+    expect(attributed.bearStrongestPoint).toBe("The bull case says you should buy AAPL, but the evidence is incomplete.");
+    expect(attributed.keyDisagreement).toBe("多方认为你应该买入 AAPL，但空方认为证据不足。");
+    expect(mixed.keyDisagreement).toMatch(/evidence|research/i);
+    expect(mixed.whyNotFinal).toMatch(/evidence|research/i);
+  });
+
+  it("neutralizes unpunctuated directives embedded inside a sentence", () => {
+    const directives = coerceDebateJudgement({
+      bullStrongestPoint: "综合证据看你应该买入 AAPL",
+      bearStrongestPoint: "The evidence means you should buy AAPL",
+      keyDisagreement: "风险变化说明你必须减仓 510300",
+      whyNotFinal: "After reviewing the evidence I recommend selling AAPL",
+    });
+
+    expect(directives.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(directives.keyDisagreement).toMatch(/evidence|research/i);
+    expect(directives.whyNotFinal).toMatch(/evidence|research/i);
   });
 
   it("retries one structured attempt before returning the successful result", async () => {

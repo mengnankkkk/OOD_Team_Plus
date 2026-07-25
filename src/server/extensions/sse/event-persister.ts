@@ -51,13 +51,14 @@ export interface SseEvent {
 export function persistSseEvent(event: Omit<SseEvent, "id" | "createdAt">): void {
   const db = getDatabase();
   const now = isoNow();
-  const run = db.prepare("SELECT session_id FROM agent_runs WHERE id=?").get(event.analysisId) as { session_id?: string } | undefined;
+  const run = db.prepare("SELECT session_id,root_run_id FROM agent_runs WHERE id=?").get(event.analysisId) as { session_id?: string; root_run_id?: string | null } | undefined;
+  const rootRunId = run?.root_run_id || event.analysisId;
   const transaction = db.transaction(() => {
-    const sequence = db.prepare("SELECT COALESCE(MAX(sequence_no),0)+1 AS next FROM agent_run_events WHERE root_run_id=?").get(event.analysisId) as { next: number };
+    const sequence = db.prepare("SELECT COALESCE(MAX(sequence_no),0)+1 AS next FROM agent_run_events WHERE root_run_id=?").get(rootRunId) as { next: number };
     db.prepare(`INSERT INTO agent_run_events
       (id,agent_run_id,root_run_id,session_id,sequence_no,event_type,payload_json,occurred_at,created_at)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(
-      createId("event"), event.analysisId, event.analysisId, run?.session_id ?? null, sequence.next, event.type, json(event.payload), now, now,
+      createId("event"), event.analysisId, rootRunId, run?.session_id ?? null, sequence.next, event.type, json(event.payload), now, now,
     );
   });
   transaction();

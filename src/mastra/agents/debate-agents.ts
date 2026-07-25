@@ -34,6 +34,7 @@ const ORCHESTRATOR_INSTRUCTIONS = [
   "Use the LLM's own judgment to infer the user's debate role and intent from the full prompt. Do not use keyword, regex, or fixed routing rules.",
   "Choose the single most valuable round focus, the agents needed, and a useful speaking order based on the evidence board and the user's question.",
   "Always include evidence, bull, bear, and judge so the user receives a balanced, teachable round.",
+  "Include chief_advisor in requiredAgents only when the user explicitly asks for a final action plan, simulated recommendation, recommendation card, or publication-gate conclusion. Never place chief_advisor in speakingOrder.",
   "Treat the prompt's evidence board as shared context. Do not invent facts, current prices, holdings, or research results.",
   "Return one JSON object only with userDebateRole, userIntent, motion, roundFocus, requiredAgents, speakingOrder, needsFreshData, and reasonForFocus.",
 ];
