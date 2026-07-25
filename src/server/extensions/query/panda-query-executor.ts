@@ -29,7 +29,10 @@ export async function executePandaSources(options: {
   const executions: PandaSourceExecution[] = [];
   for (const source of options.sources) {
     const resolvedSource = resolveSymbols(source, options.localRows);
-    if (!Array.isArray(resolvedSource.parameters.symbol) || resolvedSource.parameters.symbol.length === 0) {
+    const symbol = resolvedSource.parameters.symbol;
+    const hasSymbol = (typeof symbol === "string" && symbol.trim().length > 0)
+      || (Array.isArray(symbol) && symbol.length > 0);
+    if (!hasSymbol) {
       throw new Error(`Market QueryPlan requires an explicit symbol or a local symbol join: ${source.dataset}`);
     }
     executions.push(await executeOne(resolvedSource, options.agentRunId, options.db, call));
@@ -80,6 +83,7 @@ export function combineQueryResults(
 }
 
 function resolveSymbols(source: PandaQuerySource, rows: Record<string, unknown>[]): PandaQuerySource {
+  if (typeof source.parameters.symbol === "string" && source.parameters.symbol.trim()) return source;
   if (Array.isArray(source.parameters.symbol) && source.parameters.symbol.length) return source;
   const symbols = [...new Set(rows.map(rowSymbol).filter((value): value is string => Boolean(value)))].slice(0, 50);
   return { ...source, parameters: { ...source.parameters, symbol: symbols } };

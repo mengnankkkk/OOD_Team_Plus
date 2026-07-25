@@ -154,11 +154,14 @@ export async function runProfessionalAdvisor(input: {
         prompt: chiefPrompt(input.content, profile, holdings, target, research, findings, requiredRoles, semanticContext),
         requiredAgents: requiredRoles,
         onAgentStarted: (agent, label) => {
-          markModelAttemptStarted(db, roleRunIds.get(agent));
+          markModelAttemptStarted(db, roleRunIds.get(agent), label);
           persistSseEvent({ analysisId: input.analysisId, type: "agent.delegated", payload: { agent, label, childRunId: roleRunIds.get(agent), model: true } });
         },
         onAgentCompleted: (finding) => {
           persistModelFinding(db, roleRunIds.get(finding.agent), finding);
+          persistSseEvent({ analysisId: input.analysisId, type: "advisor.thinking", payload: {
+            phase: "specialist", agent: finding.agent, title: `${finding.agent} 已形成完整公开结论`, content: finding.conclusion,
+          } });
           persistSseEvent({ analysisId: input.analysisId, type: "agent.completed", payload: { agent: finding.agent, childRunId: roleRunIds.get(finding.agent), conclusion: finding.conclusion, model: true } });
         },
         onAgentFailed: (agent, error) => {
@@ -254,10 +257,10 @@ async function runRole(
   }
 }
 
-function markModelAttemptStarted(db: ReturnType<typeof getDatabase>, childRunId: string | undefined): void {
+function markModelAttemptStarted(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, inputSummary: string): void {
   if (!childRunId) return;
-  db.prepare("UPDATE agent_runs SET status='running',model_provider='deepseek',model_name=?,failure_code=NULL,failure_message=NULL WHERE id=?")
-    .run(process.env.DEEPSEEK_MODEL ?? null, childRunId);
+  db.prepare("UPDATE agent_runs SET status='running',model_provider='deepseek',model_name=?,objective=?,failure_code=NULL,failure_message=NULL WHERE id=?")
+    .run(process.env.DEEPSEEK_MODEL ?? null, inputSummary, childRunId);
 }
 
 function persistModelFinding(db: ReturnType<typeof getDatabase>, childRunId: string | undefined, finding: AgentFinding): void {

@@ -230,11 +230,11 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
   const pack = await apiGet<{
     analysis: { createdAt: string; completedAt?: string | null };
     agentTrace: Array<{ id: string; parentRunId?: string | null; agent: string; status: string; purpose?: string | null; summary?: string | null; modelProvider?: string | null; modelName?: string | null; startedAt: string; completedAt?: string | null; failure?: { message?: string } | null }>;
-    toolCalls: Array<{ id: string; toolName: string; status: string; outputSummary?: string | null; startedAt?: string | null; completedAt?: string | null; error?: { message?: string } | null }>;
+    toolCalls: Array<{ id: string; toolName: string; status: string; input?: unknown; result?: unknown; outputSummary?: string | null; startedAt?: string | null; completedAt?: string | null; error?: { message?: string } | null }>;
     skillRuns: Array<{ id: string; method: string; status: string; quality: string; outputSummary?: string | null; dataAsOf?: string | null }>;
     missingEvidence: string[];
     disclaimer: string;
-  }>(`/api/v1/analyses/${analysisId}/evidence-pack`);
+  }>(`/api/v1/analyses/${analysisId}/evidence-pack?includeToolPayload=true`);
   const traceEnd = latestTimestamp([
     pack.analysis.completedAt,
     ...pack.agentTrace.map((item) => item.completedAt),
@@ -260,7 +260,7 @@ async function loadAdvisorTrace(analysisId: string): Promise<AdvisorTrace> {
       label: item.toolName,
       kind: "tool",
       tool: item.toolName,
-      input: null,
+      input: item.input ?? null,
       output: item.outputSummary ?? item.error?.message ?? null,
       startedAt: item.startedAt ?? pack.analysis.createdAt,
       durationMs: elapsed(item.startedAt, item.completedAt),

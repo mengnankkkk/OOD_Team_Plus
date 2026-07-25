@@ -91,30 +91,51 @@ export async function runChiefAdvisor(input: {
   const specialists = createSpecialistAgents();
   const failures: Array<{ role: AgentFinding["agent"]; error: unknown }> = [];
 
-  for (const role of [...new Set(input.requiredAgents)]) {
+  const requiredAgents = [...new Set(input.requiredAgents)];
+  const runSpecialist = async (role: AgentFinding["agent"], priorFindings: AgentFinding[]): Promise<AgentFinding> => {
     const specialistAgent = specialists[role];
-    const prompt = specialistPrompt(input.prompt, role, findings);
+    const prompt = specialistPrompt(input.prompt, role, priorFindings);
     delegated.add(role);
-    input.onAgentStarted?.(role, prompt.slice(0, 160));
-    try {
-      let finding: AgentFinding | undefined;
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 2 && !finding; attempt += 1) {
-        try {
-          const retryPrompt = attempt === 0
-            ? prompt
-            : `${prompt}\n\n这是一次真实模型重试。请忽略此前任何非 JSON 输出，只返回一个完整、可解析的 JSON 对象，不要 Markdown，不要解释文字。`;
-          const modelObject = await streamModelObject(specialistAgent, retryPrompt, ChiefAgentFindingSchema, (partial) => {
-            input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) });
-          });
-          finding = coerceModelFinding(role, modelObject);
-        } catch (error) {
-          lastError = error;
-        }
+    input.onAgentStarted?.(role, prompt);
+    let finding: AgentFinding | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2 && !finding; attempt += 1) {
+      try {
+        const retryPrompt = attempt === 0
+          ? prompt
+          : `${prompt}\n\n这是一次真实模型重试。请忽略此前任何非 JSON 输出，只返回一个完整、可解析的 JSON 对象，不要 Markdown，不要解释文字。`;
+        const modelObject = await streamModelObject(specialistAgent, retryPrompt, ChiefAgentFindingSchema, (partial) => {
+          input.onStreamEvent?.({ type: "agent.object", agent: role, partial: normalizeChiefFinding(partial) });
+        });
+        finding = coerceModelFinding(role, modelObject);
+      } catch (error) {
+        lastError = error;
       }
-      if (!finding) throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
-      findings.push(finding);
-      input.onAgentCompleted?.(finding);
+    }
+    if (!finding) throw lastError ?? new Error(`MODEL_OUTPUT_EMPTY:${role}`);
+    input.onAgentCompleted?.(finding);
+    return finding;
+  };
+
+  const independentRoles = requiredAgents.filter((role) => (
+    role === "PROFILE_CONTEXT" || role === "DATA_RESEARCH" || role === "PORTFOLIO_RISK"
+  ));
+  const dependentRoles = requiredAgents.filter((role) => !independentRoles.includes(role));
+  const independentResults = await Promise.all(independentRoles.map(async (role) => {
+    try {
+      return { role, finding: await runSpecialist(role, []) };
+    } catch (error) {
+      input.onAgentFailed?.(role, error);
+      failures.push({ role, error });
+      return null;
+    }
+  }));
+  for (const result of independentResults) {
+    if (result) findings.push(result.finding);
+  }
+  for (const role of dependentRoles) {
+    try {
+      findings.push(await runSpecialist(role, findings));
     } catch (error) {
       input.onAgentFailed?.(role, error);
       failures.push({ role, error });
