@@ -60,12 +60,13 @@ export default function DebateCharacterStage({
 }) {
   const activityText = status?.trim() || "输入问题，主持顾问会安排本轮 Battle";
   const isBlocked = activityText.includes("受阻");
-  const bubbles = [
-    userMessage ? { role: "user" as const, message: userMessage, muted: false } : null,
-    bullMessage ? { role: "bull" as const, message: bullMessage, muted: false } : null,
-    bearMessage ? { role: "bear" as const, message: bearMessage, muted: false } : null,
-    judgeMessage ? { role: "judge" as const, message: judgeMessage, muted: false } : null,
-  ].filter((bubble): bubble is NonNullable<typeof bubble> => Boolean(bubble));
+  const bubbles = {
+    user: userMessage ? { role: "user" as const, message: userMessage } : null,
+    bull: bullMessage ? { role: "bull" as const, message: bullMessage } : null,
+    bear: bearMessage ? { role: "bear" as const, message: bearMessage } : null,
+    moderator: judgeMessage ? { role: "judge" as const, message: judgeMessage } : null,
+  };
+  const hasBubbles = Object.values(bubbles).some(Boolean);
 
   return (
     <div className="debate-room debate-character-stage">
@@ -87,45 +88,48 @@ export default function DebateCharacterStage({
             <span className="debate-table-label">共同证据 · 多空交锋 · 裁判总结</span>
           </div>
 
-          <div className="debate-character-layer" aria-label="圆桌角色">
+          <div className="debate-seats" aria-label="圆桌角色">
             {CHARACTERS.map((character) => {
               const isActive = activeRole === character.role;
+              const bubble = bubbles[character.role];
               return (
                 <div
                   key={character.role}
                   className={cn(
-                    "debate-character",
-                    `debate-character-${character.role}`,
+                    "debate-seat",
+                    `debate-seat-${character.role}`,
                     isActive && "debate-character-active",
                   )}
                   aria-label={`${character.label}，${character.detail}${isActive ? `，${activePhase === "started" ? "正在思考" : "正在发言"}` : ""}`}
                 >
-                  <span className="debate-character-body">
-                    <span className="debate-character-portrait">
-                      <NextImage
-                        src={character.image}
-                        alt=""
-                        fill
-                        sizes="(max-width: 767px) 68px, 92px"
-                        className="debate-character-image"
-                      />
+                  <div className="debate-seat-bubble-slot">
+                    {bubble ? <DebateBubble role={bubble.role} message={bubble.message} /> : null}
+                  </div>
+                  <div className="debate-character">
+                    <span className="debate-character-body">
+                      <span className="debate-character-portrait">
+                        <NextImage
+                          src={character.image}
+                          alt=""
+                          fill
+                          sizes="(max-width: 767px) 68px, 92px"
+                          className="debate-character-image"
+                        />
+                      </span>
+                      <span className="debate-character-caption">
+                        <strong>{character.label}</strong>
+                        <small>{isActive ? characterActivityLabel(activePhase) : character.detail}</small>
+                      </span>
                     </span>
-                    <span className="debate-character-caption">
-                      <strong>{character.label}</strong>
-                      <small>{isActive ? characterActivityLabel(activePhase) : character.detail}</small>
-                    </span>
-                  </span>
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          {bubbles.map((bubble) => (
-            <DebateBubble key={bubble.role} role={bubble.role} message={bubble.message} muted={bubble.muted} />
-          ))}
         </div>
 
-        {!bubbles.length ? (
+        {!hasBubbles ? (
           <p className={cn("debate-stage-empty", isBlocked && "debate-stage-empty-blocked")}>
             {isBlocked
               ? "本轮尚未生成多空观点，请检查模型服务配置后重试。"
