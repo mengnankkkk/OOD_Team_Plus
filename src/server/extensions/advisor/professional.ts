@@ -148,8 +148,12 @@ export async function runProfessionalAdvisor(input: {
   const instruments = db.prepare("SELECT id,symbol,name,asset_type,market FROM instruments WHERE tradable=1 ORDER BY symbol").all() as Instrument[];
   const intent = inferIntent(input.content);
   const requestedDirection = directionForIntent(intent);
-  const targetSymbol = input.targetSymbol ?? extractSymbol(input.content);
-  const target = targetSymbol ? findInstrumentBySymbol(instruments, targetSymbol) : null;
+  const target = resolveTargetInstrument({
+    content: input.content,
+    targetSymbol: input.targetSymbol,
+    instruments,
+    holdings,
+  });
   const targetHolding = target ? holdings.find((holding) => holding.instrument_id === target.id) ?? null : null;
   const dailyPortfolio = input.workflow === "DAILY_PORTFOLIO";
   const decisionProfile = dailyPortfolio ? profileWithDailyAssumptions(profile) : profile;
@@ -1779,9 +1783,64 @@ function extractSymbol(content: string): string | null {
   return content.toUpperCase().match(/\b(?:\d{6}(?:\.(?:SH|SZ|OF))?|\d{5}\.HK|[A-Z]{1,10}(?:\.(?:US|HK))?)\b/u)?.[0] ?? null;
 }
 
+export function resolveTargetInstrument(input: {
+  content: string;
+  targetSymbol?: string | null;
+  instruments: Instrument[];
+  holdings?: Holding[];
+}): Instrument | null {
+  const heldInstruments = (input.holdings ?? []).map((holding) =>
+    input.instruments.find((instrument) => instrument.id === holding.instrument_id) ?? {
+      id: holding.instrument_id,
+      symbol: holding.symbol,
+      name: holding.name,
+      asset_type: holding.asset_type,
+      market: marketForHolding(holding),
+    }
+  );
+  const symbol = input.targetSymbol?.trim() || extractSymbol(input.content);
+  if (symbol) {
+    const symbolMatch = findInstrumentBySymbol([...heldInstruments, ...input.instruments], symbol);
+    if (symbolMatch) return symbolMatch;
+  }
+  const holdingNameMatch = findInstrumentByName(input.content, heldInstruments);
+  if (holdingNameMatch !== undefined) return holdingNameMatch;
+  return findInstrumentByName(input.content, input.instruments) ?? null;
+}
+
 function findInstrumentBySymbol(instruments: Instrument[], symbol: string): Instrument | null {
   const normalized = normalizeSymbol(symbol);
   return instruments.find((instrument) => normalizeSymbol(instrument.symbol) === normalized) ?? null;
+}
+
+function findInstrumentByName(content: string, instruments: Instrument[]): Instrument | null | undefined {
+  const normalizedContent = normalizeInstrumentName(content);
+  const matches = instruments.flatMap((instrument) =>
+    instrumentNameAliases(instrument.name)
+      .filter((alias) => isDistinctiveInstrumentName(alias) && normalizedContent.includes(alias))
+      .map((alias) => ({ instrument, aliasLength: alias.length }))
+  );
+  if (!matches.length) return undefined;
+  const longestLength = Math.max(...matches.map((match) => match.aliasLength));
+  const longestMatches = matches.filter((match) => match.aliasLength === longestLength);
+  const instrumentIds = new Set(longestMatches.map((match) => match.instrument.id));
+  return instrumentIds.size === 1 ? longestMatches[0].instrument : null;
+}
+
+function instrumentNameAliases(name: string): string[] {
+  const normalized = normalizeInstrumentName(name);
+  const withoutListingSuffix = normalized.replace(/-(?:U|W|WD)$/u, "");
+  return [...new Set([normalized, withoutListingSuffix].filter(Boolean))];
+}
+
+function normalizeInstrumentName(value: string): string {
+  return value.normalize("NFKC").toUpperCase().replaceAll(/\s+/gu, "");
+}
+
+function isDistinctiveInstrumentName(name: string): boolean {
+  const chineseCharacters = name.match(/\p{Script=Han}/gu)?.length ?? 0;
+  if (chineseCharacters >= 3) return true;
+  return name.replaceAll(/[^\p{Letter}\p{Number}]/gu, "").length >= 4;
 }
 
 function normalizeSymbol(symbol: string): string {

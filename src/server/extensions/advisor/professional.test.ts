@@ -8,6 +8,7 @@ import {
   deterministicAdvisorSummary,
   enforcePublicationStatus,
   marketForHolding,
+  resolveTargetInstrument,
 } from "./professional";
 import type { AdvisorDecision } from "./professional";
 
@@ -268,5 +269,33 @@ describe("buildPortfolioRecommendationDraft", () => {
     expect(criticalMissingInformation("FACTOR_RESEARCH", undefined, null, null, false)).toEqual(["instrument"]);
     expect(criticalMissingInformation("STRATEGY_BACKTEST", undefined, null, null, false)).toEqual(["instrument"]);
     expect(criticalMissingInformation("FACTOR_RESEARCH", undefined, { id: "aapl", symbol: "AAPL", name: "Apple", asset_type: "stock", market: "US" }, null, false)).toEqual([]);
+  });
+});
+
+describe("resolveTargetInstrument", () => {
+  const instruments = [
+    { id: "cambricon", symbol: "688256.SH", name: "寒武纪", asset_type: "stock", market: "CN" },
+    { id: "apple", symbol: "AAPL.US", name: "Apple", asset_type: "stock", market: "US" },
+  ];
+
+  it("resolves a named holding from natural-language trading intent", () => {
+    expect(resolveTargetInstrument({
+      content: "我想加仓抄底寒武纪",
+      instruments,
+      holdings: [{
+        instrument_id: "cambricon",
+        symbol: "688256.SH",
+        name: "寒武纪",
+        asset_type: "stock",
+        market: "CN",
+        sector: "Technology",
+        quantity_decimal: "100",
+        cost_decimal: "500",
+        price_decimal: "600",
+        market_value_decimal: "60000",
+        unrealized_pnl_decimal: "10000",
+        weight_bps: 6000,
+      }],
+    })).toEqual(instruments[0]);
   });
 });

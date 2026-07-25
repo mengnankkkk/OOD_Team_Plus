@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_USER_ID, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { getDatabase, isoNow } from "@/server/http/context";
 
-const { runChiefAdvisorConversationMock, runChiefAdvisorMock } = vi.hoisted(() => ({
+const { executePandaSourcesMock, runChiefAdvisorConversationMock, runChiefAdvisorMock } = vi.hoisted(() => ({
+  executePandaSourcesMock: vi.fn(),
   runChiefAdvisorConversationMock: vi.fn(),
   runChiefAdvisorMock: vi.fn(),
 }));
@@ -17,6 +18,11 @@ vi.mock("@/mastra/agents/chief-advisor", () => ({
   runChiefAdvisorConversation: runChiefAdvisorConversationMock,
   runChiefAdvisor: runChiefAdvisorMock,
 }));
+
+vi.mock("@/server/extensions/query/panda-query-executor", async () => {
+  const actual = await vi.importActual<typeof import("@/server/extensions/query/panda-query-executor")>("@/server/extensions/query/panda-query-executor");
+  return { ...actual, executePandaSources: executePandaSourcesMock };
+});
 
 vi.mock("@/server/extensions/advisor/semantic-tools", async () => {
   const actual = await vi.importActual<typeof import("./semantic-tools")>("@/server/extensions/advisor/semantic-tools");
@@ -42,6 +48,7 @@ beforeEach(() => {
   vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
   runChiefAdvisorConversationMock.mockReset();
   runChiefAdvisorMock.mockReset();
+  executePandaSourcesMock.mockReset();
   seedAuthenticatedUser();
   const db = getDatabase();
   db.prepare("DELETE FROM holding_snapshots WHERE portfolio_snapshot_id IN (SELECT id FROM portfolio_snapshots WHERE user_id=?)").run(TEST_USER_ID);
@@ -137,6 +144,31 @@ describe("runProfessionalAdvisor routing", () => {
     expect(runChiefAdvisorConversationMock).toHaveBeenCalledTimes(1);
     expect(runChiefAdvisorMock).not.toHaveBeenCalled();
   });
+
+  it("binds a named holding before professional research and does not ask for its code", async () => {
+    createRootRun("analysis-named-holding");
+    createCompleteProfile();
+    createNamedHoldings();
+    vi.stubEnv("DEEPSEEK_API_KEY", "");
+    executePandaSourcesMock.mockRejectedValueOnce(new Error("market unavailable in routing test"));
+
+    const result = await runProfessionalAdvisor({
+      userId: TEST_USER_ID,
+      sessionId: "session-routing",
+      analysisId: "analysis-named-holding",
+      content: "我想加仓抄底寒武纪",
+    });
+
+    expect(result.kind).toBe("DECISION");
+    expect(result.missingInformation).not.toContain("instrument");
+    expect(result.recommendation).toEqual(expect.objectContaining({
+      instrumentId: "CAMBRICON",
+      symbol: "688256.SH",
+    }));
+    expect(executePandaSourcesMock).toHaveBeenCalledTimes(1);
+    expect(executePandaSourcesMock.mock.calls[0][0].sources).toHaveLength(1);
+    expect(executePandaSourcesMock.mock.calls[0][0].sources[0].parameters.symbol).toBe("688256.SH");
+  });
 });
 
 function createRootRun(id: string): void {
@@ -157,5 +189,23 @@ function createCompleteProfile(): void {
     now,
     now,
   );
+  db.close();
+}
+
+function createNamedHoldings(): void {
+  const db = getDatabase();
+  const now = isoNow();
+  db.prepare(`INSERT OR REPLACE INTO instruments
+    (id,symbol,name,market,asset_type,sector,tradable)
+    VALUES ('CAMBRICON','688256.SH','寒武纪-U','SH','stock','Technology',1)`).run();
+  db.prepare(`INSERT INTO portfolio_snapshots
+    (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at)
+    VALUES ('snapshot-named-holding',?,?,'10000','80000','complete','[]',?,?)`)
+    .run(TEST_USER_ID, `portfolio-${TEST_USER_ID}`, now, now);
+  const insert = db.prepare(`INSERT INTO holding_snapshots
+    (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("holding-snapshot-cambricon", "snapshot-named-holding", "CAMBRICON", "100", "500", "600", "60000", "10000", 7500, now);
+  insert.run("holding-snapshot-aapl-routing", "snapshot-named-holding", "AAPL", "100", "150", "200", "20000", "5000", 2500, now);
   db.close();
 }
