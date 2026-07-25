@@ -122,4 +122,26 @@ describe("debate agent coercion", () => {
     expect(judgement.suggestedNextPrompts[1]).toBe("Compare current valuation with history.");
     expect(judgement.complianceNote).toMatch(/research and simulation/i);
   });
+
+  it("neutralizes direct trade command variants without changing analytical language or user claims", () => {
+    const judgement = coerceDebateJudgement({
+      userClaim: "The user quotes: Buy AAPL now.",
+      bullStrongestPoint: "Buy AAPL now.",
+      bearStrongestPoint: "Sell your holdings now.",
+      keyDisagreement: "Immediately buy AAPL.",
+      whyNotFinal: "You should sell AAPL.",
+      suggestedNextPrompts: [
+        "The bull case discusses buying pressure.",
+        "Buy AAPL now.",
+      ],
+    });
+
+    expect(judgement.userClaim).toBe("The user quotes: Buy AAPL now.");
+    expect(judgement.bullStrongestPoint).toMatch(/evidence|research/i);
+    expect(judgement.bearStrongestPoint).toMatch(/evidence|research/i);
+    expect(judgement.keyDisagreement).toMatch(/evidence|research/i);
+    expect(judgement.whyNotFinal).toMatch(/evidence|research/i);
+    expect(judgement.suggestedNextPrompts[0]).toBe("The bull case discusses buying pressure.");
+    expect(judgement.suggestedNextPrompts[1]).toMatch(/evidence|research/i);
+  });
 });

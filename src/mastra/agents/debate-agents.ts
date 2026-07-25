@@ -410,6 +410,8 @@ function neutralizeJudgeNarrative(value: string, fallback: string): string {
 function hasImperativeTradeCommand(value: string): boolean {
   return [
     /\b(?:buy|sell)\s+now\b/iu,
+    /\b(?:buy|sell)\s+(?:(?:all|some|your|the)\s+)?(?:[A-Za-z0-9.$'-]+\s+){0,4}now\b/iu,
+    /\b(?:immediately|now)\s+(?:buy|sell)\b/iu,
     /\b(?:must|should)\s+(?:buy|sell)\b/iu,
     /\b(?:must|should)\s+(?:add(?:\s+to)?|reduce)\s+(?:your\s+)?(?:position|holdings?)\b/iu,
     /(?:立即|马上)\s*(?:买入|卖出)/u,
