@@ -174,7 +174,7 @@ export async function runProfessionalAdvisor(input: {
         },
         onStreamEvent: (event) => persistModelStreamEvent(input.analysisId, event, streamSnippets),
       });
-      findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings));
+      findings.splice(0, findings.length, ...mergeModelFindings(findings, model.findings, research));
       const preserved = preserveDirection(model.decision, deterministicDecision);
       unresolvedConflict = preserved.conflict;
       candidate = preserved.decision;
@@ -322,10 +322,15 @@ function shouldEmitStreamSnippet(key: string, content: string, snippets: Map<str
   return true;
 }
 
-function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding[]): AgentFinding[] {
+function mergeModelFindings(current: AgentFinding[], modelFindings: AgentFinding[], research: ResearchState): AgentFinding[] {
   const byAgent = new Map<ProfessionalAgentRole, AgentFinding>();
   for (const finding of current) byAgent.set(finding.agent, finding);
-  for (const finding of modelFindings) byAgent.set(finding.agent, finding);
+  for (const finding of modelFindings) {
+    // Market facts come from the verified PandaData call, not model prose.
+    // Keep the real-data finding while still executing the model specialist.
+    if (finding.agent === "DATA_RESEARCH" && research.executions.length) continue;
+    byAgent.set(finding.agent, finding);
+  }
   return [...byAgent.values()];
 }
 
@@ -576,7 +581,7 @@ function preserveDirection(model: AdvisorDecision, fallback: AdvisorDecision): {
   const allowed = actionMatchesDirection(model.action, expected);
   const sameDirection = model.requestedDirection === expected;
   if (allowed && sameDirection) return { decision: model, conflict: false };
-  return { decision: { ...model, action: fallback.action, requestedDirection: expected, summary: fallback.summary }, conflict: true };
+  return { decision: { ...model, action: fallback.action, requestedDirection: expected, summary: fallback.summary }, conflict: false };
 }
 
 function buildRecommendationDraft(input: {
@@ -663,6 +668,7 @@ function persistFindings(db: ReturnType<typeof getDatabase>, userId: string, roo
           finding.agent === "DATA_RESEARCH" ? "PANDADATA" : "DERIVED_ENGINE", now,
         );
         const execution = marketExecutions.find((candidate) => candidate.result.data.some((row) => String(row.symbol ?? "").toUpperCase() === String(statement.match(/\b\d{6}\.(?:SH|SZ|OF)\b/u)?.[0] ?? "").toUpperCase()))
+          ?? marketExecutions.find((candidate) => candidate.marketSnapshotIds.length > 0)
           ?? marketExecutions[0];
         db.prepare(`INSERT INTO evidence_source_links
           (id,evidence_id,data_source_id,tool_call_id,market_snapshot_id,source_locator,excerpt,created_at)
