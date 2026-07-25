@@ -23,7 +23,6 @@ const historyEntries = [
 ];
 
 const workspaceEntries = [
-  { path: "/risk-questionnaire", label: "风险问卷" },
   { path: "/system-health", label: "系统健康" },
 ];
 

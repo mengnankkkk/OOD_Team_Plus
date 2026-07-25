@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, CheckCircle2, FileText, MessageSquare, Play, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileText, MessageSquare, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "@/features/frontend-migration/router";
 import { apiMutation, shortDate } from "@/features/workbench/lib/api";
 import { ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
@@ -22,8 +22,6 @@ type ArtifactPreview = { id: string; type: Artifact["type"]; version: number; ma
 type ResearchSummary = { id: string; query_text: string; status: string; created_at: string; completed_at: string | null };
 type ResearchResult = { id: string; title: string | null; snippet: string | null; url: string | null; adapter: string; source_name?: string | null };
 type ResearchSourceStatus = { adapter: string; status: string; result_count: number; error: { message?: string } | null };
-type RiskQuestion = { id: string; type: string; prompt: string; options: Array<{ value: string; label: string }> };
-type RiskAssessment = { riskLevel: string; score: number; recommendedMaxEquityWeight: number; conflicts: string[] };
 type NotificationPreference = { mode: "IMPORTANT_ONLY" | "DAILY_DIGEST" | "MUTED"; quietHoursStart: string | null; quietHoursEnd: string | null; version: number };
 
 function Shell({ title, eyebrow, children, actions }: { title: string; eyebrow: string; children: React.ReactNode; actions?: React.ReactNode }) {
@@ -358,30 +356,9 @@ export function ResearchSearchesPage() {
 export function ResearchSearchDetailPage() { return <ResearchSearchesPage />; }
 export function ResearchSearchResultsPage() { return <ResearchSearchesPage />; }
 
-export function RiskQuestionnairePage() {
-  const questions = useApiResource<{ version: number; questions: RiskQuestion[] }>("/api/v1/risk-questionnaire");
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [result, setResult] = useState<RiskAssessment | null>(null);
-  async function submit() {
-    try {
-      const data = await apiMutation<RiskAssessment>("/api/v1/risk-assessments", "POST", { answers });
-      setResult(data);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "提交失败");
-    }
-  }
-  return (
-    <div className="page-stack">
-      <PageHeading eyebrow="RISK" title="风险问卷" description="这里提交问卷并查看当前风险结果。" />
-      {questions.loading ? <LoadingBlock label="正在读取问卷…" /> : questions.error ? <ErrorBlock message={questions.error} retry={questions.reload} /> : <Shell title="问卷" eyebrow="QUESTIONNAIRE"><div className="space-y-5">{questions.data?.questions.map((q) => <div key={q.id} className="space-y-2"><p className="text-sm font-medium">{q.prompt}</p><Select value={answers[q.id] ?? ""} onValueChange={(v) => setAnswers((current) => ({ ...current, [q.id]: v }))}><SelectTrigger><SelectValue placeholder="选择答案" /></SelectTrigger><SelectContent>{q.options.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></div>)}<Button onClick={() => void submit()}><Play className="size-4" />提交评估</Button></div></Shell>}
-      {result ? <Shell title="评估结果" eyebrow="RESULT"><div className="grid gap-3 md:grid-cols-3"><div className="rounded-lg border border-border p-3"><p className="text-xs text-muted-foreground">风险等级</p><p className="mt-1 text-lg font-semibold">{result.riskLevel}</p></div><div className="rounded-lg border border-border p-3"><p className="text-xs text-muted-foreground">得分</p><p className="mt-1 text-lg font-semibold">{result.score}</p></div><div className="rounded-lg border border-border p-3"><p className="text-xs text-muted-foreground">权益上限</p><p className="mt-1 text-lg font-semibold">{Math.round(result.recommendedMaxEquityWeight * 100)}%</p></div></div></Shell> : null}
-    </div>
-  );
-}
-
 export function RiskAssessmentsPage() {
   const list = useApiResource<{ items?: Array<{ id: string; risk_level: string; score: number; created_at: string }> }>("/api/v1/risk-assessments?limit=50");
-  return <div className="page-stack"><PageHeading eyebrow="RISK HISTORY" title="风险评估历史" description="每一次问卷结果都会保留下来。" />{list.loading ? <LoadingBlock label="正在读取历史…" /> : list.error ? <ErrorBlock message={list.error} retry={list.reload} /> : list.data?.items?.length ? <div className="space-y-2">{list.data.items.map((item) => <div key={item.id} className="rounded-lg border border-border px-4 py-3"><div className="flex items-center justify-between"><strong>{item.risk_level}</strong><span className="text-xs text-muted-foreground">{shortDate(item.created_at)}</span></div><p className="mt-1 text-sm text-muted-foreground">Score {item.score}</p></div>)}</div> : <Empty title="暂无评估" detail="先去风险问卷完成一次评估。" />}</div>;
+  return <div className="page-stack"><PageHeading eyebrow="RISK HISTORY" title="风险评估历史" description="首次建档生成的风险评估结果会保留在这里。" />{list.loading ? <LoadingBlock label="正在读取历史…" /> : list.error ? <ErrorBlock message={list.error} retry={list.reload} /> : list.data?.items?.length ? <div className="space-y-2">{list.data.items.map((item) => <div key={item.id} className="rounded-lg border border-border px-4 py-3"><div className="flex items-center justify-between"><strong>{item.risk_level}</strong><span className="text-xs text-muted-foreground">{shortDate(item.created_at)}</span></div><p className="mt-1 text-sm text-muted-foreground">Score {item.score}</p></div>)}</div> : <Empty title="暂无评估" detail="完成首次理财建档后，风险评估记录会显示在这里。" />}</div>;
 }
 
 export function NotificationPreferencePage() {
