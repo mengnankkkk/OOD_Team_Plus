@@ -32,7 +32,7 @@ type ConversationAgentResult = {
   answer: string | null;
   recommendationId: string | null;
   missingQuestions: string[];
-  conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION" | null;
+  conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION" | null;
   dataQueryId: string | null;
   debateSuggestion: DebateSuggestion | null;
   clarificationId?: string;
@@ -289,7 +289,7 @@ function loadAdvisorContext(userId: string): AdvisorContext {
   return { profile: profile ?? null, goals, snapshot: snapshot ?? null, holdings, instruments };
 }
 
-function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
+function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageId: string; outputMode: ConversationOutputMode; answer: string; status: "completed" | "waiting_for_user" | "blocked"; provider: string; missingQuestions: string[]; recommendation: RecommendationDraft | null; recommendationStatus: "ACTIVE" | "DEGRADED" | "BLOCKED"; conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"; debateSuggestion: DebateSuggestion; artifactRows: Record<string, unknown>[]; artifactColumns?: Array<{ name: string; type?: string }>; sourceQueryId?: string }): ConversationAgentResult {
   const now = isoNow();
   const assistantMessageId = createId("message");
   const recommendationId = input.recommendation ? createId("recommendation") : null;
@@ -380,7 +380,7 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
   return result;
 }
 
-function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED", conversationKind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"): void {
+function persistAdvisorAnswerStream(analysisId: string, answer: string, status: "ACTIVE" | "DEGRADED" | "BLOCKED", conversationKind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION"): void {
   const lines = answer.split("\n").map((line) => line.trim()).filter(Boolean);
   if (lines.length === 0) return;
   persistSseEvent({
@@ -390,6 +390,8 @@ function persistAdvisorAnswerStream(analysisId: string, answer: string, status: 
       phase: "final_summary",
       title: conversationKind === "GUIDED_INTAKE"
         ? "顾问正在梳理你的目标"
+        : conversationKind === "CONVERSATION"
+          ? "顾问正在回应你"
         : conversationKind === "FINANCIAL_PLAN"
           ? "顾问正在整理你的资金方案"
           : status === "ACTIVE" ? "顾问正在整理可执行建议" : "顾问正在整理公开结论",

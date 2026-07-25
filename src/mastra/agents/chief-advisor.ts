@@ -75,6 +75,11 @@ export type ChiefAdvisorResult = {
   fallbackAgents: AgentFinding["agent"][];
 };
 
+export type ChiefAdvisorConversationResult = {
+  answer: string;
+  provider: "CHIEF_ADVISOR";
+};
+
 export type ChiefAdvisorStreamEvent =
   | { type: "agent.chunk"; agent: AgentFinding["agent"]; text: string }
   | { type: "agent.object"; agent: AgentFinding["agent"]; partial: Partial<AgentFinding> }
@@ -102,9 +107,28 @@ export function createChiefAdvisorAgent() {
       "没有反方证据、组合影响或合规批准时必须降级或阻断。",
       "supportEvidence 要写成可展示的多方支持观点，counterEvidence 要写成可展示的空方质疑观点；两边都必须基于服务端事实和上游 Agent 发现。",
       "任何结果仅用于模拟，不连接券商，不创建真实订单。",
+      "当任务明确标记为普通理财顾问对话时，直接用自然中文回应，不输出 AdvisorDecision、建议状态、建议动作或 debateSuggestion。",
       "最终决策必须额外输出 debateSuggestion：判断当前问题是否适合让用户进入多空 Battle。只有存在清晰、可比较的观点或行动分歧时 recommended 才为 true；预算整理、资料解释、画像建档或缺少明确议题时为 false。motion 要写成小白能理解的具体辩题，reason 说明为什么适合或暂不适合。",
     ].join("\n"),
   });
+}
+
+export async function runChiefAdvisorConversation(input: {
+  question: string;
+  conversationMessages?: string[];
+  context?: ChiefAdvisorPromptContext;
+}): Promise<ChiefAdvisorConversationResult> {
+  const chief = createChiefAdvisorAgent();
+  const prompt = buildAdvisorPrompt(chiefConversationPrompt(input.question, input.conversationMessages ?? []), input.context);
+  const stream = await chief.stream(prompt, {
+    maxSteps: 1,
+    modelSettings: { maxOutputTokens: 900, temperature: 0.3 },
+  });
+  let answer = "";
+  for await (const chunk of stream.textStream) answer += chunk;
+  const normalized = answer.trim();
+  if (!normalized) throw new Error("MODEL_OUTPUT_EMPTY:CHIEF_ADVISOR_CONVERSATION");
+  return { answer: normalized, provider: "CHIEF_ADVISOR" };
 }
 
 export async function runChiefAdvisor(input: {
@@ -383,6 +407,20 @@ function ProfessionalAgentRoleFromUnknown(value: unknown): AgentFinding["agent"]
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function chiefConversationPrompt(question: string, conversationMessages: string[]): string {
+  return [
+    "当前任务是普通理财顾问对话，由 Chief Advisor 直接面对用户，不启动专业投资决策或建议卡流程。",
+    `用户当前消息：${question}`,
+    conversationMessages.length
+      ? `最近用户消息：${JSON.stringify(conversationMessages.slice(-8))}`
+      : "这是当前会话的第一条用户消息。",
+    "请像面向理财小白的真人顾问一样自然回应：问候就简短问候并邀请用户说出目标；开放式问题先理解诉求，再给一小步解释或只追问一个最关键问题。",
+    "不要输出建议状态、建议动作、合规结论、行情研究、组合诊断或建议卡提示；不要因为服务端提供了持仓就主动分析全部持仓。",
+    "可以使用已知画像避免重复提问，但不要整段复述画像。只有用户明确提出持仓诊断、具体标的分析、买入、卖出、加仓或减仓时，才应提示进入专业分析流程。",
+    "只输出给用户看的自然中文答复，不要 JSON，不要 Markdown 标题，不要描述内部 Agent 或工作流。",
+  ].join("\n\n");
 }
 
 function buildAdvisorPrompt(prompt: string, context?: ChiefAdvisorPromptContext): string {

@@ -2,15 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
   streamOptions: [] as Array<Record<string, unknown>>,
+  prompts: [] as string[],
   decisionOutput: null as Record<string, unknown> | null,
+  conversationOutput: "你好，我是你的理财顾问。你最近最想解决哪件财务问题？",
 }));
 
 vi.mock("@mastra/core/agent", () => ({
   Agent: class Agent {
     async stream(prompt: string, options: Record<string, unknown>) {
       harness.streamOptions.push(options);
+      harness.prompts.push(prompt);
       const role = prompt.match(/当前角色：(\w+)/u)?.[1];
       return {
+        textStream: streamValues([harness.conversationOutput]),
         objectStream: emptyStream<Record<string, unknown>>(),
         object: Promise.resolve(role ? finding(role) : harness.decisionOutput ?? decision()),
       };
@@ -18,12 +22,29 @@ vi.mock("@mastra/core/agent", () => ({
   },
 }));
 
-import { runChiefAdvisor } from "./chief-advisor";
+import { runChiefAdvisor, runChiefAdvisorConversation } from "./chief-advisor";
 
 describe("Chief Advisor structured decision", () => {
   beforeEach(() => {
     harness.streamOptions.length = 0;
+    harness.prompts.length = 0;
     harness.decisionOutput = null;
+  });
+
+  it("answers ordinary chat as the Chief Advisor without a structured decision prompt", async () => {
+    const result = await runChiefAdvisorConversation({
+      question: "你好",
+      context: {
+        profile: { risk_level: "BALANCED", horizon: "LONG" },
+        holdings: [{ symbol: "510300", weight_bps: 4000 }],
+      },
+    });
+
+    expect(result.answer).toContain("理财顾问");
+    expect(harness.prompts.at(-1)).toContain("普通理财顾问对话");
+    expect(harness.prompts.at(-1)).toContain("不要输出建议状态");
+    expect(harness.prompts.at(-1)).toContain("\"risk_level\":\"BALANCED\"");
+    expect(harness.streamOptions.at(-1)).not.toHaveProperty("structuredOutput");
   });
 
   it("returns the model-generated debate suggestion with the advisor decision", async () => {
@@ -100,6 +121,15 @@ describe("Chief Advisor structured decision", () => {
 
 function emptyStream<T>(): ReadableStream<T> {
   return new ReadableStream<T>({ start(controller) { controller.close(); } });
+}
+
+function streamValues<T>(values: T[]): ReadableStream<T> {
+  return new ReadableStream<T>({
+    start(controller) {
+      for (const value of values) controller.enqueue(value);
+      controller.close();
+    },
+  });
 }
 
 function finding(agent: string): Record<string, unknown> {

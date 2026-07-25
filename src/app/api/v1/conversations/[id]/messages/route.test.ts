@@ -104,16 +104,17 @@ describe("conversation advisor clarifications", () => {
     expect(body.error.code).toBe("RUN_ALREADY_ACTIVE");
   });
 
-  it("lets complete-profile users ask open-ended questions in the advisor flow", async () => {
+  it("lets complete-profile users continue open-ended advisor conversations", async () => {
     createCompleteProfile();
     const response = await sendMessage("我 28 岁，存款 15 万，怕股票暴跌，也担心风险，想学理财", "guided-intake-message");
     const body = await response.json();
 
     expect(response.status).toBe(202);
     expect(body.data.analysis.status).toBe("COMPLETED");
-    expect(body.data.conversationKind).toBe("DECISION");
+    expect(body.data.conversationKind).toBe("CONVERSATION");
+    expect(body.data.recommendationId).toBeNull();
     expect(body.data.answer).not.toContain("请先完成投资画像");
-    expect(body.data.answer).toContain("核心结论");
+    expect(body.data.answer).not.toContain("建议状态");
 
     const planning = await sendMessage("帮我整理适合我的投资方案", "financial-plan-message");
     const planningBody = await planning.json();
@@ -123,14 +124,30 @@ describe("conversation advisor clarifications", () => {
     expect(planningBody.data.answer).toContain("执行顺序");
   });
 
-  it("keeps incomplete open-ended questions in guided intake", async () => {
+  it("keeps greetings in a lightweight advisor conversation", async () => {
+    createCompleteProfile();
+    const response = await sendMessage("你好", "advisor-greeting-message");
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(body.data.conversationKind).toBe("CONVERSATION");
+    expect(body.data.recommendationId).toBeNull();
+    expect(body.data.answer).not.toContain("建议状态");
+    expect(body.data.answer).not.toContain("行情与技术观察");
+
+    const events = getSseEvents(body.data.analysis.analysisId);
+    expect(events.some((event) => event.type === "tool.started")).toBe(false);
+    expect(events.some((event) => event.type === "agent.delegated")).toBe(false);
+  });
+
+  it("lets the advisor guide incomplete open-ended conversations", async () => {
     const response = await sendMessage("我最近总是担心波动", "guided-incomplete-message");
     const body = await response.json();
 
     expect(response.status).toBe(202);
-    expect(body.data.conversationKind).toBe("GUIDED_INTAKE");
+    expect(body.data.conversationKind).toBe("CONVERSATION");
     expect(body.data.recommendationId).toBeNull();
-    expect(body.data.answer).toContain("接下来确认");
+    expect(body.data.answer).not.toContain("建议状态");
   });
 
   it("completes the daily portfolio workflow without creating a clarification", async () => {

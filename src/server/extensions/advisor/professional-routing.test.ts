@@ -8,11 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_USER_ID, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { getDatabase, isoNow } from "@/server/http/context";
 
-const { runChiefAdvisorMock } = vi.hoisted(() => ({
+const { runChiefAdvisorConversationMock, runChiefAdvisorMock } = vi.hoisted(() => ({
+  runChiefAdvisorConversationMock: vi.fn(),
   runChiefAdvisorMock: vi.fn(),
 }));
 
 vi.mock("@/mastra/agents/chief-advisor", () => ({
+  runChiefAdvisorConversation: runChiefAdvisorConversationMock,
   runChiefAdvisor: runChiefAdvisorMock,
 }));
 
@@ -38,6 +40,7 @@ beforeEach(() => {
   dbPath = join(tmpdir(), `money-whisperer-professional-routing-${randomUUID()}.db`);
   vi.stubEnv("DB_PATH", dbPath);
   vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
+  runChiefAdvisorConversationMock.mockReset();
   runChiefAdvisorMock.mockReset();
   seedAuthenticatedUser();
   const db = getDatabase();
@@ -55,31 +58,40 @@ afterEach(() => {
 });
 
 describe("runProfessionalAdvisor routing", () => {
-  it("routes complete-profile normal follow-up questions to Chief Advisor with profile context", async () => {
+  it("routes greetings to Chief Advisor conversation without professional specialists", async () => {
+    createRootRun("analysis-greeting");
+    createCompleteProfile();
+    runChiefAdvisorConversationMock.mockResolvedValueOnce({
+      answer: "你好，我是你的理财顾问。你可以先告诉我最近最想解决的一件财务问题。",
+      provider: "CHIEF_ADVISOR",
+    });
+
+    const result = await runProfessionalAdvisor({
+      userId: TEST_USER_ID,
+      sessionId: "session-routing",
+      analysisId: "analysis-greeting",
+      content: "你好",
+    });
+
+    expect(result.kind).toBe("CONVERSATION");
+    expect(result.provider).toBe("CHIEF_ADVISOR");
+    expect(result.recommendation).toBeNull();
+    expect(result.findings).toEqual([]);
+    expect(result.answer).toContain("理财顾问");
+    expect(runChiefAdvisorConversationMock).toHaveBeenCalledTimes(1);
+    expect(runChiefAdvisorMock).not.toHaveBeenCalled();
+    expect(runChiefAdvisorConversationMock.mock.calls[0][0].context.profile).toEqual(expect.objectContaining({
+      risk_level: "BALANCED",
+      investment_amount_decimal: "20000",
+    }));
+  });
+
+  it("routes complete-profile normal follow-up questions to Chief Advisor conversation with profile context", async () => {
     createRootRun("analysis-complete-profile");
     createCompleteProfile();
-    runChiefAdvisorMock.mockResolvedValueOnce({
-      decision: {
-        action: "WATCH",
-        requestedDirection: "HOLD",
-        summary: "基于完整画像，先按应急、稳健和长期增值三层安排资金。",
-        suitability: "MEDIUM",
-        confidence: 0.82,
-        rationales: ["用户画像完整，可直接给出资金规划边界"],
-        counterEvidence: ["资金用途变化会改变分层比例"],
-        risks: ["市场波动仍可能影响长期资产"],
-        portfolioImpact: "本轮不涉及新增或卖出具体标的",
-        invalidationConditions: ["收入、目标或回撤边界变化"],
-        compliance: { approved: true, decision: "APPROVED", reason: "普通规划问题不需要具体标的" },
-        debateSuggestion: {
-          recommended: false,
-          motion: "当前问题暂不适合进入多空 Battle",
-          reason: "这是风险解释问题，不需要多空辩论。",
-        },
-      },
-      findings: modelFindings(),
-      delegatedAgents: ["PROFILE_CONTEXT", "PORTFOLIO_RISK", "COMPLIANCE_REVIEWER", "EXPLANATION_REPORT"],
-      fallbackAgents: [],
+    runChiefAdvisorConversationMock.mockResolvedValueOnce({
+      answer: "市场波动本身不是结论。结合你的长期目标，我们先看这笔钱的使用期限和你真正担心的情景。",
+      provider: "CHIEF_ADVISOR",
     });
 
     const result = await runProfessionalAdvisor({
@@ -89,14 +101,13 @@ describe("runProfessionalAdvisor routing", () => {
       content: "我该怎样理解当前市场波动？",
     });
 
-    expect(result.kind).toBe("DECISION");
+    expect(result.kind).toBe("CONVERSATION");
     expect(result.provider).toBe("CHIEF_ADVISOR");
     expect(result.missingInformation).not.toContain("instrument");
-    expect(result.answer).toContain("完整画像");
-    expect(result.answer).toContain("安排资金");
-    expect(runChiefAdvisorMock).toHaveBeenCalledTimes(1);
-    const call = runChiefAdvisorMock.mock.calls[0][0];
-    expect(call.requiredAgents).not.toContain("DATA_RESEARCH");
+    expect(result.answer).toContain("市场波动");
+    expect(runChiefAdvisorConversationMock).toHaveBeenCalledTimes(1);
+    expect(runChiefAdvisorMock).not.toHaveBeenCalled();
+    const call = runChiefAdvisorConversationMock.mock.calls[0][0];
     expect(call.context.profile).toEqual(expect.objectContaining({
       risk_level: "BALANCED",
       investment_amount_decimal: "20000",
@@ -104,12 +115,14 @@ describe("runProfessionalAdvisor routing", () => {
       max_drawdown_decimal: "0.12",
     }));
     expect(call.context.profileCompleteness).toEqual({ complete: true, missing: [] });
-    expect(call.prompt).toContain("complete=true 时这些画像字段已知");
-    expect(call.prompt).toContain("无标的的一般理财/资产配置/资金规划问题不得要求补充 instrument");
   });
 
-  it("keeps incomplete open-ended normal questions in guided intake", async () => {
+  it("lets Chief Advisor guide incomplete-profile open-ended conversations", async () => {
     createRootRun("analysis-incomplete-profile");
+    runChiefAdvisorConversationMock.mockResolvedValueOnce({
+      answer: "担心波动很正常。先告诉我这笔钱大概多久不会使用，我会按你的承受范围一步步梳理。",
+      provider: "CHIEF_ADVISOR",
+    });
 
     const result = await runProfessionalAdvisor({
       userId: TEST_USER_ID,
@@ -118,9 +131,10 @@ describe("runProfessionalAdvisor routing", () => {
       content: "我最近总是担心波动",
     });
 
-    expect(result.kind).toBe("GUIDED_INTAKE");
-    expect(result.provider).toBe("DETERMINISTIC_FALLBACK");
-    expect(result.answer).toContain("接下来确认两件事");
+    expect(result.kind).toBe("CONVERSATION");
+    expect(result.provider).toBe("CHIEF_ADVISOR");
+    expect(result.answer).toContain("一步步梳理");
+    expect(runChiefAdvisorConversationMock).toHaveBeenCalledTimes(1);
     expect(runChiefAdvisorMock).not.toHaveBeenCalled();
   });
 });
@@ -144,46 +158,4 @@ function createCompleteProfile(): void {
     now,
   );
   db.close();
-}
-
-function modelFindings() {
-  return [{
-    agent: "PROFILE_CONTEXT",
-    conclusion: "已加载完整画像",
-    supportEvidence: ["风险等级 BALANCED", "期限 LONG"],
-    counterEvidence: ["画像变化会影响建议"],
-    missingInformation: [],
-    risks: ["资金用途变化"],
-    confidence: 0.9,
-    needsAnotherAgent: true,
-    suggestedNextAgent: "PORTFOLIO_RISK",
-  }, {
-    agent: "PORTFOLIO_RISK",
-    conclusion: "本轮为无标的普通规划问题，不需要行情数据",
-    supportEvidence: ["无交易动作"],
-    counterEvidence: ["未提供当前持仓时不能做持仓诊断"],
-    missingInformation: [],
-    risks: ["未来目标变化"],
-    confidence: 0.78,
-    needsAnotherAgent: true,
-    suggestedNextAgent: "COMPLIANCE_REVIEWER",
-  }, {
-    agent: "COMPLIANCE_REVIEWER",
-    conclusion: "普通规划回答通过合规检查",
-    supportEvidence: ["不包含具体交易指令"],
-    counterEvidence: ["执行前仍需复核"],
-    missingInformation: [],
-    risks: ["非实盘指令"],
-    confidence: 0.92,
-    needsAnotherAgent: false,
-  }, {
-    agent: "EXPLANATION_REPORT",
-    conclusion: "已整理为公开回答",
-    supportEvidence: ["画像完整"],
-    counterEvidence: ["目标变化会改变结论"],
-    missingInformation: [],
-    risks: ["仅供研究"],
-    confidence: 0.82,
-    needsAnotherAgent: false,
-  }];
 }

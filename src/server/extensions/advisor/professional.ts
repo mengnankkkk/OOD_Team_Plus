@@ -2,6 +2,7 @@ import Decimal from "decimal.js";
 
 import {
   runChiefAdvisor,
+  runChiefAdvisorConversation,
   type ChiefAdvisorDecisionIntegrity,
   type ChiefAdvisorStreamEvent,
 } from "@/mastra/agents/chief-advisor";
@@ -107,7 +108,7 @@ type ProfileCompleteness = {
 };
 
 export type ProfessionalAdvisorResult = {
-  kind: "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION";
+  kind: "CONVERSATION" | "GUIDED_INTAKE" | "FINANCIAL_PLAN" | "DECISION";
   runId: string;
   status: PublicationStatus;
   direction: AdvisorDecision["requestedDirection"];
@@ -193,22 +194,53 @@ export async function runProfessionalAdvisor(input: {
       };
     }
 
-    if (!dailyPortfolio && intent === "GENERAL" && !requestsFullAgentLoop(input.content) && !profileCompleteness.complete) {
+    if (!dailyPortfolio && intent === "GENERAL" && !target && !requestsFullAgentLoop(input.content)) {
+      const conversationContext = buildChiefConversationContext({
+        profile: decisionProfile,
+        profileCompleteness,
+        goals,
+        holdings,
+        snapshot,
+        conversationMessages: conversationMessages.map((message) => message.content),
+      });
+      let answer = formatAdvisorConversationFallback(input.content, profileCompleteness);
+      let provider: ProfessionalAdvisorResult["provider"] = "DETERMINISTIC_FALLBACK";
+      if (process.env.DEEPSEEK_API_KEY?.trim()) {
+        try {
+          const conversation = await runChiefAdvisorConversation({
+            question: input.content,
+            conversationMessages: conversationMessages.map((message) => message.content),
+            context: conversationContext,
+          });
+          answer = conversation.answer;
+          provider = conversation.provider;
+        } catch {
+          // The conversational fallback remains useful without turning a greeting into a failed advisory run.
+        }
+      }
+      db.prepare("UPDATE agent_runs SET agent_type='chief_advisor_conversation',model_provider=?,model_name=?,output_summary=? WHERE id=? AND user_id=?")
+        .run(
+          provider === "CHIEF_ADVISOR" ? "deepseek" : "deterministic",
+          provider === "CHIEF_ADVISOR" ? process.env.DEEPSEEK_MODEL ?? null : null,
+          answer.slice(0, 500),
+          input.analysisId,
+          input.userId,
+        );
       return {
-        kind: "GUIDED_INTAKE",
+        kind: "CONVERSATION",
         runId: input.analysisId,
         status: "DEGRADED",
         direction: "HOLD",
         action: "WATCH",
         findings: [],
-        missingInformation: [],
+        missingInformation: profileCompleteness.missing,
         recommendation: null,
-        answer: formatGuidedIntakeAnswer(conversationMessages.map((message) => message.content)),
-        provider: "DETERMINISTIC_FALLBACK",
+        answer,
+        provider,
         debateSuggestion: {
           recommended: false,
-          motion: "当前基础信息整理暂不适合进入多空 Battle",
-          reason: "当前还没有形成清晰的投资标的或行动分歧，先补齐目标和风险信息更有帮助。",
+          motion: "当前普通顾问对话暂不适合进入多空 Battle",
+          reason: "当前还没有明确的投资判断分歧，先把用户真正想解决的问题聊清楚更有帮助。",
         },
       };
     }
@@ -593,6 +625,51 @@ function buildChiefAdvisorContext(input: {
     },
     missingInformation: [...new Set(input.findings.flatMap((finding) => finding.missingInformation))],
   };
+}
+
+function buildChiefConversationContext(input: {
+  profile: Profile | undefined;
+  profileCompleteness: ProfileCompleteness;
+  goals: Goal[];
+  holdings: Holding[];
+  snapshot: Record<string, unknown> | undefined;
+  conversationMessages: string[];
+}): Record<string, unknown> {
+  return {
+    workflow: "CONVERSATION",
+    profile: input.profile ?? null,
+    profileCompleteness: input.profileCompleteness,
+    goals: input.goals,
+    portfolioSnapshot: input.snapshot ? {
+      id: input.snapshot.id ?? null,
+      asOf: input.snapshot.as_of ?? null,
+      cash: input.snapshot.cash_decimal ?? null,
+      totalMarketValue: input.snapshot.total_market_value_decimal ?? null,
+    } : null,
+    holdings: input.holdings.map((holding) => ({
+      symbol: holding.symbol,
+      name: holding.name,
+      marketValue: holding.market_value_decimal,
+      weightBps: holding.weight_bps,
+    })),
+    conversationMemory: input.conversationMessages.slice(-8),
+    knownFacts: {
+      profileIsComplete: input.profileCompleteness.complete,
+      missingProfileFields: input.profileCompleteness.missing,
+      holdingCount: input.holdings.length,
+      professionalAnalysisRequested: false,
+    },
+  };
+}
+
+function formatAdvisorConversationFallback(question: string, profileCompleteness: ProfileCompleteness): string {
+  if (/^(?:你好|您好|嗨|哈喽|hello|hi)[！!。.\s]*$/iu.test(question.trim())) {
+    return "你好，我是你的理财顾问。我们可以先聊你最近最想解决的一件事，比如怎么安排存款、设定目标、理解风险，或者看懂现有持仓。";
+  }
+  if (!profileCompleteness.complete) {
+    return "我明白你的顾虑。我们先不急着谈买卖，我会一步一步帮你梳理。先告诉我一个最关键的信息：这笔钱大概多久不会使用？";
+  }
+  return "我明白你的意思。我们先围绕你当前最关心的问题聊清楚，不急着启动持仓诊断或给出买卖结论。你可以再说说，最近最困扰你的是资金安排、波动焦虑，还是某个具体目标？";
 }
 
 function profileFindingFor(profile: Profile | undefined, allowAssumptions = false): AgentFinding {
@@ -1601,38 +1678,6 @@ function translateProfileValue(value: string): string {
     .replaceAll("SHORT", "短线")
     .replaceAll("MEDIUM", "中线")
     .replaceAll("LONG", "长线");
-}
-
-function formatGuidedIntakeAnswer(messages: string[]): string {
-  const context = messages.join("\n");
-  const hasInvestmentAmount = /(?:拿(?:出)?|投入|投资|配置|可用于|准备用|计划用)\s*(?:人民币)?\s*\d+(?:\.\d+)?\s*(?:万元|万|元|w)/iu.test(context);
-  const hasHorizon = /[一二三四五六七八九十\d]+\s*年|半年|几个月|短期|中期|中线|长期|长线|未来\s*[一二三四五六七八九十\d]+/u.test(context);
-  const hasGoal = /首付|买房|购房|教育|养老|退休|应急|结婚|换车|旅行|长期增值|财富增长|目标/u.test(context);
-  const hasRiskLimit = /\d+(?:\.\d+)?\s*%|最大.*(?:亏|回撤)|最多.*(?:亏|回撤)|能接受.*(?:亏|回撤)/u.test(context);
-  const hasPreference = /宽基|指数|ETF|个股|股票|债券|基金|存款|现金管理/u.test(context);
-  const questions = [
-    !hasInvestmentAmount ? "在保留应急金和近期支出后，你准备拿出多少作为可投资金额？" : null,
-    !hasHorizon ? "这部分投资资金预计多久不会使用：1 年以内、1-3 年，还是 3 年以上？" : null,
-    !hasGoal ? "你更想优先实现哪个目标：稳住本金、阶段性大额支出，还是长期增值？" : null,
-    !hasRiskLimit ? "账户短期下跌多少时会明显影响你的生活或让你想立刻卖出？" : null,
-    !hasPreference ? "你更愿意从宽基指数、债券/现金管理，还是个股研究开始？" : null,
-  ].filter((question): question is string => Boolean(question));
-
-  if (questions.length === 0) {
-    return [
-      "这轮对话里的可投资金额、期限、目标、回撤边界和方向偏好已经比较清楚了。",
-      "下一步可以先整理不涉及具体标的的资金分层方案；只有你明确提出“诊断我的持仓”或“分析某个标的”时，才会启动完整的数据、风险与合规流程并形成建议卡。",
-    ].join("\n");
-  }
-
-  return [
-    messages.length > 1
-      ? "我把你刚补充的内容接上了。普通模式会继续把关键信息问完整，不会中途跳去生成买卖建议。"
-      : "收到。普通模式会先把目标、资金用途和风险边界聊清楚，不会因为一条描述就读取历史持仓并生成买卖建议。",
-    `接下来确认${questions.length > 1 ? "两件事" : "一件事"}：`,
-    ...questions.slice(0, 2).map((question, index) => `${index + 1}. ${question}`),
-    "你回答后，我会沿着当前对话继续往下梳理。",
-  ].join("\n");
 }
 
 function annualizedVolatility(closes: Decimal[]): Decimal | null {
