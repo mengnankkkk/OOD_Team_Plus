@@ -16,6 +16,7 @@ import {
   buildDebateChiefAdvisorPrompt,
   continueDebate,
   continueDebateInBackground,
+  DebateSessionError,
   startDebate,
   startDebateInBackground,
   type DebateRunners,
@@ -325,6 +326,60 @@ describe("debate service", () => {
     gate.resolve();
     await vi.waitFor(() => expect(rootRunStatus(started.analysis.analysisId)).toBe("completed"));
   }, 15_000);
+
+  it("distinguishes a blocked session from a missing session without adding another user turn", async () => {
+    const started = await startDebate({
+      userId: TEST_USER_ID,
+      conversationId: "conversation_debate",
+      message: "是否加仓 510300？",
+      targetSymbol: "510300.OF",
+      runners: runnersFor(["evidence", "bull", "bear", "judge"], "neutral"),
+      evidenceCall: async () => evidenceBoard(),
+    });
+    const before = conversationMessageCount(started.debateSessionId, "user");
+    const db = getDatabase();
+    db.prepare("UPDATE debate_sessions SET status='blocked' WHERE id=?").run(started.debateSessionId);
+    db.close();
+
+    let blockedError: unknown;
+    try {
+      continueDebateInBackground({
+        userId: TEST_USER_ID,
+        debateSessionId: started.debateSessionId,
+        content: "请继续。",
+        userRole: "neutral",
+        runners: runnersFor(["evidence", "bull", "bear", "judge"], "neutral"),
+        evidenceCall: async () => evidenceBoard(),
+      });
+    } catch (error) {
+      blockedError = error;
+    }
+    expect(blockedError).toBeInstanceOf(DebateSessionError);
+    expect(blockedError).toMatchObject({
+      code: "DEBATE_BLOCKED",
+      message: "Debate is blocked; start a new Battle",
+    });
+    expect(conversationMessageCount(started.debateSessionId, "user")).toBe(before);
+
+    let missingError: unknown;
+    try {
+      continueDebateInBackground({
+        userId: TEST_USER_ID,
+        debateSessionId: "debate_missing",
+        content: "请继续。",
+        userRole: "neutral",
+        runners: runnersFor(["evidence", "bull", "bear", "judge"], "neutral"),
+        evidenceCall: async () => evidenceBoard(),
+      });
+    } catch (error) {
+      missingError = error;
+    }
+    expect(missingError).toBeInstanceOf(DebateSessionError);
+    expect(missingError).toMatchObject({
+      code: "DEBATE_NOT_FOUND",
+      message: "Debate not found",
+    });
+  });
 
   it("hands an action-request round to the Chief Advisor publication gate", async () => {
     const baseRunners = runnersFor(["evidence", "bull", "bear", "judge"], "neutral");

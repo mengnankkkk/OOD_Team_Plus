@@ -192,8 +192,7 @@ function watchDebateStream(streamUrl: string, observer: DebateStreamObserver, ex
       });
     }
     source.onerror = () => {
-      observer.onProgress?.("Battle 事件流暂时中断，正在读取当前状态");
-      finish();
+      observer.onProgress?.("Battle 事件流中断，正在自动重连");
     };
   });
 }
