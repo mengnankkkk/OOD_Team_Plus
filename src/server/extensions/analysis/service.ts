@@ -265,7 +265,7 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
 
   try {
     const marketData = await fetchLatestPrices(holdings, analysisId);
-    if (marketData.successfulSources === 0) {
+    if (marketData.prices.size === 0) {
       throw marketData.firstError ?? createExtensionError(ExtensionErrorCode.PANDA_DATA_UNAVAILABLE, "No market data source returned successfully", undefined, true);
     }
 
@@ -377,41 +377,53 @@ async function fetchLatestPrices(holdings: RefreshHolding[], analysisId: string)
   const startDate = compactDate(startDateValue);
   const prices = new Map<string, PricePoint>();
   const statuses: SourceStatus[] = [];
-  let successfulSources = 0;
   let firstError: ExtensionError | null = null;
 
   const db = getDatabase();
   for (const [method, symbols] of grouped.entries()) {
-    try {
-      const symbolList = Array.from(symbols);
-      const parameters = method === "get_stock_rt_daily"
-        ? { symbol: symbolList, fields: ["symbol", "date", "close"] }
-        : { symbol: symbolList, start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] };
-      const source: PandaQuerySource = {
-        dataset: datasetForMethod(method),
-        method,
-        parameters,
-        columns: ["symbol", "date", "close"],
-        joinKeys: ["symbol", "date"],
-        assetType: assetTypeForMethod(method),
-      };
-      const [execution] = await executePandaSources({ sources: [source], agentRunId: analysisId, localRows: [], db });
-      const result = execution.result;
-      const rows = normalizePriceRows(result.data);
-      for (const row of rows) {
-        const current = prices.get(row.symbol);
-        if (!current || row.date > current.date) prices.set(row.symbol, row);
+    const methods: PandaDataMethod[] = method === "get_stock_rt_daily"
+      ? ["get_stock_rt_daily", "get_stock_daily"]
+      : [method];
+    let unresolvedSymbols = Array.from(symbols);
+    for (const sourceMethod of methods) {
+      if (!unresolvedSymbols.length) break;
+      const symbolList = unresolvedSymbols;
+      try {
+        const parameters = sourceMethod === "get_stock_rt_daily"
+          ? { symbol: symbolList, fields: ["symbol", "date", "close"] }
+          : { symbol: symbolList, start_date: startDate, end_date: endDate, fields: ["symbol", "date", "close"] };
+        const source: PandaQuerySource = {
+          dataset: datasetForMethod(sourceMethod),
+          method: sourceMethod,
+          parameters,
+          columns: ["symbol", "date", "close"],
+          joinKeys: ["symbol", "date"],
+          assetType: assetTypeForMethod(sourceMethod),
+        };
+        const [execution] = await executePandaSources({ sources: [source], agentRunId: analysisId, localRows: [], db });
+        const requestedSymbols = new Set(symbolList.map((symbol) => symbol.toUpperCase()));
+        const rows = normalizePriceRows(execution.result.data).filter((row) => requestedSymbols.has(row.symbol));
+        for (const row of rows) {
+          const current = prices.get(row.symbol);
+          if (!current || row.date > current.date) prices.set(row.symbol, row);
+        }
+        statuses.push({ source: `PANDADATA:${sourceMethod}`, status: "SUCCEEDED", resultCount: rows.length, symbols: symbolList });
+      } catch (error) {
+        const normalized = normalizeExtensionError(error);
+        firstError ??= normalized;
+        const canUseHistoricalFallback = sourceMethod === "get_stock_rt_daily";
+        statuses.push({
+          source: `PANDADATA:${sourceMethod}`,
+          status: canUseHistoricalFallback ? "FALLBACK" : "FAILED",
+          symbols: symbolList,
+          error: { code: normalized.code, message: normalized.message, retryable: normalized.retryable },
+        });
       }
-      successfulSources += 1;
-      statuses.push({ source: `PANDADATA:${method}`, status: "SUCCEEDED", resultCount: rows.length });
-    } catch (error) {
-      const normalized = normalizeExtensionError(error);
-      firstError ??= normalized;
-      statuses.push({ source: `PANDADATA:${method}`, status: "FAILED", error: { code: normalized.code, message: normalized.message, retryable: normalized.retryable } });
+      unresolvedSymbols = symbolList.filter((symbol) => !prices.has(symbol.toUpperCase()));
     }
   }
   db.close();
-  return { prices, statuses, successfulSources, firstError };
+  return { prices, statuses, firstError };
 }
 
 function datasetForMethod(method: PandaDataMethod): MarketDatasetKey {
@@ -445,7 +457,7 @@ function normalizePriceRows(data: unknown): PricePoint[] {
   return rows.flatMap((row) => {
     if (!row || typeof row !== "object") return [];
     const value = row as Record<string, unknown>;
-    const symbol = String(value.symbol ?? "").trim();
+    const symbol = String(value.symbol ?? "").trim().toUpperCase();
     const date = String(value.date ?? "").trim();
     const close = safeFinancialDecimal(value.close);
     return symbol && date && close?.gt(0) ? [{ symbol, date, close: financialString(close) }] : [];
