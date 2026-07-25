@@ -11,7 +11,12 @@ describe("A2A agent card route", () => {
   it("publishes the message endpoint through the agent card URL", async () => {
     vi.stubEnv("APP_ORIGIN", "https://agents.example.com/");
 
-    const response = await GET(new NextRequest("https://ignored.example/.well-known/agent-card.json"));
+    const response = await GET(new NextRequest("https://ignored.example/.well-known/agent-card.json", {
+      headers: {
+        "x-forwarded-host": "proxy.internal",
+        "x-forwarded-proto": "https",
+      },
+    }));
     const body = await response.json();
     const serviceEndpoint = "https://agents.example.com/api/a2a/message-send";
 
