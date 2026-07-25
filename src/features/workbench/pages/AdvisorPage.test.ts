@@ -3,6 +3,7 @@ import type { OnboardingMessage } from "@/types/app/onboarding";
 import type { DebatePack } from "@/services/debateService";
 import {
   attachDebatePacks,
+  debateHistoryEntries,
   debateEvidenceFacts,
   resolveDebateSendRole,
   restoredDebateState,
@@ -136,6 +137,90 @@ describe("AdvisorPage debate role selection", () => {
       targetSymbol: "AAPL.US",
       userRole: "bear",
     });
+  });
+});
+
+describe("AdvisorPage debate workspace", () => {
+  it("keeps ordinary advisor messages out of the Battle record", () => {
+    const entries = debateHistoryEntries([
+      message("normal-user", "user", {}),
+      message("battle-user", "user", { outputMode: "BATTLE", debateRole: "neutral", roundIndex: 1 }),
+      message("normal-advisor", "advisor", { trace: { id: "trace" } }),
+      message("battle-advisor", "advisor", {
+        debateSessionId: "debate-1",
+        roundIndex: 1,
+        debatePack: {
+          debateSessionId: "debate-1",
+          motion: "是否持有 AAPL",
+          status: "COMPLETED",
+          rounds: [],
+          turns: [{
+            id: "bull-1",
+            roundId: "round-1",
+            speaker: "bull",
+            stance: "bull",
+            turnType: "opening",
+            content: "",
+            publicSummary: "多方认为可以分批观察。",
+            structuredPayload: {},
+          }],
+          judgements: [{
+            id: "judge-1",
+            roundId: "round-1",
+            userClaim: "是否持有",
+            bullStrongestPoint: "分批观察",
+            bearStrongestPoint: "需要谨慎",
+            keyDisagreement: "趋势是否确认",
+            responseQuality: { bull: "direct", bear: "partial" },
+            evidenceTilt: "insufficient_evidence",
+            confidence: 0.5,
+            whyNotFinal: "裁判认为仍需验证。",
+            suggestedNextPrompts: ["请解释风险"],
+            complianceNote: "仅研究",
+          }],
+          agentTrace: [],
+          evidence: [],
+          events: [],
+          publication: null,
+          disclaimer: "仅研究",
+        } as DebatePack,
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.label)).toEqual(["你的问题", "看多 agent", "主持顾问 / 裁判"]);
+    expect(entries.some((entry) => entry.text === "normal-user")).toBe(false);
+    expect(entries.some((entry) => entry.text === "normal-advisor")).toBe(false);
+  });
+
+  it("shows a clear status entry when the Battle agents are blocked", () => {
+    const entries = debateHistoryEntries([
+      message("blocked-user", "user", {
+        outputMode: "BATTLE",
+        debateSessionId: "debate-blocked",
+        roundIndex: 1,
+        debateRole: "neutral",
+      }),
+      message("blocked-advisor", "advisor", {
+        debateSessionId: "debate-blocked",
+        roundIndex: 1,
+        debatePack: {
+          debateSessionId: "debate-blocked",
+          motion: "新能源板块是否适合分批投入",
+          status: "BLOCKED",
+          rounds: [],
+          turns: [],
+          judgements: [],
+          agentTrace: [{ failure: { message: "Token not provided" } }],
+          evidence: [],
+          events: [],
+          publication: null,
+          disclaimer: "仅研究",
+        } as DebatePack,
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.label)).toEqual(["你的问题", "主持顾问 / 状态"]);
+    expect(entries[1]?.text).toContain("模型服务配置不可用");
   });
 });
 

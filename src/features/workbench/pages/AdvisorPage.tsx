@@ -24,7 +24,6 @@ import {
   Check,
   ChevronDown,
   FileText,
-  Gavel,
   Fingerprint,
   Image as ImageIcon,
   MoreHorizontal,
@@ -112,6 +111,14 @@ type AdvisorMessageMeta = {
   debatePack?: DebatePack;
   debateSuggestion?: DebateSuggestion;
 };
+type DebateHistoryRole = "user" | "evidence" | "bull" | "bear" | "judge";
+type DebateHistoryEntry = {
+  id: string;
+  role: DebateHistoryRole;
+  label: string;
+  text: string;
+  roundLabel?: string;
+};
 
 const ADVISOR_MODES: Array<{ value: AdvisorMode; label: string }> = [
   { value: "normal", label: "普通模式" },
@@ -136,6 +143,8 @@ const AdvisorPage = () => {
   const [sending, setSending] = useState(false);
   const [outputMode] = useState<ConversationOutputMode>("SQL_ONLY");
   const [advisorMode, setAdvisorMode] = useState<AdvisorMode>("normal");
+  const [debateTransitioning, setDebateTransitioning] = useState(false);
+  const [debateTransitionTarget, setDebateTransitionTarget] = useState<AdvisorMode>("debate");
   const [debateUserRole, setDebateUserRole] = useState<DebateRole>("neutral");
   const [activeDebateSessionId, setActiveDebateSessionId] = useState<string | null>(null);
   const [debateActivity, setDebateActivity] = useState<DebateStreamActivity | null>(null);
@@ -154,6 +163,24 @@ const AdvisorPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRequestRef = useRef(0);
   const appliedPromptRef = useRef<string | null>(null);
+  const modeTransitionTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (modeTransitionTimerRef.current !== null) window.clearTimeout(modeTransitionTimerRef.current);
+  }, []);
+
+  const switchAdvisorMode = useCallback((mode: AdvisorMode) => {
+    if (mode === advisorMode) return;
+    if (modeTransitionTimerRef.current !== null) window.clearTimeout(modeTransitionTimerRef.current);
+    setDebateTransitionTarget(mode);
+    setDebateTransitioning(true);
+    setAdvisorMode(mode);
+    if (mode === "normal") setPendingDebateContext(null);
+    modeTransitionTimerRef.current = window.setTimeout(() => {
+      setDebateTransitioning(false);
+      modeTransitionTimerRef.current = null;
+    }, 620);
+  }, [advisorMode]);
 
   const visibleSessions = useMemo(() => {
     const keyword = sessionSearch.trim().toLowerCase();
@@ -272,7 +299,7 @@ const AdvisorPage = () => {
     }
   }, [user]);
 
-  const resetToNewSession = useCallback(() => {
+  const resetBattleState = useCallback(() => {
     historyRequestRef.current += 1;
     setMessages([]);
     setDraft("");
@@ -282,14 +309,24 @@ const AdvisorPage = () => {
     setActiveDebateSessionId(null);
     setDebateActivity(null);
     setPendingDebateContext(null);
-    setAdvisorMode("normal");
     setDebateUserRole("neutral");
   }, []);
+
+  const resetToNewSession = useCallback(() => {
+    resetBattleState();
+    setAdvisorMode("normal");
+  }, [resetBattleState]);
 
   const handleNewSession = useCallback(() => {
     if (sending) return;
     resetToNewSession();
   }, [resetToNewSession, sending]);
+
+  const handleNewDebate = useCallback(() => {
+    if (sending) return;
+    resetBattleState();
+    switchAdvisorMode("debate");
+  }, [resetBattleState, sending, switchAdvisorMode]);
 
   useEffect(() => {
     if (!user) return;
@@ -417,6 +454,7 @@ const AdvisorPage = () => {
       createdAt: new Date().toISOString(),
       sessionId: currentSessionId,
     }]);
+    setDebateActivity({ role: "user", phase: "started", eventType: "ui.user.submitted" });
     setDraft("");
     try {
       const result = activeDebateSessionId && !forceNewDebate
@@ -485,16 +523,27 @@ const AdvisorPage = () => {
     () => latestDebatePackFromMessages(messages),
     [messages],
   );
-  const stagePack = sending ? null : latestDebatePack;
+  const debateHistory = useMemo(
+    () => debateHistoryEntries(messages),
+    [messages],
+  );
+  const isNewBattleDraft = advisorMode === "debate" && !activeDebateSessionId && Boolean(pendingDebateContext);
+  const stagePack = sending || isNewBattleDraft ? null : latestDebatePack;
   const stageJudgement = stagePack?.judgements.at(-1);
   const stageBull = stagePack ? latestDebateTurn(stagePack, "bull")?.publicSummary ?? stageJudgement?.bullStrongestPoint ?? null : null;
   const stageBear = stagePack ? latestDebateTurn(stagePack, "bear")?.publicSummary ?? stageJudgement?.bearStrongestPoint ?? null : null;
   const stageJudge = stagePack ? stageJudgement?.whyNotFinal ?? null : null;
-  const stageUser = [...messages].reverse().find((message) => message.role === "user")?.content ?? null;
-  const stageMotion = stagePack?.motion ?? pendingDebateContext?.motion ?? null;
-  const stageStatus = [...messages].reverse().find((message) => (
+  const stageUser = isNewBattleDraft
+    ? [...messages].reverse().find((message) => message.id.startsWith("local-debate-"))?.content ?? null
+    : latestDebateUserMessage(messages)?.content ?? null;
+  const stageMotion = pendingDebateContext?.motion ?? stagePack?.motion ?? null;
+  const streamingStatus = [...messages].reverse().find((message) => (
     message.role === "advisor" && Boolean((message.metadata as AdvisorMessageMeta).streaming)
   ))?.metadata.streamStatus as string | undefined;
+  const stageBlockReason = stagePack?.status.toUpperCase() === "BLOCKED"
+    ? debatePackBlockReason(stagePack)
+    : null;
+  const stageStatus = streamingStatus ?? (stageBlockReason ? `Battle 暂时受阻：${stageBlockReason}` : undefined);
 
   const send = async (text: string, options: { forceDebate?: boolean; debateRole?: DebateRole } = {}) => {
     if (!user || !text.trim() || sending) return;
@@ -626,17 +675,10 @@ const AdvisorPage = () => {
   const startBattleFromSuggestion = (suggestion: DebateSuggestion) => {
     if (sending) return;
     const setup = suggestedBattleDraft(suggestion as DebateSuggestionWithTarget, debateUserRole);
-    setAdvisorMode("debate");
+    switchAdvisorMode("debate");
     setActiveDebateSessionId(null);
     setPendingDebateContext({ motion: setup.motion, targetSymbol: setup.targetSymbol });
     setDraft(setup.motion);
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  };
-
-  const prepareDebatePrompt = (prompt: string, role: DebateRole = debateUserRole) => {
-    setAdvisorMode("debate");
-    setDebateUserRole(role);
-    setDraft(prompt);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -662,7 +704,29 @@ const AdvisorPage = () => {
   const handleComposerSend = handleSend;
 
   return (
-    <div className="relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden">
+    <div className={cn(
+      "advisor-workbench relative flex h-auto min-h-[calc(100dvh-8rem)] w-full gap-0 overflow-visible border-y border-border bg-card md:h-full md:min-h-[640px] md:overflow-hidden",
+      advisorMode === "debate" ? "advisor-workbench-debate" : "advisor-workbench-normal",
+      debateTransitioning && "advisor-workbench-transitioning",
+    )}>
+      {debateTransitioning ? (
+        <div className="advisor-mode-transition" role="status" aria-live="polite">
+          <div className="advisor-mode-transition-mark">
+            <Swords className="size-5" />
+          </div>
+          <strong>{debateTransitionTarget === "debate" ? "正在进入辩论模式" : "正在返回普通模式"}</strong>
+          <span>{debateTransitionTarget === "debate" ? "准备圆桌、角色和 Battle 记录" : "恢复普通顾问对话"}</span>
+        </div>
+      ) : null}
+
+      {advisorMode === "debate" ? (
+        <DebateHistoryRail
+          entries={debateHistory}
+          motion={stageMotion}
+          status={stageStatus}
+          onNewDebate={handleNewDebate}
+        />
+      ) : (
       <aside className="hidden w-[302px] shrink-0 flex-col border-r border-neutral-200 bg-[#f7f7f7] text-neutral-950 md:flex">
         <div className="flex items-center justify-between px-3 pb-4 pt-3">
           <button
@@ -786,15 +850,22 @@ const AdvisorPage = () => {
           )}
         </div>
       </aside>
+      )}
 
-      <section className="flex min-w-0 flex-1 flex-col md:min-h-0">
+      <section className={cn("flex min-w-0 flex-1 flex-col md:min-h-0", advisorMode === "debate" && "advisor-debate-panel")}>
         <header className="flex flex-col items-start justify-between gap-2 border-b border-border px-3 py-3 sm:flex-row sm:items-center sm:px-6">
           <div className="min-w-0">
-            <p className="line-clamp-1 text-sm font-medium">{activeSession?.title ?? "新对话"}</p>
+            <p className="line-clamp-1 text-sm font-medium">
+              {advisorMode === "debate" ? `多空 Battle · ${stageMotion || "新辩题"}` : activeSession?.title ?? "新对话"}
+            </p>
           </div>
+          {advisorMode === "debate" ? <span className="debate-header-status">{stageStatus || "用户可随时加入辩论"}</span> : null}
         </header>
 
-        <div ref={listRef} className="flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto">
+        <div ref={listRef} className={cn(
+          "flex-none overflow-visible px-3 py-6 sm:px-6 md:min-h-0 md:flex-1 md:overflow-y-auto",
+          advisorMode === "debate" && "advisor-debate-viewport",
+        )}>
           {loadingHistory ? (
             <div className="grid min-h-[360px] place-items-center text-sm text-muted-foreground md:h-full md:min-h-0">加载对话…</div>
           ) : emptyChatState ? (
@@ -816,19 +887,29 @@ const AdvisorPage = () => {
                 ))}
               </div>
             </div>
-          ) : (
+          ) : advisorMode === "debate" ? (
             <>
-              {advisorMode === "debate" ? (
-                <DebateCharacterStage
-                  activeRole={debateActivity?.role ?? "moderator"}
+              <div className="debate-history-mobile md:hidden">
+                <DebateHistoryRail
+                  entries={debateHistory}
                   motion={stageMotion}
                   status={stageStatus}
-                  userMessage={stageUser}
-                  bullMessage={stageBull}
-                  bearMessage={stageBear}
-                  judgeMessage={stageJudge}
+                  onNewDebate={handleNewDebate}
+                  mobile
                 />
-              ) : null}
+              </div>
+              <DebateCharacterStage
+                activeRole={debateActivity?.role ?? null}
+                motion={stageMotion}
+                status={stageStatus}
+                userMessage={stageUser}
+                bullMessage={stageBull}
+                bearMessage={stageBear}
+                judgeMessage={stageJudge}
+              />
+            </>
+          ) : (
+            <>
               <ul className="flex w-full max-w-none flex-col gap-5">
               {messages.map((msg) => {
                 const meta = (msg.metadata ?? {}) as AdvisorMessageMeta;
@@ -900,9 +981,6 @@ const AdvisorPage = () => {
                       {msg.role === "advisor" && meta.debateSuggestion?.recommended ? (
                         <DebateSuggestionCard suggestion={meta.debateSuggestion} onStart={startBattleFromSuggestion} />
                       ) : null}
-                      {msg.role === "advisor" && meta.debatePack ? (
-                        <DebateBattleCard pack={meta.debatePack} onPrompt={prepareDebatePrompt} />
-                      ) : null}
                     </div>
                   </li>
                 );
@@ -928,11 +1006,11 @@ const AdvisorPage = () => {
                 textareaRef.current?.focus();
               }}
             >
-              <textarea
-                ref={textareaRef}
-                value={composerDraft}
-                onChange={(e) => setComposerDraft(e.target.value)}
-                placeholder="发消息…"
+                <textarea
+                  ref={textareaRef}
+                  value={composerDraft}
+                  onChange={(e) => setComposerDraft(e.target.value)}
+                placeholder={advisorMode === "debate" ? "向多方、空方或裁判提问…" : "发消息…"}
                 rows={2}
                 className="w-full min-h-[52px] resize-none border-0 bg-transparent px-2 py-1 text-sm text-neutral-900 tracking-wide caret-blue-600 outline-none placeholder:text-neutral-400"
                 onKeyDown={(e) => {
@@ -1042,8 +1120,7 @@ const AdvisorPage = () => {
                         <DropdownMenuItem
                           key={mode.value}
                           onSelect={() => {
-                            setAdvisorMode(mode.value);
-                            if (mode.value === "normal") setPendingDebateContext(null);
+                            switchAdvisorMode(mode.value);
                           }}
                           className="flex h-10 cursor-pointer items-center justify-between rounded-xl px-3 text-sm text-neutral-950 focus:bg-neutral-100 focus:text-neutral-950"
                         >
@@ -1145,71 +1222,134 @@ const DebateSuggestionCard = ({ suggestion, onStart }: { suggestion: DebateSugge
   </div>
 );
 
-const DebateBattleCard = ({ pack, onPrompt }: { pack: DebatePack; onPrompt: (prompt: string, role?: DebateRole) => void }) => {
-  const judgement = pack.judgements.at(-1);
-  const bull = latestDebateTurn(pack, "bull")?.publicSummary ?? judgement?.bullStrongestPoint ?? "多方还没有形成有效发言。";
-  const bear = latestDebateTurn(pack, "bear")?.publicSummary ?? judgement?.bearStrongestPoint ?? "空方还没有形成有效发言。";
-  const evidenceFacts = debateEvidenceFacts(pack);
-  const prompts = judgement?.suggestedNextPrompts ?? [];
-  return (
-    <div className="mt-3 overflow-hidden rounded-lg border border-border bg-card text-xs shadow-sm">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
-          <Swords className="size-4 text-blue-600" />
-          <span className="truncate">Battle · {pack.motion}</span>
+const DebateHistoryRail = ({
+  entries,
+  motion,
+  status,
+  onNewDebate,
+  mobile = false,
+}: {
+  entries: DebateHistoryEntry[];
+  motion: string | null;
+  status?: string;
+  onNewDebate: () => void;
+  mobile?: boolean;
+}) => (
+  <aside className={cn("debate-history-rail", mobile && "debate-history-rail-mobile")}>
+    <div className="debate-history-rail-header">
+      <div className="flex min-w-0 items-center gap-2">
+        <Swords className="size-5 shrink-0 text-blue-700" />
+        <div className="min-w-0">
+          <span className="debate-history-rail-kicker">Battle Room</span>
+          <h2>辩论记录</h2>
         </div>
-        <span className="rounded-full bg-muted px-2 py-1 text-[10px] text-muted-foreground">{pack.status}</span>
       </div>
-      <div className="grid gap-2 p-3 md:grid-cols-3">
-        <DebateSide title="多方" icon={TrendingUp} tone="text-emerald-700" text={bull} />
-        <DebateSide title="空方" icon={TrendingDown} tone="text-rose-700" text={bear} />
-        <DebateSide title="裁判" icon={Gavel} tone="text-blue-700" text={judgement?.whyNotFinal ?? "裁判总结暂缺。"} />
-      </div>
-      {evidenceFacts.length ? (
-        <div className="border-t border-border px-3 py-3">
-          <div className="font-semibold text-foreground">共同证据</div>
-          <ul className="mt-1.5 space-y-1 text-muted-foreground">
-            {evidenceFacts.map((fact) => <li key={fact}>· {fact}</li>)}
-          </ul>
-        </div>
-      ) : null}
-      {judgement ? (
-        <div className="border-t border-border px-3 py-2 text-muted-foreground">
-          证据天平：{evidenceTiltLabel(judgement.evidenceTilt)} · 关键分歧：{judgement.keyDisagreement}
-        </div>
-      ) : null}
-      {pack.publication ? (
-        <div className="border-t border-border px-3 py-3">
-          <div className="flex items-center gap-2 font-semibold text-blue-700">
-            <Check className="size-4" />
-            <span>Chief Advisor 发布门 · {pack.publication.status}</span>
+      <button type="button" onClick={onNewDebate} aria-label="新建辩论" title="新建辩论">
+        <MessageSquarePlus className="size-4" />
+      </button>
+    </div>
+    <div className="debate-history-rail-motion">
+      <span>本轮辩题</span>
+      <strong>{motion || "等待用户提出问题"}</strong>
+      <small>{status || "用户可以随时加入 Battle"}</small>
+    </div>
+    <div className="debate-history-rail-list">
+      {entries.length ? entries.map((entry, index) => (
+        <article className={cn("debate-history-entry", `debate-history-entry-${entry.role}`)} key={entry.id}>
+          <div className="debate-history-entry-meta">
+            <span>{entry.label}</span>
+            <small>{entry.roundLabel || `0${index + 1}`}</small>
           </div>
-          <p className="mt-1.5 leading-5 text-foreground">{pack.publication.answer}</p>
+          <p>{entry.text}</p>
+        </article>
+      )) : (
+        <div className="debate-history-empty">
+          <span>01</span>
+          <p>你的问题会先进入记录，随后由看多、看空和裁判依次回应。</p>
         </div>
-      ) : null}
-      <div className="flex flex-wrap gap-2 border-t border-border px-3 py-3">
-        <button type="button" onClick={() => onPrompt("我站多方，请帮我补强多方观点。", "bull")} className="rounded-full border border-emerald-200 px-3 py-1.5 text-emerald-700 hover:bg-emerald-50">我站多方</button>
-        <button type="button" onClick={() => onPrompt("我站空方，请帮我继续质询多方。", "bear")} className="rounded-full border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50">我站空方</button>
-        {prompts.map((prompt) => (
-          <button key={prompt} type="button" onClick={() => onPrompt(prompt, "neutral")} className="rounded-full border border-border px-3 py-1.5 text-foreground hover:bg-muted">{prompt}</button>
-        ))}
-      </div>
+      )}
     </div>
-  );
-};
-
-const DebateSide = ({ title, icon: Icon, tone, text }: { title: string; icon: typeof Swords; tone: string; text: string }) => (
-  <div className="rounded-md border border-border bg-background/60 p-3">
-    <div className={cn("flex items-center gap-2 font-semibold", tone)}>
-      <Icon className="size-4" />
-      <span>{title}</span>
-    </div>
-    <p className="mt-2 leading-5 text-foreground">{text}</p>
-  </div>
+  </aside>
 );
 
 function latestDebateTurn(pack: DebatePack, speaker: "bull" | "bear") {
   return [...pack.turns].reverse().find((turn) => turn.speaker === speaker);
+}
+
+export function debateHistoryEntries(messages: OnboardingMessage[]): DebateHistoryEntry[] {
+  const entries: DebateHistoryEntry[] = [];
+  for (const message of messages) {
+    if (message.role === "user" && isDebateUserMessage(message)) {
+      entries.push({
+        id: `user-${message.id}`,
+        role: "user",
+        label: "你的问题",
+        text: message.content,
+        roundLabel: roundLabel(message.metadata.roundIndex),
+      });
+      continue;
+    }
+    if (message.role !== "advisor") continue;
+    const metadata = message.metadata as AdvisorMessageMeta & { debateSessionId?: unknown; roundIndex?: unknown };
+    const pack = isDebatePack(metadata.debatePack) ? metadata.debatePack : null;
+    if (!pack) continue;
+    const roundLabelText = roundLabel(metadata.roundIndex);
+    const turns = pack.turns.filter((turn) => turn.speaker === "evidence" || turn.speaker === "bull" || turn.speaker === "bear");
+    for (const turn of turns) {
+      if (turn.speaker !== "evidence" && turn.speaker !== "bull" && turn.speaker !== "bear") continue;
+      entries.push({
+        id: `${message.id}-${turn.id}`,
+        role: turn.speaker === "evidence" ? "evidence" : turn.speaker,
+        label: turn.speaker === "evidence" ? "共同证据" : turn.speaker === "bull" ? "看多 agent" : "看空 agent",
+        text: turn.publicSummary || turn.content,
+        roundLabel: roundLabelText,
+      });
+    }
+    const judgement = pack.judgements.at(-1);
+    if (judgement) {
+      entries.push({
+        id: `${message.id}-judge-${judgement.id}`,
+        role: "judge",
+        label: "主持顾问 / 裁判",
+        text: judgement.whyNotFinal,
+        roundLabel: roundLabelText,
+      });
+    } else if (pack.status.toUpperCase() === "BLOCKED") {
+      entries.push({
+        id: `${message.id}-blocked`,
+        role: "judge",
+        label: "主持顾问 / 状态",
+        text: debatePackBlockReason(pack),
+        roundLabel: roundLabelText,
+      });
+    }
+  }
+  return entries.slice(-18);
+}
+
+function latestDebateUserMessage(messages: OnboardingMessage[]): OnboardingMessage | null {
+  return [...messages].reverse().find((message) => message.role === "user" && isDebateUserMessage(message)) ?? null;
+}
+
+function roundLabel(value: unknown): string | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? `第 ${value} 轮` : undefined;
+}
+
+function isDebateUserMessage(message: OnboardingMessage): boolean {
+  return message.metadata.outputMode === "BATTLE"
+    || typeof message.metadata.debateRole === "string"
+    || typeof message.metadata.debateSessionId === "string";
+}
+
+function debatePackBlockReason(pack: DebatePack): string {
+  const failure = pack.agentTrace
+    .map((run) => isRecord(run.failure) ? run.failure.message : null)
+    .find((message): message is string => typeof message === "string" && message.trim().length > 0);
+  if (!failure) return "模型服务暂时不可用，未生成多空双方观点。";
+  if (/token|api[\s_-]*key|invalid credential|unauthorized/iu.test(failure)) {
+    return "模型服务配置不可用，未生成多空双方观点。";
+  }
+  return "辩论 Agent 调用未完成，未生成多空双方观点。";
 }
 
 function latestDebatePackFromMessages(messages: OnboardingMessage[]): DebatePack | null {
@@ -1227,13 +1367,6 @@ function isDebatePack(value: unknown): value is DebatePack {
     && typeof value.motion === "string"
     && Array.isArray(value.turns)
     && Array.isArray(value.judgements);
-}
-
-function evidenceTiltLabel(value: string): string {
-  if (value === "bull_slightly_stronger") return "多方略强";
-  if (value === "bear_slightly_stronger") return "空方略强";
-  if (value === "balanced") return "暂时打平";
-  return "证据不足";
 }
 
 export async function attachDebatePacks(

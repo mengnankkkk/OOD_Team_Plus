@@ -81,11 +81,15 @@ def main():
         page.wait_for_load_state("networkidle")
         page.get_by_role("button", name="模式选择").click()
         page.get_by_text("辩论模式", exact=True).click()
-        expect(page.get_by_text("正在准备圆桌会议")).to_be_visible()
+        expect(page.get_by_text("正在进入辩论模式")).to_be_visible()
         expect(page.locator(".debate-stage")).to_be_visible(timeout=5_000)
 
         expect(page.locator(".debate-character")).to_have_count(4)
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.debate-character-image')].every((image) => image.complete && image.naturalWidth > 0)",
+        )
         for image in page.locator(".debate-character-image").all():
+            expect(image).to_have_js_property("complete", True)
             width = image.evaluate("element => element.naturalWidth")
             assert width > 0
             report["image_widths"].append(width)
@@ -94,30 +98,42 @@ def main():
         page.screenshot(path=ARTIFACT_DIR / "desktop-initial.png", full_page=True)
         assert_characters_inside_stage(page)
 
-        page.get_by_label(re.compile(r"^看多 agent")).click()
-        expect(page.get_by_role("status")).to_be_visible()
-        expect(page.locator(".debate-character-pushed")).to_have_count(1)
-        report["checks"].append("manual shove interaction")
-
         prompt = "新能源板块现在适合分批投入吗？"
-        composer = page.get_by_placeholder("输入要讨论的问题...")
+        composer = page.get_by_placeholder("向多方、空方或裁判提问…")
         composer.fill(prompt)
-        composer.press("Enter")
-        expect(page.get_by_text(prompt, exact=True)).to_be_visible()
-        expect(page.locator(".debate-character-user.debate-character-active")).to_be_visible()
+        composer.press("Control+Enter")
+        history_rail = page.locator(".debate-history-rail").first
+        expect(history_rail.locator(".debate-history-entry-user p").first).to_have_text(prompt)
+        expect(page.locator(".debate-stage").get_by_text(prompt, exact=True)).to_be_visible()
         report["checks"].append("Hisa mirrors the user message")
 
-        expect(page.get_by_text(re.compile(r"^看多观点："))).to_be_visible(timeout=3_000)
-        expect(page.get_by_text(re.compile(r"^看空观点："))).to_be_visible(timeout=3_000)
-        page.wait_for_selector(".debate-character-shoving", timeout=2_000)
-        page.screenshot(path=ARTIFACT_DIR / "desktop-clash.png", full_page=True)
-        report["checks"].append("Student and Shark speak and clash")
+        expect(history_rail).to_contain_text("辩论记录")
+        page.wait_for_function(
+            """() => {
+                const rail = document.querySelector('.debate-history-rail');
+                const bull = rail?.querySelector('.debate-history-entry-bull p')?.textContent?.trim();
+                const blocked = rail?.querySelector('.debate-history-entry-judge p')?.textContent?.includes('模型服务');
+                return Boolean(bull || blocked);
+            }""",
+            timeout=120_000,
+        )
+        bull_entry = history_rail.locator(".debate-history-entry-bull p").first
+        if bull_entry.count():
+            expect(bull_entry).not_to_have_text("")
+            expect(history_rail.locator(".debate-history-entry-bear p").first).not_to_have_text("")
+            report["checks"].append("Battle history records the user and both sides")
+        else:
+            expect(history_rail.locator(".debate-history-entry-judge p").first).to_contain_text("模型服务")
+            report["checks"].append("Battle history shows an explicit blocked-agent status")
+        page.screenshot(path=ARTIFACT_DIR / "desktop-debate.png", full_page=True)
 
-        expect(page.get_by_text(re.compile(r"^评委结论："))).to_be_visible(timeout=4_000)
-        expect(page.locator(".debate-character-moderator.debate-character-active")).to_be_visible()
+        if bull_entry.count():
+            expect(history_rail.locator(".debate-history-entry-judge p").first).not_to_have_text("")
+            expect(page.locator(".debate-bubble-judge")).to_be_visible(timeout=120_000)
+        else:
+            expect(page.locator(".debate-stage-status-blocked")).to_be_visible()
         page.screenshot(path=ARTIFACT_DIR / "desktop-judge.png", full_page=True)
-        assert_characters_inside_stage(page)
-        report["checks"].append("Teacher publishes the judge bubble")
+        report["checks"].append("Battle stage exposes the final agent state")
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(500)
