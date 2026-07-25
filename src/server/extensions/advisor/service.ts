@@ -352,8 +352,9 @@ function completeRun(input: AdvisorRunInput & { analysisId: string; userMessageI
         { name: "weightPercent", type: "number" },
       ],
       markdownContent: input.outputMode === "FINANCIAL_REPORT"
-        ? buildFinancialReportMarkdown(artifactTitle, input.answer, input.artifactRows)
+        ? buildFinancialReportMarkdown(artifactTitle, input.answer, input.artifactRows, input.recommendation, input.recommendationStatus)
         : undefined,
+      recommendationId,
     });
     result.artifact = { artifactId: artifact.artifactId, analysisId: artifact.analysisId, status: artifact.status, previewUrl: `/api/v1/generated-artifacts/${artifact.artifactId}/preview` };
     const resultDb = getDatabase();
@@ -460,20 +461,86 @@ function defaultDisclaimer(): string {
   return "本结果用于投资研究和方案模拟，不构成收益承诺，不会创建真实订单，最终决策由用户自行作出。";
 }
 
-function buildFinancialReportMarkdown(title: string, answer: string, rows: Record<string, unknown>[]): string {
-  const body = answer.trim().startsWith("#")
-    ? answer.trim()
-    : `# ${title}\n\n## Agent 结论\n\n${answer.trim()}`;
-  const appendix = rows.length
-    ? [
-      "## 当前持仓附录",
-      "",
-      "| 标的 | 名称 | 市值 | 浮盈亏 | 权重 |",
-      "| --- | --- | ---: | ---: | ---: |",
-      ...rows.map((row) => `| ${markdownCell(row.symbol)} | ${markdownCell(row.name)} | ${markdownCell(row.marketValue)} | ${markdownCell(row.unrealizedPnl)} | ${markdownPercent(row.weightPercent)} |`),
-    ].join("\n")
-    : "## 当前持仓附录\n\n本次没有可用的持仓明细。";
-  return `${body}\n\n${appendix}\n\n---\n\n本报告由资产顾问 Agent 基于当前持仓生成，用于投资研究和方案模拟，不构成真实交易指令。`;
+export function buildFinancialReportMarkdown(
+  title: string,
+  answer: string,
+  rows: Record<string, unknown>[],
+  recommendation: RecommendationDraft | null = null,
+  status: "ACTIVE" | "DEGRADED" | "BLOCKED" = "DEGRADED",
+): string {
+  const fields = parseAnswerFields(answer);
+  const action = recommendation?.action ?? extractAction(fields.action);
+  const summary = recommendation?.summary ?? fields.conclusion ?? "报告已完成，建议结合下方风险提示理解当前组合。";
+  const reasons = recommendation?.reasons?.length
+    ? recommendation.reasons
+    : fields.conclusion ? [fields.conclusion] : [];
+  const risks = recommendation?.risks ?? [];
+  const counterEvidence = recommendation?.counterEvidence?.length
+    ? recommendation.counterEvidence
+    : fields.counterEvidence ? [fields.counterEvidence] : [];
+  const invalidation = recommendation?.invalidation ?? "";
+  const portfolioEvidence = [
+    rows.length ? `报告生成时读取到 ${rows.length} 项持仓快照，具体明细见下方附录。` : "本次未获得可用的持仓明细。",
+    fields.portfolioFacts,
+    fields.portfolioImpact,
+    fields.risk ? translateRiskText(fields.risk) : "",
+  ].filter(Boolean);
+  const marketEvidence = [
+    fields.technical,
+    fields.research,
+    recommendation?.provenance && typeof recommendation.provenance.dataState === "string"
+      ? `数据状态：${recommendation.provenance.dataState}`
+      : "",
+    recommendation?.dataAsOf ? `数据截至：${recommendation.dataAsOf}` : "",
+  ].filter(Boolean);
+  const fundamentalEvidence = fields.fundamental
+    ? [fields.fundamental]
+    : ["本次未获得可用的基本面或消息面证据，未将这类信息作为支持理由。"];
+  const actionEvidence = [
+    ...reasons,
+    fields.portfolioImpact ? `这项判断对组合的影响是：${fields.portfolioImpact}` : "",
+    `因此当前对应的动作是“${translateAction(action)}”。`,
+  ].filter(Boolean);
+
+  return [
+    `# ${title}`,
+    "",
+    "## 先看结论",
+    "",
+    `**建议状态：** ${translateStatus(status)}`,
+    `**建议动作：** ${translateAction(action)}`,
+    `**一句话判断：** ${friendlySummary(summary, action, status)}`,
+    `**你现在可以怎么做：** ${beginnerGuidanceFor(action, status)}`,
+    "",
+    "## 为什么这样判断",
+    "",
+    "### 你的画像和目标",
+    ...toBulletLines([fields.profile], "本次未获得可用的用户画像和投资目标证据，不能据此做个性化判断。"),
+    "",
+    "### 组合事实",
+    "",
+    ...toBulletLines(portfolioEvidence, "本次未获得可用的组合事实。"),
+    "",
+    "### 行情与技术观察",
+    ...toBulletLines(marketEvidence, "本次未获得可用的行情或技术面证据，不能据此判断趋势。"),
+    "",
+    "### 基本面与消息面",
+    ...toBulletLines(fundamentalEvidence, "本次未获得可用的基本面或消息面证据，未据此做判断。"),
+    "",
+    "### 反方证据",
+    ...toBulletLines([...counterEvidence, ...risks].filter(Boolean), "本次未记录额外的反方证据；市场变化仍可能使判断失效。"),
+    "",
+    "### 为什么对应这个动作",
+    ...toBulletLines(actionEvidence, "暂未记录足够的动作依据。"),
+    invalidation ? `- **需要重新判断的情况：** ${translateReportText(invalidation)}` : "",
+    fields.compliance ? `- **研究边界：** ${translateReportText(fields.compliance)}` : "",
+    "",
+    buildHoldingsAppendix(rows),
+    "",
+    "---",
+    "",
+    "本报告由资产智能顾问基于当前持仓生成，仅用于投资研究和方案模拟，不构成真实交易指令。",
+  ].join("\n");
 }
 
 function markdownCell(value: unknown): string {
@@ -483,4 +550,134 @@ function markdownCell(value: unknown): string {
 function markdownPercent(value: unknown): string {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? `${numeric.toFixed(2).replace(/\.?0+$/u, "")}%` : markdownCell(value);
+}
+
+function parseAnswerFields(answer: string): Record<string, string> {
+  const valueFor = (label: string) => answer
+    .split("\n")
+    .map((line) => line.match(new RegExp(`^${label}[：:]\\s*(.+)$`, "u"))?.[1]?.trim() ?? "")
+    .find(Boolean) ?? "";
+  return {
+    action: answer.match(/建议动作[：:]\s*([A-Z_]+)/u)?.[1] ?? "",
+    conclusion: valueFor("核心结论"),
+    profile: valueFor("用户画像与投资目标依据") || valueFor("本次画像假设"),
+    research: valueFor("数据研究"),
+    technical: valueFor("行情与技术观察"),
+    fundamental: valueFor("基本面与消息面依据"),
+    portfolioImpact: valueFor("组合影响"),
+    portfolioFacts: valueFor("组合事实"),
+    risk: valueFor("风险复核"),
+    counterEvidence: valueFor("反方证据"),
+    compliance: valueFor("合规结论"),
+  };
+}
+
+function extractAction(value: string): RecommendationDraft["action"] {
+  const actions: RecommendationDraft["action"][] = ["WATCH", "TRIAL_BUY", "SCALE_IN", "HOLD", "STOP_ADDING", "SCALE_OUT", "EXIT"];
+  return actions.find((action) => value.includes(action)) ?? "WATCH";
+}
+
+function translateStatus(status: string): string {
+  if (status === "ACTIVE") return "可以继续执行（画像、数据和风险检查基本通过）";
+  if (status === "BLOCKED") return "暂不执行（还有关键信息或风险需要先确认）";
+  return "谨慎参考（可以用于研究，但不建议直接照做）";
+}
+
+function translateAction(action: string): string {
+  const labels: Record<string, string> = {
+    WATCH: "先观察，不急着买卖",
+    TRIAL_BUY: "小额试仓，先验证判断",
+    SCALE_IN: "分批加仓，不一次性投入",
+    HOLD: "继续持有，暂不调整",
+    STOP_ADDING: "停止加仓，先控制集中度",
+    SCALE_OUT: "分批减仓，逐步降低风险",
+    EXIT: "清仓退出，停止继续承担该风险",
+  };
+  return labels[action] ?? labels.WATCH;
+}
+
+function friendlySummary(summary: string, action: string, status: string): string {
+  const cleaned = translateReportText(summary).replace(/[。；;]+$/u, "");
+  if (action === "STOP_ADDING") return `${cleaned}。简单说，先不要继续买入占比已经偏高的持仓。`;
+  if (action === "SCALE_OUT") return `${cleaned}。简单说，先分几次降低风险，不需要一次性卖完。`;
+  if (action === "EXIT") return `${cleaned}。简单说，当前不适合继续承担这项风险。`;
+  if (status === "BLOCKED") return `${cleaned}。简单说，信息还不够，先别急着做决定。`;
+  if (status === "DEGRADED") return `${cleaned}。简单说，这是一份谨慎参考，操作前要再核对最新行情。`;
+  return cleaned;
+}
+
+function beginnerGuidanceFor(action: string, status: string): string {
+  if (status === "BLOCKED") return "先补齐缺少的信息或等待行情恢复，再决定是否调整持仓。";
+  if (action === "STOP_ADDING") return "暂时不再买入这类资产，把新增资金留作现金或分散到其他风险来源。";
+  if (action === "SCALE_OUT") return "可以考虑分几次减少仓位，每次操作前都重新检查组合占比。";
+  if (action === "EXIT") return "不要继续追加资金；如果决定退出，先确认资金用途和交易成本。";
+  if (action === "SCALE_IN" || action === "TRIAL_BUY") return "只用可以承受波动的小部分资金分批验证，不要一次性投入。";
+  return "先保持现状，观察数据和组合变化，不因为短期涨跌急着操作。";
+}
+
+function translateReportText(value: string): string {
+  return value
+    .replaceAll("Agent", "智能顾问")
+    .replaceAll("PandaData", "行情数据服务")
+    .replaceAll("get_stock_rt_daily", "实时日行情接口")
+    .replaceAll("get_stock_daily", "股票日行情接口")
+    .replaceAll("get_fund_daily", "基金日行情接口")
+    .replaceAll("get_index_daily", "指数日行情接口")
+    .replaceAll("get_us_daily", "美股日行情接口")
+    .replaceAll("get_hk_daily", "港股日行情接口")
+    .replaceAll(" via ", "，来源于")
+    .replaceAll("LATEST_TRADING_DAY", "最近交易日收盘数据")
+    .replaceAll("LIVE_FRESH", "最新实时行情")
+    .replaceAll("STALE", "较旧行情")
+    .replaceAll("UNAVAILABLE", "暂无可用行情")
+    .replaceAll("NOT_REQUIRED", "本次不需要外部行情")
+    .replaceAll("DEGRADED", "谨慎参考")
+    .replaceAll("ACTIVE", "可以继续执行")
+    .replaceAll("BLOCKED", "暂不执行")
+    .replaceAll("STOP_ADDING", "停止加仓")
+    .replaceAll("SCALE_IN", "分批加仓")
+    .replaceAll("SCALE_OUT", "分批减仓")
+    .replaceAll("TRIAL_BUY", "小额试仓")
+    .replaceAll("WATCH", "观察")
+    .replaceAll("HOLD", "继续持有")
+    .replaceAll("EXIT", "清仓退出")
+    .replaceAll("BALANCED", "平衡型")
+    .replaceAll("CONSERVATIVE", "保守型")
+    .replaceAll("AGGRESSIVE", "进取型")
+    .replaceAll("BROAD_INDEX_ETF", "宽基指数或 ETF")
+    .replaceAll("FACTOR_RESEARCH", "因子研究")
+    .replaceAll("STRATEGY_BACKTEST", "策略回测")
+    .replaceAll("HHI", "集中度指标");
+}
+
+function translateRiskText(value: string): string {
+  return translateReportText(value)
+    .replace(/组合非现金持仓\s*(\d+)\s*项/u, "除现金外共有 $1 项持仓")
+    .replace(/最大持仓权重\s*([0-9.]+)%/u, "最大的一项持仓占组合 $1%")
+    .replace(/集中度指标\s*([0-9.]+)/u, "集中度指标为 $1（越接近 1 代表越集中）")
+    .replace(/已计算\s*(\d+)\s*个标的的历史风险指标/u, "已计算 $1 个标的的历史波动和回撤");
+}
+
+function toBulletLines(items: string[], fallback: string): string[] {
+  const normalized = items.map((item) => translateReportText(item)).filter(Boolean);
+  return normalized.length ? normalized.map((item) => `- ${item}`) : [`- ${fallback}`];
+}
+
+function buildHoldingsAppendix(rows: Record<string, unknown>[]): string {
+  if (!rows.length) return "## 当前持仓附录\n\n本次没有可用的持仓明细。";
+  return [
+    "## 当前持仓附录",
+    "",
+    "下面是生成报告时读取到的持仓快照。市值和浮动盈亏会随行情变化，不能替代最新成交价。",
+    "",
+    "| 证券代码 | 持仓名称 | 当前市值（元） | 浮动盈亏（元） | 组合占比 |",
+    "| --- | --- | ---: | ---: | ---: |",
+    ...rows.map((row) => `| ${markdownCell(row.symbol)} | ${markdownCell(row.name)} | ${formatReportNumber(row.marketValue)} | ${formatReportNumber(row.unrealizedPnl)} | ${markdownPercent(row.weightPercent)} |`),
+  ].join("\n");
+}
+
+function formatReportNumber(value: unknown): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return markdownCell(value);
+  return numeric.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

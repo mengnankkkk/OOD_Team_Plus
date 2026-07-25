@@ -1,12 +1,12 @@
 "use client";
 
-import { BarChart3, FilePenLine, FileText, MessageSquareText, Save, Trash2 } from "lucide-react";
+import { BarChart3, FilePenLine, FileText, MessageSquareText, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeading, Status, useApiResource } from "@/features/workbench/components/shared";
 import { apiGet, apiMutation, shortDate } from "@/features/workbench/lib/api";
 import { useNavigate } from "@/features/frontend-migration/router";
 
-type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; previewUrl: string; conversationId?: string | null; createdAt: string; updatedAt: string };
+type Artifact = { id: string; type: "MARKDOWN" | "ECHARTS_OPTION"; title: string; status: string; currentVersion: number; previewUrl: string; conversationId?: string | null; recommendationId?: string | null; createdAt: string; updatedAt: string };
 type Preview = { id: string; type: Artifact["type"]; version: number; markdown?: string; option?: { title?: { text?: string }; xAxis?: { data?: string[] }; series?: Array<{ name?: string; data?: number[] }> } };
 
 export function ArtifactLibrary({
@@ -98,19 +98,19 @@ export function ArtifactLibrary({
       {embedded ? (
         <header className="mb-5 flex flex-col gap-4 border-b-4 border-foreground pb-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <span className="section-kicker">ARTIFACT LIBRARY / 研究产物</span>
+            <span className="section-kicker">报告库 / 研究产物</span>
             <h2 className="mt-2 text-2xl font-semibold">报告产物</h2>
-            <p className="mt-2 text-sm text-muted-foreground">资产 Agent 与查数结果生成的图表、Markdown 报告集中保存在这里。</p>
+            <p className="mt-2 text-sm text-muted-foreground">资产智能顾问与查数结果生成的图表、报告集中保存在这里。</p>
           </div>
           {headerActions ? <div className="flex shrink-0 flex-wrap gap-2">{headerActions}</div> : null}
         </header>
       ) : (
-        <PageHeading eyebrow="ARTIFACT LIBRARY / 研究产物" title="报告产物" description="资产 Agent 与查数结果生成的图表、Markdown 报告集中保存在这里。" actions={headerActions} />
+        <PageHeading eyebrow="报告库 / 研究产物" title="报告产物" description="资产智能顾问与查数结果生成的图表、报告集中保存在这里。" actions={headerActions} />
       )}
       {error ? <ErrorBlock message={error} /> : null}
       <section className="artifact-layout">
         <aside className="panel artifact-list">
-          <div className="panel-heading"><div><span>LIBRARY</span><h2>全部产物</h2></div><Status>{list.data?.items.length ?? 0}</Status></div>
+          <div className="panel-heading"><div><span>报告列表</span><h2>全部产物</h2></div><Status>{list.data?.items.length ?? 0}</Status></div>
           {list.data?.items.length ? list.data.items.map((item) => (
             <button key={item.id} className={selected === item.id ? "active" : ""} onClick={() => { setSelected(item.id); setEditing(false); }}>
               <span className="artifact-icon">{item.type === "MARKDOWN" ? <FileText size={18} /> : <BarChart3 size={18} />}</span>
@@ -120,8 +120,8 @@ export function ArtifactLibrary({
         </aside>
         <article className="panel artifact-preview">
           <div className="panel-heading">
-            <div><span>SAFE PREVIEW</span><h2>{current?.title ?? "选择一个产物"}</h2></div>
-            {current ? <div className="artifact-actions">{current.conversationId ? <button className="button ghost" onClick={() => navigate(`/advisor?conversationId=${encodeURIComponent(current.conversationId!)}`)}><MessageSquareText size={14} />对应对话</button> : null}<button className="button ghost" onClick={() => setEditing((value) => !value)}><FilePenLine size={14} />{editing ? "取消" : "修改"}</button><button className="icon-button danger" onClick={() => void remove()} aria-label="删除"><Trash2 size={15} /></button></div> : null}
+            <div><span>安全预览</span><h2>{current?.title ?? "选择一个产物"}</h2></div>
+            {current ? <div className="artifact-actions">{current.recommendationId ? <button className="button ghost" onClick={() => navigate(`/recommendations/${encodeURIComponent(current.recommendationId!)}`)}><ShieldCheck size={14} />查看建议卡</button> : null}{current.conversationId ? <button className="button ghost" onClick={() => navigate(`/advisor?conversationId=${encodeURIComponent(current.conversationId!)}`)}><MessageSquareText size={14} />对应对话</button> : null}<button className="button ghost" onClick={() => setEditing((value) => !value)}><FilePenLine size={14} />{editing ? "取消" : "修改"}</button><button className="icon-button danger" onClick={() => void remove()} aria-label="删除"><Trash2 size={15} /></button></div> : null}
           </div>
           {!current ? <EmptyBlock title="等待选择" detail="从左侧选择图表或报告查看内容。" /> : editing ? (
             <div className="artifact-editor">
@@ -137,7 +137,47 @@ export function ArtifactLibrary({
 }
 
 function MarkdownPreview({ markdown }: { markdown: string }) {
-  return <div className="markdown-preview">{markdown.split("\n").map((line, index) => line.startsWith("# ") ? <h1 key={index}>{line.slice(2)}</h1> : line.startsWith("## ") ? <h2 key={index}>{line.slice(3)}</h2> : line.startsWith("| ") ? <code key={index}>{line}</code> : line ? <p key={index}>{line}</p> : <br key={index} />)}</div>;
+  const lines = markdown.split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("| ") && lines[index + 1]?.startsWith("| ---")) {
+      const tableLines: string[] = [];
+      while (lines[index]?.startsWith("| ")) tableLines.push(lines[index++] ?? "");
+      blocks.push(<MarkdownTable key={`table-${index}`} lines={tableLines} />);
+      continue;
+    }
+    if (line.startsWith("# ")) blocks.push(<h1 key={index}>{line.slice(2)}</h1>);
+    else if (line.startsWith("## ")) blocks.push(<h2 key={index}>{line.slice(3)}</h2>);
+    else if (line.startsWith("### ")) blocks.push(<h3 key={index}>{line.slice(4)}</h3>);
+    else if (line.startsWith("- ")) blocks.push(<p className="markdown-bullet" key={index}><span>•</span>{renderInlineMarkdown(line.slice(2))}</p>);
+    else if (line.startsWith("**") && line.endsWith("**")) blocks.push(<p className="markdown-callout" key={index}>{line.slice(2, -2)}</p>);
+    else if (line) blocks.push(<p key={index}>{renderInlineMarkdown(line)}</p>);
+    else if (blocks.length && lines[index - 1]) blocks.push(<div className="markdown-spacer" key={index} />);
+    index += 1;
+  }
+  return <div className="markdown-preview">{blocks}</div>;
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const cells = (line: string) => line.split("|").slice(1, -1).map((cell) => cell.trim());
+  const headers = cells(lines[0] ?? "");
+  return (
+    <div className="markdown-table-wrap">
+      <table className="markdown-table">
+        <thead><tr>{headers.map((header, index) => <th key={`${header}-${index}`}>{header}</th>)}</tr></thead>
+        <tbody>{lines.slice(2).map((line, rowIndex) => <tr key={rowIndex}>{cells(line).map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderInlineMarkdown(line: string) {
+  const parts = line.split(/(\*\*[^*]+\*\*)/u);
+  return parts.map((part, index) => part.startsWith("**") && part.endsWith("**")
+    ? <strong key={index}>{part.slice(2, -2)}</strong>
+    : part);
 }
 
 function ChartPreview({ option }: { option: NonNullable<Preview["option"]> }) {
