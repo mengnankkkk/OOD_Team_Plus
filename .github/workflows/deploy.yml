@@ -333,6 +333,15 @@ jobs:
           trap - EXIT
           echo "[deploy] Docker image build completed at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
+          echo "::group::Validate runtime secrets"
+          timeout --signal=TERM --kill-after=15s 2m doppler run \
+            --project "$DOPPLER_PROJECT" \
+            --config "$DOPPLER_CONFIG" \
+            -- docker compose -p money-whisperer run --rm --no-deps money-whisperer \
+              node -e 'if (!process.env.A2A_BEARER_TOKEN?.trim()) { console.error("A2A_BEARER_TOKEN is missing from the container environment."); process.exit(1); }'
+          echo "[deploy] Required A2A runtime secret is available in the container."
+          echo "::endgroup::"
+
           $SUDO ln -sfn "$RELEASE_DIR" "$DEPLOY_PATH/current"
 
           echo "::group::Restart containers"
