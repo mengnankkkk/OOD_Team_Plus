@@ -276,6 +276,7 @@ describe("resolveTargetInstrument", () => {
   const instruments = [
     { id: "cambricon", symbol: "688256.SH", name: "寒武纪", asset_type: "stock", market: "CN" },
     { id: "apple", symbol: "AAPL.US", name: "Apple", asset_type: "stock", market: "US" },
+    { id: "microsoft", symbol: "MSFT.US", name: "Microsoft", asset_type: "stock", market: "US" },
   ];
 
   it("resolves a named holding from natural-language trading intent", () => {
@@ -297,5 +298,90 @@ describe("resolveTargetInstrument", () => {
         weight_bps: 6000,
       }],
     })).toEqual(instruments[0]);
+  });
+
+  it("keeps an explicit trusted symbol ahead of a different name in the message", () => {
+    expect(resolveTargetInstrument({
+      content: "我想加仓寒武纪",
+      targetSymbol: "AAPL.US",
+      instruments,
+    })).toEqual(instruments[1]);
+  });
+
+  it("does not collapse explicit exchange suffixes onto another market", () => {
+    const crossMarket = [
+      { id: "ping-an-bank", symbol: "000001.SZ", name: "平安银行", asset_type: "stock", market: "SZ" },
+      { id: "fund", symbol: "000001.OF", name: "测试基金", asset_type: "fund", market: "OF" },
+    ];
+
+    expect(resolveTargetInstrument({
+      content: "请分析 000001.OF",
+      instruments: crossMarket,
+      holdings: [{
+        instrument_id: "ping-an-bank",
+        symbol: "000001.SZ",
+        name: "平安银行",
+        asset_type: "stock",
+        market: "SZ",
+        sector: "Financials",
+        quantity_decimal: "100",
+        cost_decimal: "10",
+        price_decimal: "11",
+        market_value_decimal: "1100",
+        unrealized_pnl_decimal: "100",
+        weight_bps: 10000,
+      }],
+    })).toEqual(crossMarket[1]);
+  });
+
+  it("finds a valid ticker after ordinary English words", () => {
+    expect(resolveTargetInstrument({
+      content: "Please analyze AAPL",
+      instruments,
+    })).toEqual(instruments[1]);
+  });
+
+  it("resolves a standalone bare numeric symbol when it is unique", () => {
+    expect(resolveTargetInstrument({
+      content: "688256怎么样",
+      instruments,
+    })).toEqual(instruments[0]);
+  });
+
+  it("treats independently mentioned instruments as ambiguous", () => {
+    expect(resolveTargetInstrument({
+      content: "比较 Apple 和 Microsoft",
+      instruments,
+    })).toBeNull();
+  });
+
+  it("does not match an English instrument name inside another word", () => {
+    expect(resolveTargetInstrument({
+      content: "pineapple 相关消费趋势怎么样",
+      instruments,
+    })).toBeNull();
+  });
+
+  it("matches multi-word English instrument names without substring matching", () => {
+    const fund = { id: "gld", symbol: "GLD.US", name: "SPDR Gold Shares", asset_type: "fund", market: "US" };
+
+    expect(resolveTargetInstrument({
+      content: "What do you think about SPDR Gold Shares?",
+      instruments: [fund],
+    })).toEqual(fund);
+  });
+
+  it("does not ignore an unknown explicit numeric code in favor of a name", () => {
+    expect(resolveTargetInstrument({
+      content: "请分析 999999，不是寒武纪",
+      instruments,
+    })).toBeNull();
+  });
+
+  it("does not ignore an unknown suffixed ticker in favor of a name", () => {
+    expect(resolveTargetInstrument({
+      content: "请分析 UNKNOWN.US，不是寒武纪",
+      instruments,
+    })).toBeNull();
   });
 });

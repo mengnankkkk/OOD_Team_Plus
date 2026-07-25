@@ -1779,10 +1779,6 @@ function marketRowDate(row: Record<string, unknown>): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
 
-function extractSymbol(content: string): string | null {
-  return content.toUpperCase().match(/\b(?:\d{6}(?:\.(?:SH|SZ|OF))?|\d{5}\.HK|[A-Z]{1,10}(?:\.(?:US|HK))?)\b/u)?.[0] ?? null;
-}
-
 export function resolveTargetInstrument(input: {
   content: string;
   targetSymbol?: string | null;
@@ -1798,39 +1794,140 @@ export function resolveTargetInstrument(input: {
       market: marketForHolding(holding),
     }
   );
-  const symbol = input.targetSymbol?.trim() || extractSymbol(input.content);
-  if (symbol) {
-    const symbolMatch = findInstrumentBySymbol([...heldInstruments, ...input.instruments], symbol);
-    if (symbolMatch) return symbolMatch;
-  }
-  const holdingNameMatch = findInstrumentByName(input.content, heldInstruments);
-  if (holdingNameMatch !== undefined) return holdingNameMatch;
-  return findInstrumentByName(input.content, input.instruments) ?? null;
+  const allInstruments = uniqueInstruments([...heldInstruments, ...input.instruments]);
+  const trustedSymbol = input.targetSymbol?.trim();
+  if (trustedSymbol) return findInstrumentBySymbol(allInstruments, trustedSymbol);
+
+  const symbolCandidates = extractSymbolCandidates(input.content);
+  const explicitCandidates = symbolCandidates.filter((candidate) =>
+    !/^\d{6}$/u.test(candidate.symbol) || isExplicitBareNumericSymbol(input.content, candidate)
+  );
+  const symbolMatches = uniqueInstruments(explicitCandidates.flatMap((candidate) => {
+    const match = findInstrumentBySymbol(allInstruments, candidate.symbol);
+    return match ? [match] : [];
+  }));
+  if (symbolMatches.length > 1) return null;
+  if (symbolMatches.length === 1) return symbolMatches[0];
+  if (explicitCandidates.some((candidate) =>
+    /^\d/u.test(candidate.symbol) || /\.(?:SH|SZ|OF|US|HK)$/u.test(candidate.symbol)
+  )) return null;
+
+  return findInstrumentByName(input.content, allInstruments, new Set(heldInstruments.map((instrument) => instrument.id)));
+}
+
+function extractSymbolCandidates(content: string): Array<{ symbol: string; index: number }> {
+  const upper = content.normalize("NFKC").toUpperCase();
+  return [...upper.matchAll(/\b(?:\d{6}(?:\.(?:SH|SZ|OF))?|\d{5}\.HK|[A-Z]{1,10}(?:\.(?:US|HK))?)\b/gu)]
+    .map((match) => ({ symbol: match[0], index: match.index }));
+}
+
+function isExplicitBareNumericSymbol(content: string, candidate: { symbol: string; index: number }): boolean {
+  const before = content.slice(Math.max(0, candidate.index - 8), candidate.index);
+  const after = content.slice(candidate.index + candidate.symbol.length, candidate.index + candidate.symbol.length + 6);
+  if (/(?:投入|金额|资金|本金|预算)\s*$/u.test(before) || /^\s*(?:元|块|万元|万)/u.test(after)) return false;
+  return true;
+}
+
+function uniqueInstruments(instruments: Instrument[]): Instrument[] {
+  return [...new Map(instruments.map((instrument) => [instrument.id, instrument])).values()];
 }
 
 function findInstrumentBySymbol(instruments: Instrument[], symbol: string): Instrument | null {
-  const normalized = normalizeSymbol(symbol);
-  return instruments.find((instrument) => normalizeSymbol(instrument.symbol) === normalized) ?? null;
+  const requested = symbol.trim().toUpperCase();
+  const exactMatches = uniqueInstruments(instruments.filter((instrument) => instrument.symbol.trim().toUpperCase() === requested));
+  if (exactMatches.length) return exactMatches.length === 1 ? exactMatches[0] : null;
+
+  const suffixMatch = requested.match(/^([A-Z]{1,10})\.(US|HK)$/u);
+  if (suffixMatch) {
+    const [, base, suffix] = suffixMatch;
+    const matches = uniqueInstruments(instruments.filter((instrument) =>
+      instrument.symbol.trim().toUpperCase() === base && marketMatchesSymbolSuffix(instrument.market, suffix)
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+  if (requested.includes(".")) return null;
+
+  const matches = uniqueInstruments(instruments.filter((instrument) => symbolBase(instrument.symbol) === requested));
+  return matches.length === 1 ? matches[0] : null;
 }
 
-function findInstrumentByName(content: string, instruments: Instrument[]): Instrument | null | undefined {
-  const normalizedContent = normalizeInstrumentName(content);
+function marketMatchesSymbolSuffix(market: string, suffix: string): boolean {
+  const normalized = market.toUpperCase();
+  return suffix === "US"
+    ? ["US", "NASDAQ", "NYSE", "AMEX"].includes(normalized)
+    : normalized === "HK";
+}
+
+function symbolBase(symbol: string): string {
+  return symbol.trim().toUpperCase().replace(/\.(?:SH|SZ|OF|US|HK)$/u, "");
+}
+
+function findInstrumentByName(content: string, instruments: Instrument[], heldInstrumentIds: Set<string>): Instrument | null {
   const matches = instruments.flatMap((instrument) =>
     instrumentNameAliases(instrument.name)
-      .filter((alias) => isDistinctiveInstrumentName(alias) && normalizedContent.includes(alias))
-      .map((alias) => ({ instrument, aliasLength: alias.length }))
+      .filter(isDistinctiveInstrumentName)
+      .flatMap((alias) => nameOccurrences(content, alias).map((range) => ({
+        instrument,
+        aliasLength: alias.length,
+        held: heldInstrumentIds.has(instrument.id),
+        ...range,
+      })))
   );
-  if (!matches.length) return undefined;
-  const longestLength = Math.max(...matches.map((match) => match.aliasLength));
-  const longestMatches = matches.filter((match) => match.aliasLength === longestLength);
-  const instrumentIds = new Set(longestMatches.map((match) => match.instrument.id));
-  return instrumentIds.size === 1 ? longestMatches[0].instrument : null;
+  if (!matches.length) return null;
+  const dominant = matches.filter((match) => !matches.some((candidate) =>
+    candidate.aliasLength > match.aliasLength
+    && rangesOverlap(match, candidate)
+  ));
+  const instrumentIds = new Set(dominant.map((match) => match.instrument.id));
+  if (instrumentIds.size === 1) return dominant[0].instrument;
+  const sameRange = dominant.every((match) =>
+    match.start === dominant[0].start && match.end === dominant[0].end
+  );
+  const heldMatches = uniqueInstruments(dominant.filter((match) => match.held).map((match) => match.instrument));
+  return sameRange && heldMatches.length === 1 ? heldMatches[0] : null;
+}
+
+function nameOccurrences(content: string, alias: string): Array<{ start: number; end: number }> {
+  if (/\p{Script=Han}/u.test(alias)) {
+    const normalizedContent = normalizeInstrumentName(content);
+    const ranges: Array<{ start: number; end: number }> = [];
+    let start = normalizedContent.indexOf(alias);
+    while (start >= 0) {
+      ranges.push({ start, end: start + alias.length });
+      start = normalizedContent.indexOf(alias, start + 1);
+    }
+    return ranges;
+  }
+  const normalizedContent = content.normalize("NFKC").toUpperCase();
+  const pattern = new RegExp(`(?<![\\p{Letter}\\p{Number}])${escapeRegex(alias)}(?![\\p{Letter}\\p{Number}])`, "gu");
+  return [...normalizedContent.matchAll(pattern)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+}
+
+function rangesOverlap(
+  left: { start: number; end: number },
+  right: { start: number; end: number },
+): boolean {
+  return left.start < right.end && right.start < left.end;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function instrumentNameAliases(name: string): string[] {
-  const normalized = normalizeInstrumentName(name);
+  const normalized = normalizeInstrumentAlias(name);
   const withoutListingSuffix = normalized.replace(/-(?:U|W|WD)$/u, "");
   return [...new Set([normalized, withoutListingSuffix].filter(Boolean))];
+}
+
+function normalizeInstrumentAlias(value: string): string {
+  const normalized = value.normalize("NFKC").toUpperCase().trim();
+  return /\p{Script=Han}/u.test(normalized)
+    ? normalized.replaceAll(/\s+/gu, "")
+    : normalized.replaceAll(/\s+/gu, " ");
 }
 
 function normalizeInstrumentName(value: string): string {
@@ -1838,6 +1935,7 @@ function normalizeInstrumentName(value: string): string {
 }
 
 function isDistinctiveInstrumentName(name: string): boolean {
+  if (new Set(["股票", "基金", "指数", "债券", "科技股", "银行股", "医药股"]).has(name)) return false;
   const chineseCharacters = name.match(/\p{Script=Han}/gu)?.length ?? 0;
   if (chineseCharacters >= 3) return true;
   return name.replaceAll(/[^\p{Letter}\p{Number}]/gu, "").length >= 4;
