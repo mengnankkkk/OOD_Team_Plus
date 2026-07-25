@@ -397,6 +397,7 @@ async function researchInstrument(
       assetType: instrument.asset_type.toUpperCase(),
     };
   });
+  let usedDailyFallback = false;
   persistSseEvent({ analysisId: rootRunId, type: "tool.started", payload: { toolName: sources.map((source) => source.method), childRunId, symbolCount: sources.length } });
   try {
     let executions = await executePandaSources({ sources, agentRunId: childRunId, localRows: [], db });
@@ -417,6 +418,7 @@ async function researchInstrument(
         },
       }));
     if (staleSources.length) {
+      usedDailyFallback = true;
       const fallbackExecutions = await executePandaSources({ sources: staleSources, agentRunId: childRunId, localRows: [], db });
       executions = executions.map((execution, index) => {
         const fallback = staleSources.findIndex((source) => source.parameters.symbol === sources[index]?.parameters.symbol);
@@ -426,7 +428,7 @@ async function researchInstrument(
     const allRows = executions.flatMap((execution) => execution.result.data);
     const closes = allRows.map((row) => decimal(row.close)).filter((value): value is Decimal => value !== null);
     const latest = closes.at(-1) ?? null;
-    const dataState: DataState = executions.every((execution) => execution.result.fresh && execution.result.liveCallSucceeded) ? "LIVE_FRESH" : "STALE";
+    const dataState: DataState = !usedDailyFallback && executions.every((execution) => execution.result.fresh && execution.result.liveCallSucceeded) ? "LIVE_FRESH" : "STALE";
     const asOfDates = executions.map((execution) => execution.result.asOfDate).filter((value): value is string => Boolean(value)).sort();
     const quotes = executions.map((execution) => ({
       symbol: String(execution.source.parameters.symbol instanceof Array ? execution.source.parameters.symbol[0] : execution.source.parameters.symbol ?? execution.source.dataset),
@@ -440,7 +442,11 @@ async function researchInstrument(
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH",
         conclusion: `已对 ${executions.length} 个持仓/目标标的完成真实市场数据研究，状态为 ${dataState}`,
-        supportEvidence: [latest ? `最新价格样本：${latest.toString()}` : "市场接口已完成 live call", `数据日期：${asOfDates.at(-1) ?? "未知"}`, ...quotes.map((quote) => `${quote.symbol}: ${quote.latest ?? "无价格"} (${quote.method})`)],
+        supportEvidence: [
+          latest ? `最新价格样本：${latest.toString()}` : "市场接口已完成 live call",
+          `数据日期：${asOfDates.at(-1) ?? "未知"}`,
+          `行情证据：${quotes.map((quote) => `${quote.symbol}=${quote.latest ?? "无价格"}@${quote.asOfDate ?? "未知"} via ${quote.method}`).join("；")}`,
+        ],
         counterEvidence: [dataState === "LIVE_FRESH" ? "历史价格不能保证未来走势" : "数据已过期，禁止生成 ACTIVE 建议"],
         missingInformation: latest ? [] : ["close"],
         risks: ["短期价格和成交量可能快速变化", "财务或估值字段缺失时不会推导替代值"],
@@ -449,13 +455,13 @@ async function researchInstrument(
         suggestedNextAgent: "PORTFOLIO_RISK",
       }),
     };
-  } catch {
+  } catch (error) {
     persistSseEvent({ analysisId: rootRunId, type: "tool.failed", payload: { toolName: sources.map((source) => source.method), childRunId, code: "PANDADATA_UNAVAILABLE" } });
     return {
       state: { dataState: "UNAVAILABLE", executions: [], closes: [], latest: null, asOfDate: null, quotes: [] },
       finding: AgentFindingSchema.parse({
         agent: "DATA_RESEARCH", conclusion: `${target?.symbol ?? instruments.map((instrument) => instrument.symbol).join("、")} 的 PandaData live call 不可用，保留建议方向但强制阻断`, supportEvidence: [],
-        counterEvidence: ["认证、网络、SDK 或上游服务失败，dry-run 不能作为真实行情"], missingInformation: [],
+        counterEvidence: [`真实行情处理失败：${safeMessage(error)}`], missingInformation: [],
         risks: ["缺少新鲜行情时参考区间和触发价不可执行"], confidence: 0.2, needsAnotherAgent: true, suggestedNextAgent: "COMPLIANCE_REVIEWER",
       }),
     };
