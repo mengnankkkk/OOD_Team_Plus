@@ -337,8 +337,9 @@ jobs:
           timeout --signal=TERM --kill-after=15s 2m doppler run \
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
-            -- docker compose -p money-whisperer run --rm --no-deps money-whisperer \
-              node -e 'if (!process.env.A2A_BEARER_TOKEN?.trim()) { console.error("A2A_BEARER_TOKEN is missing from the container environment."); process.exit(1); }'
+            -- docker compose -p money-whisperer run --rm --no-deps -T money-whisperer \
+              node -e 'if (!process.env.A2A_BEARER_TOKEN?.trim()) { console.error("A2A_BEARER_TOKEN is missing from the container environment."); process.exit(1); }' \
+            </dev/null
           echo "[deploy] Required A2A runtime secret is available in the container."
           echo "::endgroup::"
 
@@ -349,6 +350,11 @@ jobs:
             --project "$DOPPLER_PROJECT" \
             --config "$DOPPLER_CONFIG" \
             -- docker compose -p money-whisperer up -d --no-build --remove-orphans --wait --wait-timeout 180
+
+          $SUDO docker compose -p money-whisperer exec -T money-whisperer \
+            node -e 'fetch("http://127.0.0.1:3000/api/a2a/message-send", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then((response) => { if (response.status !== 401) { console.error(`A2A runtime auth probe returned HTTP ${response.status}; expected 401.`); process.exitCode = 1; } }).catch((error) => { console.error(error); process.exitCode = 1; })' \
+            </dev/null
+          echo "[deploy] A2A runtime auth probe returned the expected HTTP 401."
           echo "::endgroup::"
 
           echo "::group::Deployment status"
