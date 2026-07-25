@@ -1,4 +1,5 @@
 import { createArtifact } from "@/server/extensions/artifacts/service";
+import { sanitizeResearchText } from "@/server/extensions/search/text";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
 import { createClarification } from "./clarification-service";
@@ -479,15 +480,13 @@ export function buildFinancialReportMarkdown(
     ? recommendation.reasons
     : fields.conclusion ? [fields.conclusion] : [];
   const risks = recommendation?.risks ?? [];
-  const counterEvidence = recommendation?.counterEvidence?.length
+  const counterEvidence = (recommendation?.counterEvidence?.length
     ? recommendation.counterEvidence
-    : [fields.counterEvidence, fields.bearEvidence].filter(Boolean);
+    : [fields.counterEvidence, fields.bearEvidence].filter(Boolean))
+    .filter((item) => !isInternalEvidence(item));
   const supportEvidence = [
     ...(recommendation?.reasons ?? []),
     ...(fields.supportEvidence ? [fields.supportEvidence] : []),
-    fields.fundamental && !/未执行|未返回可用结果|没有可用/iu.test(fields.fundamental)
-      ? [translateFundamentalReportText(fields.fundamental)]
-      : [],
   ].flat().filter(Boolean);
   const invalidation = recommendation?.invalidation ?? "";
   const portfolioEvidence = [
@@ -717,8 +716,11 @@ function splitReportEvidence(value: string): string[] {
 }
 
 function translateFundamentalReportText(value: string): string {
-  return translateReportText(value)
-    .replace(/本次未获得可用的基本面或消息面证据[，,]\s*/u, "本次资产报告流程未执行基本面和消息面检索，因此");
+  return sanitizeResearchText(
+    translateReportText(value)
+      .replace(/本次未获得可用的基本面或消息面证据[，,]\s*/u, "本次资产报告流程未执行基本面和消息面检索，因此"),
+    900,
+  );
 }
 
 function translateRiskText(value: string): string {
@@ -730,8 +732,12 @@ function translateRiskText(value: string): string {
 }
 
 function toBulletLines(items: string[], fallback: string): string[] {
-  const normalized = items.map((item) => translateReportText(item)).filter(Boolean);
+  const normalized = items.map((item) => sanitizeResearchText(translateReportText(item), 900)).filter(Boolean);
   return normalized.length ? normalized.map((item) => `- ${item}`) : [`- ${fallback}`];
+}
+
+function isInternalEvidence(value: string): boolean {
+  return /模型输出不完整|MODEL_OUTPUT_EMPTY|Chief Advisor|MODEL_UNAVAILABLE/iu.test(value);
 }
 
 function buildHoldingsAppendix(rows: Record<string, unknown>[]): string {

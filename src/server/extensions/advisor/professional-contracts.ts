@@ -34,6 +34,7 @@ export const AdvisorDecisionSchema = z.object({
   action: z.enum(["WATCH", "TRIAL_BUY", "SCALE_IN", "HOLD", "STOP_ADDING", "SCALE_OUT", "EXIT"]),
   requestedDirection: z.enum(["BUY", "SELL", "HOLD", "ANALYZE"]),
   summary: NonEmptyTextSchema,
+  fundamentalSummary: NonEmptyTextSchema.max(700).optional(),
   suitability: z.enum(["HIGH", "MEDIUM", "LOW"]),
   confidence: z.number().min(0).max(1),
   rationales: z.array(NonEmptyTextSchema).min(1).max(3),

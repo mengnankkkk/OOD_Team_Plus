@@ -4,6 +4,7 @@ import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 import { searchKnowledgeBase } from "./knowledge-base-adapter";
 import { searchMCP } from "./mcp-adapter";
 import { searchRSS } from "./rss-adapter";
+import { sanitizeResearchText } from "./text";
 import { searchWeb, type SearchFilters, type SearchResult } from "./web-adapter";
 
 export type ResearchAdapter = "WEB" | "MCP" | "KNOWLEDGE_BASE" | "RSS";
@@ -115,11 +116,19 @@ async function executeResearchSearch(
     throw error;
   }
 
+  const normalizedCollected = collected.map((group) => ({
+    ...group,
+    results: group.results.map((result) => ({
+      ...result,
+      title: sanitizeResearchText(result.title, 180),
+      snippet: sanitizeResearchText(result.snippet, 500),
+    })),
+  }));
   const write = getDatabase();
   let resultCount = 0;
   try {
     input.signal?.throwIfAborted();
-    for (const group of collected) {
+    for (const group of normalizedCollected) {
       for (const result of group.results) {
         resultCount += 1;
         write.prepare("INSERT INTO research_results (id,search_id,adapter,title,url,snippet,citation,created_at) VALUES (?,?,?,?,?,?,?,?)").run(createId("research_result"), run.searchId, group.adapter.toLowerCase(), result.title, result.url, result.snippet.slice(0, 500), result.url, run.startedAt);
@@ -154,8 +163,8 @@ async function executeResearchSearch(
       analysisId: run.analysisId,
       resultCount,
       status: succeeded ? "COMPLETED" : "FAILED",
-      results: collected.flatMap((group) => group.results.map((result) => ({ ...result, adapter: group.adapter }))),
-      sourceStatuses: collected.map((group) => ({
+      results: normalizedCollected.flatMap((group) => group.results.map((result) => ({ ...result, adapter: group.adapter }))),
+      sourceStatuses: normalizedCollected.map((group) => ({
         adapter: group.adapter,
         status: group.status.toUpperCase(),
         resultCount: group.results.length,

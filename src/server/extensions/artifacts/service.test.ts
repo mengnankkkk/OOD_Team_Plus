@@ -156,4 +156,27 @@ describe("buildFinancialReportMarkdown", () => {
     expect(markdown).toContain("**建议动作：** 停止加仓，先控制集中度");
     expect(markdown).not.toContain("STOP_ADDING");
   });
+
+  it("keeps the LLM research summary readable and out of duplicate evidence blocks", () => {
+    const markdown = buildFinancialReportMarkdown(
+      "资产深度报告",
+      [
+        "建议状态：DEGRADED；建议动作：STOP_ADDING",
+        "核心结论：估值偏高且持仓集中，先不要继续加仓",
+        "基本面与消息面依据：顾问总结：业绩尚未发布，当前估值偏高，建议等待财报验证；依据 3 条公开信息",
+        "多方证据：历史价格和组合事实支持先控制集中度",
+        "空方证据：估值可能继续回撤；历史波动不能代表未来",
+      ].join("\n"),
+      [{ symbol: "688256.SH", name: "寒武纪", marketValue: "100000", unrealizedPnl: "1000", weightPercent: 83.79 }],
+      null,
+      "DEGRADED",
+    );
+
+    expect(markdown).toContain("顾问总结：业绩尚未发布，当前估值偏高，建议等待财报验证");
+    expect(markdown).toContain("### 多方证据");
+    expect(markdown).toContain("### 空方证据");
+    expect(markdown.match(/业绩尚未发布，当前估值偏高，建议等待财报验证/gu)?.length).toBe(1);
+    expect(markdown).not.toContain("| 今开-");
+    expect(markdown).not.toContain("![](#)");
+  });
 });

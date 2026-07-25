@@ -11,6 +11,7 @@ import { callPandaData } from "@/server/extensions/pandadata/adapter";
 import { executePandaSources, type PandaSourceExecution } from "@/server/extensions/query/panda-query-executor";
 import type { PandaQuerySource } from "@/server/extensions/query/market-catalog";
 import { runResearchSearch, type ResearchSearchResult } from "@/server/extensions/search/service";
+import { sanitizeResearchText } from "@/server/extensions/search/text";
 import { persistSseEvent } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json } from "@/server/http/context";
 
@@ -1834,22 +1835,14 @@ export function formatAdvisorDecisionAnswer(
     ...(profileFinding?.supportEvidence ?? []).map((evidence) => translateProfileValue(evidence)),
   ].filter(Boolean);
   const marketEvidence = formatMarketEvidence(researchState);
-  const fundamentalEvidence = formatFundamentalEvidence(researchState.fundamentalSearch);
-  const researchEvidence = researchState.fundamentalSearch?.results.slice(0, 3).map((result) => {
-    const snippet = result.snippet.replace(/\s+/gu, " ").trim().slice(0, 160);
-    return `基本面/消息面公开线索：${result.title}${snippet ? `，${snippet}` : ""}（来源：${translateSearchAdapter(result.adapter)}）`;
-  }) ?? [];
+  const fundamentalEvidence = formatFundamentalEvidence(researchState.fundamentalSearch, decision.fundamentalSummary);
   const supportEvidence = uniqueEvidence([
-    ...researchEvidence,
     ...decision.rationales,
     ...(profileFinding?.supportEvidence ?? []),
     ...marketEvidence,
     risk?.conclusion ?? "",
   ]).slice(0, 5);
-  const counterEvidence = uniqueEvidence([
-    ...decision.counterEvidence,
-    ...findings.flatMap((finding) => finding.counterEvidence),
-  ]).slice(0, 5);
+  const counterEvidence = buildCounterEvidence(decision, findings, researchState);
   return [
     `建议状态：${advisorStatusLabel(status)}；建议动作：${advisorActionLabel(decision.action, status)}`,
     `核心结论：${translateReportText(decision.summary)}`,
@@ -1862,7 +1855,7 @@ export function formatAdvisorDecisionAnswer(
     `空方证据：${counterEvidence.join("；") || "本次未形成明确的空方证据"}`,
     `合规结论：${compliance?.conclusion ?? decision.compliance.reason}`,
     ...(status !== "ACTIVE" ? [`执行边界：${userFacingPublicationBoundary(status, decision, publicationReasons)}`] : []),
-    "建议卡已保存，可在证据包中复核数据来源、反方证据和失效条件。",
+    "建议卡已保存，可在证据包中复核数据来源、空方证据和失效条件。",
     "仅支持模拟采纳，不连接券商，不创建真实订单。",
   ].join("\n");
 }
@@ -1926,7 +1919,34 @@ function sanitizeInternalAdvisorDiagnostics(value: string): string {
 }
 
 function uniqueEvidence(items: string[]): string[] {
-  return [...new Set(items.map((item) => translateReportText(item).trim()).filter(Boolean))];
+  return [...new Set(items.map((item) => sanitizeResearchText(translateReportText(item), 700)).filter(Boolean))];
+}
+
+function buildCounterEvidence(
+  decision: AdvisorDecision,
+  findings: AgentFinding[],
+  research: ResearchState,
+): string[] {
+  const specificCautions = [
+    research.riskMetrics.length
+      ? "历史波动和最大回撤只代表过去样本，未来可能出现更大幅度波动。"
+      : "",
+    research.fundamentalSearch?.results.length
+      ? "公开资料可能存在发布时间滞后或统计口径差异，不能只凭单条新闻判断长期价值。"
+      : "基本面和消息面资料不完整，暂时不能确认长期盈利和估值是否匹配。",
+    research.dataState === "LATEST_TRADING_DAY"
+      ? "当前使用最近交易日收盘数据，下一交易时段价格可能出现明显变化。"
+      : "",
+  ];
+  const candidates = [
+    ...specificCautions,
+    ...decision.counterEvidence,
+    ...findings.flatMap((finding) => finding.counterEvidence),
+  ];
+  const usable = uniqueEvidence(candidates).filter((item) => !/模型输出不完整|MODEL_OUTPUT_EMPTY|Chief Advisor/iu.test(item));
+  return usable.slice(0, 5).length
+    ? usable.slice(0, 5)
+    : ["当前公开资料或行情证据仍不完整，结论需要在新数据出现后重新复核。"];
 }
 
 function formatMarketPrice(value: string | null): string {
@@ -2005,7 +2025,7 @@ function formatMarketEvidence(research: ResearchState): string[] {
   return [...quoteEvidence, ...riskEvidence, scope].filter(Boolean);
 }
 
-function formatFundamentalEvidence(search: ResearchState["fundamentalSearch"]): string {
+function formatFundamentalEvidence(search: ResearchState["fundamentalSearch"], summary?: string): string {
   if (!search) return "本次资产报告流程未执行基本面和消息面检索，因此没有可用的此类证据；本报告未据此判断。";
   if (!search.results.length) {
     const failed = search.sourceStatuses
@@ -2015,15 +2035,15 @@ function formatFundamentalEvidence(search: ResearchState["fundamentalSearch"]): 
       ? `已执行基本面和消息面检索，但 ${failed.join("、")} 来源暂不可用，当前未返回可用结果；本报告未据此判断。`
       : "已执行基本面和消息面检索，但当前未返回可用结果；本报告未据此判断。";
   }
+  const cleanSummary = summary ? sanitizeResearchText(summary, 700) : "";
+  if (cleanSummary) {
+    return `顾问总结：${cleanSummary}（依据 ${search.results.length} 条公开信息）`;
+  }
   const failed = search.sourceStatuses
     .filter((source) => source.status === "FAILED")
     .map((source) => translateSearchAdapter(source.adapter));
-  const highlights = search.results.slice(0, 4).map((result) => {
-    const snippet = result.snippet.replace(/\s+/gu, " ").trim().slice(0, 180);
-    return `${result.title}${snippet ? `：${snippet}` : ""}（来源：${translateSearchAdapter(result.adapter)}）`;
-  });
   return [
-    `已执行基本面和消息面检索，返回 ${search.results.length} 条公开信息。以下为可核对线索，不等同于已审计的财务结论：${highlights.join("；")}`,
+    `已执行基本面和消息面检索，返回 ${search.results.length} 条公开信息，但顾问总结暂未形成；原始资料已保存在证据包中，本报告不把搜索片段直接当作结论。`,
     failed.length ? `其中 ${failed.join("、")} 来源暂不可用，已使用其他可用来源继续分析。` : "",
   ].filter(Boolean).join(" ");
 }

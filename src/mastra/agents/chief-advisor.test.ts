@@ -75,6 +75,28 @@ describe("Chief Advisor structured decision", () => {
     });
   });
 
+  it("preserves the model-generated fundamental and news summary", async () => {
+    harness.decisionOutput = {
+      ...decision(),
+      fundamentalSummary: "公司近期业绩预告尚未发布，估值明显偏高；因此当前更适合先观察，等待财报和估值变化得到验证。",
+    };
+
+    const result = await runChiefAdvisor({
+      prompt: "请基于基本面和消息面解释当前组合是否适合继续加仓",
+      requiredAgents: ["PROFILE_CONTEXT"],
+      context: {
+        marketData: {
+          fundamentalSearch: {
+            results: [{ title: "业绩预告", snippet: "公司将在近期发布公告。" }],
+          },
+        },
+      },
+    });
+
+    expect(result.decision.fundamentalSummary).toContain("估值明显偏高");
+    expect(harness.prompts.at(-1)).toContain("fundamentalSummary");
+  });
+
   it("marks a default-filled Chief decision incomplete and downgrades it with field reasons", async () => {
     harness.decisionOutput = {
       action: "WATCH",

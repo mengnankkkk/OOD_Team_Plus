@@ -43,7 +43,9 @@ export type ChiefAdvisorPromptContext = {
   [key: string]: unknown;
 };
 
-const ChiefAdvisorDecisionSchema = AdvisorDecisionSchema;
+const ChiefAdvisorDecisionSchema = AdvisorDecisionSchema.extend({
+  fundamentalSummary: z.string().optional(),
+});
 
 export type ChiefAdvisorDecisionIntegrity = {
   complete: boolean;
@@ -328,10 +330,14 @@ function coerceModelDecision(
       : [],
   };
   const compliance = isPlainRecord(merged.compliance) ? merged.compliance : {};
+  const fundamentalSummary = typeof merged.fundamentalSummary === "string"
+    ? merged.fundamentalSummary.trim().slice(0, 700)
+    : "";
   const decision = AdvisorDecisionSchema.parse({
     action: merged.action ?? "WATCH",
     requestedDirection: merged.requestedDirection ?? "ANALYZE",
     summary: nonEmptyString(merged.summary, "模型未能形成完整结论，已按观察处理"),
+    ...(fundamentalSummary ? { fundamentalSummary } : {}),
     suitability: merged.suitability ?? "LOW",
     confidence: coerceConfidence(merged.confidence, 0.65),
     rationales: coerceStringArray(merged.rationales).slice(0, 3).length ? coerceStringArray(merged.rationales).slice(0, 3) : ["根据当前画像、持仓和市场证据维持观察"],
@@ -519,6 +525,7 @@ function chiefDecisionPrompt(prompt: string, findings: AgentFinding[], context?:
     "你必须基于这些发现形成 AdvisorDecision。不得覆盖服务端事实或自行计算数据年龄；服务端标记 LIVE_FRESH 或 LATEST_TRADING_DAY 时不得声称数据过期；不得在证据不足时给出 ACTIVE 交易承诺。",
     "最终 JSON 必须完整包含 action、requestedDirection、summary、suitability、confidence、rationales、counterEvidence、risks、portfolioImpact、invalidationConditions、compliance 和 debateSuggestion，不得省略字段。",
     "你是最终理财顾问，不只是流程调度器；必须回答用户当前问题，并把解释、方案、诊断、风险和合规边界整合成可展示结论。",
+    "当 marketData.fundamentalSearch.results 有内容时，必须输出 fundamentalSummary：用 2-4 句面向理财新手的中文，概括公开资料对公司、行业、估值和消息面的主要支持点、主要疑点以及对当前动作的影响。只能基于资料，不得复制原始 Markdown 表格、字段名、图片占位符或链接，不要写“模型输出不完整”。",
     "如果显式结构化顾问上下文已经包含画像、目标、资金用途、可投资金额、期限、最大回撤、方向偏好或持仓，禁止把这些列为 missingInformation，也不要再次追问。",
     context ? `已知上下文覆盖：${describeKnownContext(context).join("、") || "无"}` : "未提供额外结构化上下文。",
     prompt,
