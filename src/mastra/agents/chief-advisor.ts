@@ -117,10 +117,13 @@ export async function runChiefAdvisor(input: {
     return finding;
   };
 
-  const independentRoles = requiredAgents.filter((role) => (
-    role === "PROFILE_CONTEXT" || role === "DATA_RESEARCH" || role === "PORTFOLIO_RISK"
-  ));
-  const dependentRoles = requiredAgents.filter((role) => !independentRoles.includes(role));
+  const independentRoleSet = new Set<AgentFinding["agent"]>([
+    "PROFILE_CONTEXT",
+    "DATA_RESEARCH",
+    "PORTFOLIO_RISK",
+  ]);
+  const independentRoles = requiredAgents.filter((role) => independentRoleSet.has(role));
+  const dependentRoles = requiredAgents.filter((role) => !independentRoleSet.has(role));
   const independentResults = await Promise.all(independentRoles.map(async (role) => {
     try {
       return { role, finding: await runSpecialist(role, []) };
