@@ -74,11 +74,24 @@ export async function listDecisionLogs(_userId: string, limit = 50): Promise<Dec
   return result.items.map((row) => ({
     id: String(row.id),
     recommendationId: row.recommendationId == null ? null : String(row.recommendationId),
-    action: String(row.action ?? "viewed").toLowerCase() as DecisionLog["action"],
+    analysisId: row.analysisId == null ? null : String(row.analysisId),
+    action: normalizeDecisionAction(row.action),
     reason: row.reason == null ? null : String(row.reason),
+    note: row.note == null ? null : String(row.note),
     agentSnapshot: (row.recommendation as Record<string, unknown>) ?? {},
     createdAt: String(row.createdAt),
   }));
+}
+
+function normalizeDecisionAction(value: unknown): DecisionLog["action"] {
+  const action = String(value ?? "").toUpperCase();
+  if (action === "ACCEPT" || action === "SIMULATED") return "simulated";
+  if (action === "REJECT" || action === "REJECTED") return "rejected";
+  if (action === "REVOKE" || action === "REVOKED") return "revoked";
+  if (action === "DEFER" || action === "LATER") return "later";
+  if (action === "FOLLOWUP_QUESTION") return "followup_question";
+  if (action === "COMMENTED") return "commented";
+  return "viewed";
 }
 
 export function subscribeAlerts(_userId: string, onChange: () => void) {

@@ -23,6 +23,11 @@ type ResearchSummary = { id: string; query_text: string; status: string; created
 type ResearchResult = { id: string; title: string | null; snippet: string | null; url: string | null; adapter: string; source_name?: string | null };
 type ResearchSourceStatus = { adapter: string; status: string; result_count: number; error: { message?: string } | null };
 type NotificationPreference = { mode: "IMPORTANT_ONLY" | "DAILY_DIGEST" | "MUTED"; quietHoursStart: string | null; quietHoursEnd: string | null; version: number };
+const NOTIFICATION_MODE_LABELS: Record<NotificationPreference["mode"], string> = {
+  IMPORTANT_ONLY: "仅重要提醒",
+  DAILY_DIGEST: "每日汇总",
+  MUTED: "暂停所有提醒",
+};
 
 function Shell({ title, eyebrow, children, actions }: { title: string; eyebrow: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -375,7 +380,7 @@ export function NotificationPreferencePage() {
       toast.error(error instanceof Error ? error.message : "保存失败");
     }
   }
-  return <div className="page-stack"><PageHeading eyebrow="NOTIFICATIONS" title="通知偏好" description="设置提醒频率和静默时段。" />{pref.loading ? <LoadingBlock label="正在读取偏好…" /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title="偏好设置" eyebrow="PREFERENCE"><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>模式</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="IMPORTANT_ONLY">IMPORTANT_ONLY</SelectItem><SelectItem value="DAILY_DIGEST">DAILY_DIGEST</SelectItem><SelectItem value="MUTED">MUTED</SelectItem></SelectContent></Select></div><div className="space-y-2"><Label>静默开始</Label><Input value={start} onChange={(e) => setStart(e.target.value)} placeholder="22:00" /></div><div className="space-y-2"><Label>静默结束</Label><Input value={end} onChange={(e) => setEnd(e.target.value)} placeholder="07:00" /></div></div><Button className="mt-4" onClick={() => void save()}>保存偏好</Button></Shell>}</div>;
+  return <div className="page-stack"><PageHeading eyebrow="NOTIFICATIONS" title="通知偏好" description="设置提醒频率和静默时段。" />{pref.loading ? <LoadingBlock label="正在读取偏好…" /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title="偏好设置" eyebrow="PREFERENCE"><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>提醒方式</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(NOTIFICATION_MODE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>静默开始</Label><Input value={start} onChange={(e) => setStart(e.target.value)} placeholder="22:00" /></div><div className="space-y-2"><Label>静默结束</Label><Input value={end} onChange={(e) => setEnd(e.target.value)} placeholder="07:00" /></div></div><Button className="mt-4" onClick={() => void save()}>保存偏好</Button></Shell>}</div>;
 }
 
 export function DemoBootstrapPage() {

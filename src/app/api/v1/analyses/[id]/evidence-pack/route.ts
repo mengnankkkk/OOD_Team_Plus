@@ -56,7 +56,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const evidenceId = String(link.evidence_id);
     linksByEvidence.set(evidenceId, [...(linksByEvidence.get(evidenceId) ?? []), link]);
   }
-  const missingEvidence = buildMissingEvidence({ evidence, toolCalls, skillRuns, marketSnapshots, recommendations, conflicts });
+  const compliance = parseJson<Record<string, unknown>>(String(run.compliance_json ?? "{}"), {});
+  const missingEvidence = buildMissingEvidence({ evidence, evidenceLinks, toolCalls, skillRuns, marketSnapshots, recommendations, conflicts, compliance });
+  const runStatus = String(run.status ?? "unknown").toUpperCase();
+  const canRetry = runStatus === "FAILED" || runStatus === "INTERRUPTED";
 
   return NextResponse.json({
     data: {
@@ -64,7 +67,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       analysis: {
         analysisId: id,
         type: String(run.type).toUpperCase(),
-        status: String(run.status).toUpperCase(),
+        status: runStatus,
         createdAt: run.created_at,
         completedAt: run.completed_at,
       },
@@ -155,10 +158,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         resolvedAt: item.resolved_at ?? null,
       })),
       recommendations: recommendations.map(formatRecommendation),
-      compliance: parseJson(String(run.compliance_json ?? "{}"), {}),
+      compliance,
       result: parseJson(String(run.result_json ?? "{}"), {}),
       events: getSseEvents(id).map((event) => ({ id: event.id, type: event.type, payload: event.payload, createdAt: event.createdAt })),
       missingEvidence,
+      retry: {
+        allowed: canRetry,
+        reason: canRetry ? null : "该运行已完成或被阻断，请基于当前信息发起新的顾问分析。",
+      },
       disclaimer: "证据包用于解释模拟建议，不代表未来收益，不包含隐藏思维链或敏感凭证。",
     },
     meta: meta(),
@@ -194,15 +201,26 @@ function summarizeFreshness(snapshots: Row[], skillRuns: Row[]) {
   };
 }
 
-function buildMissingEvidence(input: { evidence: Row[]; toolCalls: Row[]; skillRuns: Row[]; marketSnapshots: Row[]; recommendations: Row[]; conflicts: Row[] }): string[] {
-  const missing: string[] = [];
-  if (!input.evidence.length) missing.push("该分析尚未写入结构化证据。");
-  if (!input.evidence.some((item) => String(item.stance).toLowerCase() === "counter")) missing.push("缺少反方证据。");
-  if (input.toolCalls.length && !input.skillRuns.length) missing.push("工具调用没有关联 Skill Run。");
-  if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "succeeded") && !input.marketSnapshots.length) missing.push("成功的数据 Skill 没有关联市场快照。");
-  if (!input.recommendations.length) missing.push("该分析没有生成建议卡。");
-  if (input.conflicts.some((item) => String(item.resolution_status).toLowerCase() === "unresolved")) missing.push("仍存在未解决的 Agent 冲突。");
-  return missing;
+function buildMissingEvidence(input: { evidence: Row[]; evidenceLinks: Row[]; toolCalls: Row[]; skillRuns: Row[]; marketSnapshots: Row[]; recommendations: Row[]; conflicts: Row[]; compliance: Record<string, unknown> }): string[] {
+  const missing = new Set<string>();
+  if (!input.evidence.length) missing.add("该分析尚未写入结构化证据。");
+  if (!input.evidence.some((item) => String(item.stance).toLowerCase() === "counter")) missing.add("缺少反方证据。");
+  if (input.toolCalls.length && !input.skillRuns.length) missing.add("工具调用没有关联 Skill Run。");
+  if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "succeeded") && !input.marketSnapshots.length) missing.add("成功的数据 Skill 没有关联市场快照。");
+  if (input.skillRuns.some((item) => String(item.status).toLowerCase() === "failed") && !input.marketSnapshots.length) missing.add("缺少可用市场行情。");
+  if (input.evidence.some((item) => String(item.kind).toLowerCase() === "market_fact" && !item.observed_at)) missing.add("市场证据未提供数据时间。");
+  const linkedIds = new Set(input.evidenceLinks.map((item) => String(item.evidence_id)));
+  if (input.evidence.some((item) => !linkedIds.has(String(item.id)))) missing.add("部分证据缺少可追溯的数据来源。");
+  for (const item of input.evidence) {
+    if (String(item.stance).toLowerCase() === "missing") {
+      const statement = String(item.statement ?? item.summary ?? item.title ?? "").trim();
+      if (statement) missing.add(statement);
+    }
+  }
+  if (!input.recommendations.length) missing.add("该分析没有生成建议卡。");
+  if (input.conflicts.some((item) => String(item.resolution_status).toLowerCase() === "unresolved")) missing.add("仍存在未解决的 Agent 冲突。");
+  if (String(input.compliance.status ?? "").toUpperCase() === "BLOCKED") missing.add("风险与合规发布门已阻断该建议。");
+  return [...missing];
 }
 
 function sanitizePayload(value: unknown): unknown {

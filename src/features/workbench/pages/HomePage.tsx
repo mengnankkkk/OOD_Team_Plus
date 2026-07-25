@@ -12,9 +12,9 @@ import { useAgentRuns, useRecommendationInvalidator, useRecommendations } from "
 import { computeHealthMetrics } from "@/lib/financialHealth";
 import { runAgentWorkflow } from "@/services/recommendationService";
 import { toast } from "sonner";
-import AnimatedMenuButton from "@/components/desktop/AnimatedMenuButton";
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Rss, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Rss } from "lucide-react";
 import { useDemoMode } from "@/hooks/useDemoMode";
+import { useNavigate } from "@/features/frontend-migration/router";
 
 const todayStamp = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
 
@@ -29,6 +29,7 @@ type RssItem = {
 };
 
 const HomePage = () => {
+  const navigate = useNavigate();
   const { profile } = useAuth();
   const { judgeMode } = useDemoMode();
   const { data: goals, isLoading: goalsLoading } = useUserGoals();
@@ -37,6 +38,7 @@ const HomePage = () => {
   const { data: agentRuns = [] } = useAgentRuns(1);
   const invalidateRecs = useRecommendationInvalidator();
   const [generating, setGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
 
   const primaryGoal = goals?.[0] ?? null;
   const displayName = profile?.displayName || "同学";
@@ -46,16 +48,35 @@ const HomePage = () => {
 
   const handleGenerate = async () => {
     if (generating) return;
+    if (!profile?.onboardingCompleted) {
+      toast.info("先完成投资画像，Agent 才能判断建议是否适合你");
+      navigate("/profile");
+      return;
+    }
+    if (!holdings.length) {
+      toast.info("先录入至少一笔真实持仓，再生成组合建议");
+      navigate("/assets");
+      return;
+    }
     setGenerating(true);
+    setGenerationStatus("正在读取你的画像、目标与最新持仓");
     try {
-      const result = await runAgentWorkflow("home_manual");
-      if (result.recommendations?.length) toast.success(`Agent 生成 ${result.recommendations.length} 条建议`);
-      else if (result.signals?.length) toast.info("Agent 未触发建议阈值，请关注信号面板");
-      else toast.info("目前一切平稳，未触发建议");
-      invalidateRecs();
-    } catch (err: any) {
-      toast.error(err?.message ?? "Agent 工作流失败");
-    } finally { setGenerating(false); }
+      const result = await runAgentWorkflow("home_manual", { onProgress: setGenerationStatus });
+      if (result.recommendations.length) {
+        await invalidateRecs();
+        toast.success("今日组合建议已生成");
+      } else if (result.clarificationId) {
+        toast.info("还需要补充几项关键信息，已为你打开理财顾问");
+        navigate("/advisor");
+      } else {
+        throw new Error("NO_RECOMMENDATION_CREATED");
+      }
+    } catch {
+      toast.error("暂时无法生成今日组合建议。模型或行情服务可能繁忙，请稍后重试");
+    } finally {
+      setGenerating(false);
+      setGenerationStatus(null);
+    }
   };
 
   return (
@@ -65,10 +86,7 @@ const HomePage = () => {
           <p className="newsprint-date-line">{todayStamp} · 数据更新至上一交易日 · MONEY WHISPERER DAILY</p>
           <h1 className="newsprint-headline mt-4 max-w-5xl text-4xl sm:text-5xl lg:text-5xl">你好，{displayName}。先看目标，再看市场。</h1>
         </div>
-        <div className="flex items-center gap-3">
-          {judgeMode && <span className="judge-note">评委批注已开启 · 完整证据链可见</span>}
-          <AnimatedMenuButton onClick={handleGenerate} disabled={generating} icon={<Sparkles className="size-4" />}>{generating ? "Agent 运行中…" : "运行一轮 Agent 建议"}</AnimatedMenuButton>
-        </div>
+        {judgeMode && <span className="judge-note">评委批注已开启 · 完整证据链可见</span>}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
@@ -92,7 +110,16 @@ const HomePage = () => {
         </div>
       )}
 
-      <div className="mt-6"><RecommendationCard rec={activeRec} onGenerate={handleGenerate} generating={generating} /></div>
+      <div className="mt-6">
+        <RecommendationCard
+          rec={activeRec}
+          onGenerate={handleGenerate}
+          generating={generating}
+          generationStatus={generationStatus}
+          hasHoldings={holdings.length > 0}
+          profileReady={Boolean(profile?.onboardingCompleted)}
+        />
+      </div>
       <HomeRssCard />
     </div>
   );

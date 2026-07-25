@@ -72,7 +72,7 @@ async function executePreparedConversationAgent(input: AdvisorRunInput, prepared
       userMessageId,
       outputMode,
       answer: waitingForUser ? formatClarificationAnswer(missingQuestions) : professional.answer,
-      status: waitingForUser ? "waiting_for_user" : professional.status === "BLOCKED" ? "blocked" : "completed",
+      status: waitingForUser ? "waiting_for_user" : "completed",
       provider: professional.provider,
       missingQuestions,
       recommendation: waitingForUser ? null : professional.recommendation,

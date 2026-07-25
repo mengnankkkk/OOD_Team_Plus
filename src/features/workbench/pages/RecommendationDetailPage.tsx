@@ -6,7 +6,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { getEvidenceForRecommendation, getRecommendation, updateRecommendationStatus } from "@/services/recommendationService";
 import type { EvidencePack, Recommendation } from "@/types/app/recommendation";
 import { toast } from "sonner";
-import { ArrowLeft, CheckCircle, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle, FileSearch, MessageCircleQuestion, ShieldCheck, XCircle } from "lucide-react";
 import EvidenceLab from "@/components/desktop/EvidenceLab";
 import SimulationCompare from "@/components/desktop/SimulationCompare";
 import OutcomeCompare from "@/components/desktop/OutcomeCompare";
@@ -61,13 +61,14 @@ const RecommendationDetailPage = () => {
 
   const handleReject = async () => {
     if (!user || !rec) return;
-    prompt("为什么拒绝这条建议？（可选）");
+    const reason = prompt("为什么拒绝这条建议？（可选）");
+    if (reason === null) return;
     setBusy("reject");
     try {
-      await updateRecommendationStatus(user.id, rec.id, "rejected");
+      await updateRecommendationStatus(user.id, rec.id, "rejected", reason);
       toast.success("已拒绝并写入决策日志");
-      invalidate();
-      navigate("/");
+      await invalidate();
+      navigate("/history/decision-log");
     } catch (err: any) {
       toast.error(err?.message ?? "操作失败");
     } finally {
@@ -91,6 +92,8 @@ const RecommendationDetailPage = () => {
 
   const before = useMemo(() => (evidence?.simulationLog?.[0] as any) ?? null, [evidence]);
   const after = useMemo(() => (evidence?.simulationLog?.[1] as any) ?? null, [evidence]);
+  const blocked = rec ? rec.status === "blocked" || rec.complianceStatus === "blocked" : false;
+  const canSimulate = Boolean(rec && !blocked && (rec.status === "active" || rec.status === "degraded") && rec.complianceStatus === "approved");
 
   if (loading) return <div className="grid min-h-[50vh] place-items-center text-muted-foreground">正在读取建议详情…</div>;
   if (!rec) return <div className="grid min-h-[50vh] place-items-center text-muted-foreground">未找到该建议</div>;
@@ -121,7 +124,11 @@ const RecommendationDetailPage = () => {
             </TabsList>
 
             <TabsContent value="overview" className="pt-4">
-              <p className="text-sm leading-6 text-muted-foreground">这条建议基于你的画像与账本实时生成，绑定的目标是<strong className="text-foreground">{primaryGoalName(rec)}</strong>。风险与合规两个 Agent 已完成独立复核，你可以先模拟采纳，随时撤销。</p>
+              <p className="text-sm leading-6 text-muted-foreground">
+                {blocked
+                  ? "这条建议保留了 Agent 的研究结论，但风险与合规发布门认为当前证据不足，因此不能模拟采纳。你可以查看完整证据链，补充信息后重新分析。"
+                  : <>这条建议基于你的画像与账本生成，绑定的目标是<strong className="text-foreground">{primaryGoalName(rec)}</strong>。风险与合规节点已完成独立复核，你可以先在模拟账本中查看影响。</>}
+              </p>
               <div className="mt-6 rounded-md border border-border bg-muted/40 px-4 py-3 text-sm">
                 <div className="flex items-center gap-2 font-medium"><ShieldCheck className="size-4 text-primary" /> 风险 & 合规审查</div>
                 <p className="mt-1 text-xs text-muted-foreground">{rec.complianceStatus === "approved" ? "两个独立节点均通过审查" : rec.complianceStatus === "blocked" ? "合规节点已拦截，建议维持观察" : "复核中"}</p>
@@ -162,7 +169,16 @@ const RecommendationDetailPage = () => {
           <section className="paper-card p-6">
             <p className="eyebrow">下一步动作</p>
             <div className="mt-4 space-y-3">
-              {rec.status === "active" ? (
+              {blocked ? (
+                <>
+                  <div className="border border-destructive/40 bg-destructive/5 px-4 py-4 text-sm text-destructive">
+                    <div className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />这条建议已被风险与合规节点拦截</div>
+                    <p className="mt-2 leading-6">{rec.complianceNotes || "当前数据或证据不足，不能升级为可执行建议。"}</p>
+                  </div>
+                  {rec.agentRunId ? <Button variant="outline" className="h-11 w-full rounded-sm" onClick={() => navigate(`/history/evidence-lab?analysisId=${encodeURIComponent(rec.agentRunId!)}`)}><FileSearch className="size-4" />查看完整证据链</Button> : null}
+                  <Button variant="outline" className="h-11 w-full rounded-sm" onClick={() => navigate(`/advisor?prompt=${encodeURIComponent("请帮助我补齐这条被阻断建议缺少的信息，并基于最新证据重新分析。")}`)}><MessageCircleQuestion className="size-4" />去顾问补充信息</Button>
+                </>
+              ) : canSimulate ? (
                 <>
                   <Button className="h-12 w-full rounded-sm text-base" onClick={handleAdopt} disabled={busy !== null}><CheckCircle className="size-4" />{busy === "adopt" ? "落章中…" : "模拟采纳 · 落朱砂章"}</Button>
                   <Button variant="outline" className="h-11 w-full rounded-sm" onClick={handleReject} disabled={busy !== null}><XCircle className="size-4" />拒绝并记录原因</Button>
@@ -174,7 +190,9 @@ const RecommendationDetailPage = () => {
                 </>
               ) : rec.status === "rejected" ? (
                 <div className="rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">此建议已拒绝，可在决策日志中回看</div>
-              ) : null}
+              ) : (
+                <div className="rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">当前建议仍在复核中，暂不能模拟采纳。</div>
+              )}
             </div>
           </section>
 

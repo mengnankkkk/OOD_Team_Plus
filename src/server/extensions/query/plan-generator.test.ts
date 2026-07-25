@@ -123,6 +123,21 @@ describe("generateQueryPlan", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("uses deterministic QueryPlan fallback when the model omits datasets", async () => {
+    mockPlan({
+      dimensions: ["account_id"],
+      metrics: [],
+      filters: [],
+      limit: 100,
+    });
+
+    const result = await generateQueryPlan("q", ["portfolio_snapshots"], null, "user1");
+
+    expect(result.planner).toBe("DETERMINISTIC_FALLBACK");
+    expect(result.plan.datasets).toEqual(["PORTFOLIO_SNAPSHOTS"]);
+    expect(result.sql).toContain("portfolio_snapshots");
+  });
+
   it("routes market datasets through a documented PandaData method", async () => {
     vi.stubEnv("DEEPSEEK_API_KEY", "");
 
@@ -191,11 +206,12 @@ describe("generateQueryPlan", () => {
     database.close();
   });
 
-  it("throws a status-only error when DeepSeek fails", async () => {
+  it("uses deterministic QueryPlan fallback when DeepSeek is unavailable", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 503 } as Response);
 
-    await expect(
-      generateQueryPlan("q", ["portfolio_snapshots"], null, "user1"),
-    ).rejects.toThrow("DeepSeek API error: 503");
+    const result = await generateQueryPlan("q", ["portfolio_snapshots"], null, "user1");
+
+    expect(result.planner).toBe("DETERMINISTIC_FALLBACK");
+    expect(result.plan.datasets).toEqual(["PORTFOLIO_SNAPSHOTS"]);
   });
 });

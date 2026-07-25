@@ -42,8 +42,10 @@ export type DecisionAction = "viewed" | "followup_question" | "simulated" | "rev
 export interface DecisionLog {
   id: string;
   recommendationId: string | null;
+  analysisId: string | null;
   action: DecisionAction;
   reason: string | null;
+  note?: string | null;
   agentSnapshot: Record<string, unknown>;
   createdAt: string;
 }

@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
   if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   const db = getDatabase();
-  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND status='active'").get(id, userId) as Record<string, unknown> | undefined;
+  const recommendation = db.prepare("SELECT * FROM recommendations WHERE id=? AND user_id=? AND UPPER(status) IN ('ACTIVE','DEGRADED')").get(id, userId) as Record<string, unknown> | undefined;
   const snapshot = db.prepare("SELECT id FROM portfolio_snapshots WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(userId) as { id?: string } | undefined;
   db.close();
   if (!recommendation || !snapshot?.id) return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation or portfolio snapshot not found" } }, { status: 404 });
