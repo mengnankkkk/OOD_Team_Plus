@@ -52,7 +52,7 @@ export async function runBranchScenarioAgent(
       if (partial && typeof partial === "object") latestPartial = { ...latestPartial, ...partial };
     }
     const streamedObject = await stream.object.catch(() => undefined);
-    const modelPlan = BranchScenarioModelPlanSchema.parse(normalizeModelPlan(streamedObject ?? latestPartial));
+    const modelPlan = BranchScenarioModelPlanSchema.parse(normalizeModelPlan(mergeDefined(latestPartial, streamedObject)));
     const plan = BranchScenarioPlanSchema.parse({
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
@@ -218,6 +218,12 @@ function normalizeModelPlan(value: unknown): unknown {
       return { ...option, strategy: normalizeStrategy(option.strategy, trades) };
     }),
   };
+}
+
+function mergeDefined(partial: Partial<BranchScenarioModelPlan>, completed: unknown): Record<string, unknown> {
+  if (!completed || typeof completed !== "object" || Array.isArray(completed)) return { ...partial };
+  const definedEntries = Object.entries(completed as Record<string, unknown>).filter(([, value]) => value !== undefined);
+  return { ...partial, ...Object.fromEntries(definedEntries) };
 }
 
 function normalizeStrategy(value: unknown, trades: unknown[]): BranchScenarioOption["strategy"] | unknown {
