@@ -61,7 +61,7 @@ describe("username and password authentication", () => {
       (id,username,username_normalized,password_hash,display_name,role,status,force_password_change,created_at,updated_at,row_version)
       VALUES ('user-1','user_1','user_1',?,'User','USER','ACTIVE',0,?,?,1)`).run(passwordHash, now, now);
     db.close();
-    const admin = { id: "admin-1", username: "admin_1", displayName: "Admin", role: "ADMIN" as const, status: "ACTIVE" as const, forcePasswordChange: false, createdAt: now, updatedAt: now, version: 1 };
+    const admin = { id: "admin-1", username: "admin_1", displayName: "Admin", role: "ADMIN" as const, status: "ACTIVE" as const, forcePasswordChange: false, preferredLocale: null, createdAt: now, updatedAt: now, version: 1 };
     const user = { ...admin, id: "user-1", username: "user_1", role: "USER" as const };
     const adminCookie = `mw_session=${createSession(admin, {}).token}`;
     const userCookie = `mw_session=${createSession(user, {}).token}`;

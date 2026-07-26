@@ -1,11 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
-import { clearSessionCookies } from "@/server/auth/http";
+import { clearSessionCookies, localizedNoContent } from "@/server/auth/http";
 import { revokeSession } from "@/server/auth/service";
+import { resolveWebLocale } from "@/i18n/resolve-locale";
 
 export async function POST(request: NextRequest) {
   revokeSession(request.cookies.get("mw_session")?.value);
-  const response = new NextResponse(null, { status: 204 });
+  const locale = resolveWebLocale({
+    cookieLocale: request.cookies.get("mw_locale")?.value,
+    acceptLanguage: request.headers.get("accept-language"),
+  }).locale;
+  const response = localizedNoContent(locale);
   clearSessionCookies(response);
   return response;
 }

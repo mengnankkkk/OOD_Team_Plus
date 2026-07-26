@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import argon2 from "argon2";
 
 import { createId, getDatabase, hashSessionToken, isoNow } from "@/server/http/context";
+import type { AppLocale } from "@/i18n/config";
 
 import { AuthFailure, type AuthUser, type UserRole, type UserStatus } from "./contracts";
 
@@ -21,6 +22,7 @@ type UserRow = {
   role: UserRole;
   status: UserStatus;
   force_password_change: number;
+  preferred_locale: AppLocale | null;
   created_at: string;
   updated_at: string | null;
   row_version: number;
@@ -171,6 +173,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     role: row.role,
     status: row.status,
     forcePasswordChange: row.force_password_change === 1,
+    preferredLocale: row.preferred_locale ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
     version: row.row_version,

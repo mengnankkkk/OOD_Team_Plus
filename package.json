@@ -70,6 +70,7 @@
     "leva": "0.9.35",
     "lucide-react": "0.468.0",
     "next": "16.2.11",
+    "next-intl": "4.13.4",
     "next-themes": "0.4.6",
     "node-sql-parser": "^5.4.0",
     "react": "19.2.8",

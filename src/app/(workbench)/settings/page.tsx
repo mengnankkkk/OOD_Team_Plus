@@ -4,22 +4,33 @@ import { Bell, KeyRound, LogIn, LogOut, Target, User, WalletCards } from "lucide
 import { PageHeading } from "@/features/workbench/components/shared";
 import { useNavigate } from "@/features/frontend-migration/router";
 import { useAuth } from "@/hooks/useAuth";
+import LanguageSelector from "@/components/desktop/LanguageSelector";
+import { useTranslations } from "next-intl";
 
 const settingEntries = [
-  { path: "/profile", label: "个人财务档案", description: "资产偏好、风险承受和个人资料", icon: WalletCards },
-  { path: "/goals", label: "个人目标档案", description: "目标、期限和进度管理", icon: Target },
-  { path: "/auth/password", label: "修改密码", description: "更新当前账号登录密码", icon: KeyRound },
-  { path: "/notification-preference", label: "通知偏好", description: "提醒频率与静默时段", icon: Bell },
+  { path: "/profile", key: "profile", icon: WalletCards },
+  { path: "/goals", key: "goals", icon: Target },
+  { path: "/auth/password", key: "password", icon: KeyRound },
+  { path: "/notification-preference", key: "notifications", icon: Bell },
 ];
 
 export default function SettingsPage() {
+  const t = useTranslations("auth.settings");
   const { profile, user, isAnonymous, signOut } = useAuth();
   const navigate = useNavigate();
-  const displayName = profile?.displayName ?? user?.user_metadata.display_name ?? user?.email ?? "登录中";
+  const displayName = profile?.displayName ?? user?.user_metadata.display_name ?? user?.email ?? t("loadingAccount");
 
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="ACCOUNT" title="设置" description="管理当前登录账号、个人档案和通知偏好。" />
+      <PageHeading eyebrow={t("eyebrow")} title={t("title")} description={t("description")} />
+
+      <section className="paper-card flex flex-wrap items-center justify-between gap-4 p-5">
+        <div>
+          <h2 className="text-base font-semibold">{t("languageTitle")}</h2>
+          <p className="text-sm text-muted-foreground">{t("languageDescription")}</p>
+        </div>
+        <LanguageSelector />
+      </section>
 
       <section className="paper-card p-5 md:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -29,7 +40,7 @@ export default function SettingsPage() {
             </span>
             <div className="min-w-0">
               <h2 className="truncate text-lg font-semibold">{displayName}</h2>
-              <p className="truncate text-sm text-muted-foreground">{isAnonymous ? "游客模式" : user?.email ?? "正在读取账号"}</p>
+              <p className="truncate text-sm text-muted-foreground">{isAnonymous ? t("guest") : user?.email ?? t("loadingAccount")}</p>
             </div>
           </div>
           <span className="status-chip neutral">{user?.role ?? "USER"}</span>
@@ -45,8 +56,8 @@ export default function SettingsPage() {
                 <Icon className="size-4" />
               </span>
               <span className="min-w-0">
-                <strong className="block truncate">{entry.label}</strong>
-                <small className="block truncate text-muted-foreground">{entry.description}</small>
+                <strong className="block truncate">{t(`entries.${entry.key}.label`)}</strong>
+                <small className="block truncate text-muted-foreground">{t(`entries.${entry.key}.description`)}</small>
               </span>
             </button>
           );
@@ -55,13 +66,13 @@ export default function SettingsPage() {
 
       <section className="paper-card flex flex-wrap items-center justify-between gap-3 p-5">
         <div>
-          <h2 className="text-base font-semibold">登录状态</h2>
-          <p className="text-sm text-muted-foreground">{isAnonymous ? "绑定账号后可跨设备使用。" : "退出后需要重新登录才能访问工作台。"}</p>
+          <h2 className="text-base font-semibold">{t("loggedIn")}</h2>
+          <p className="text-sm text-muted-foreground">{isAnonymous ? t("guest") : t("loggedInDescription")}</p>
         </div>
         {isAnonymous ? (
-          <button className="button primary" type="button" onClick={() => navigate("/login")}><LogIn className="size-4" />绑定邮箱账号</button>
+          <button className="button primary" type="button" onClick={() => navigate("/login")}><LogIn className="size-4" />{t("bindAccount")}</button>
         ) : (
-          <button className="button ghost text-destructive" type="button" onClick={() => void signOut()}><LogOut className="size-4" />退出登录</button>
+          <button className="button ghost text-destructive" type="button" onClick={() => void signOut()}><LogOut className="size-4" />{t("logout")}</button>
         )}
       </section>
     </div>

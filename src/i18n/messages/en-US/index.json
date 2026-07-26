@@ -1,0 +1,94 @@
+{
+  "common": {
+    "app": "Money Whisperer",
+    "metadata": {
+      "title": "Money Whisperer · Professional Investment Advisor",
+      "description": "A multi-agent research, analysis, and scenario workspace for individual investors"
+    },
+    "language": {
+      "label": "Language",
+      "zhCN": "简体中文",
+      "enUS": "English",
+      "changeFailed": "Unable to change language. Please try again."
+    },
+    "nav": {
+      "home": "Home",
+      "assets": "Assets",
+      "advisor": "Advisor",
+      "watchlist": "Watchlist",
+      "simulations": "Branch simulations",
+      "history": "History",
+      "more": "More",
+      "evidenceLab": "Evidence lab",
+      "decisionLog": "Decision log",
+      "systemHealth": "System health",
+      "semanticLayer": "Semantic layer",
+      "userManagement": "User management",
+      "rssManagement": "RSS source management",
+      "alerts": "Alerts",
+      "judgeMode": "Judge view · Pandadata routes, skill runs, DAG, and risk interception details are expanded"
+    },
+    "actions": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "retry": "Retry",
+      "loading": "Working…"
+    }
+  },
+  "auth": {
+    "login": {
+      "eyebrow": "Sign in",
+      "title": "Return to your financial workspace",
+      "submit": "Sign in",
+      "switchToSignup": "Don't have an account? Create one",
+      "error": "Sign-in failed. Check your username and password."
+    },
+    "register": {
+      "eyebrow": "Create account",
+      "title": "Start your goal-based financial workspace",
+      "submit": "Create account and sign in",
+      "switchToLogin": "Already have an account? Sign in",
+      "error": "Registration failed. Please try again.",
+      "success": "Your account is ready. Opening the workspace.",
+      "signInAgain": "Your account is ready. Sign in again with your username and password."
+    },
+    "account": {
+      "displayName": "Display name",
+      "displayNamePlaceholder": "What should I call you?",
+      "username": "Username",
+      "usernamePlaceholder": "3–32 letters, numbers, or underscores",
+      "password": "Password",
+      "passwordPlaceholder": "10–128 characters"
+    },
+    "settings": {
+      "eyebrow": "Account",
+      "title": "Settings",
+      "description": "Manage your account, profile, and notification preferences.",
+      "languageTitle": "Language",
+      "languageDescription": "Choose the language used by the workspace and future notifications.",
+      "loggedIn": "Session",
+      "loggedInDescription": "You will need to sign in again after logging out.",
+      "logout": "Sign out",
+      "guest": "Guest mode",
+      "bindAccount": "Link an account",
+      "loadingAccount": "Loading account",
+      "entries": {
+        "profile": { "label": "Financial profile", "description": "Asset preferences, risk tolerance, and personal details" },
+        "goals": { "label": "Goal profile", "description": "Manage goals, timelines, and progress" },
+        "password": { "label": "Change password", "description": "Update the password for this account" },
+        "notifications": { "label": "Notification preferences", "description": "Reminder frequency and quiet hours" }
+      }
+    }
+  },
+  "errors": {
+    "UNAUTHENTICATED": "Authentication is required to continue.",
+    "VALIDATION_ERROR": "The request parameters are invalid.",
+    "INTERNAL_ERROR": "The service is temporarily unavailable. Please try again.",
+    "INVALID_CREDENTIALS": "The username or password is incorrect.",
+    "USERNAME_EXISTS": "That username is already registered.",
+    "REGISTRATION_DISABLED": "Registration is currently disabled.",
+    "RATE_LIMITED": "Too many requests. Please try again later.",
+    "ACCOUNT_DISABLED": "This account has been disabled.",
+    "FORBIDDEN": "You do not have permission to perform this action."
+  }
+}

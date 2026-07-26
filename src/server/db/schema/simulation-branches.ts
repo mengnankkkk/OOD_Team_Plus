@@ -90,6 +90,7 @@ export const simulationOptionBatches = sqliteTable(
     status: text("status", { enum: OPTION_BATCH_STATUSES }).notNull().default("queued"),
     priceManifestJson: text("price_manifest_json"),
     priceManifestSha256: text("price_manifest_sha256"),
+    contentLocale: text("content_locale").notNull().default("zh-CN"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [
