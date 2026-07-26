@@ -4,6 +4,7 @@ import { z } from "zod";
 import { PasswordSchema, UsernameSchema } from "@/server/auth/contracts";
 import { authError, localizedJson, requestIp, setLocaleCookie, setSessionCookies } from "@/server/auth/http";
 import { localizedErrorMessage } from "@/i18n/errors";
+import { normalizeLocale } from "@/i18n/config";
 import { resolveWebLocale } from "@/i18n/resolve-locale";
 import { createSession, enforceFixedWindowRateLimit, registerUser } from "@/server/auth/service";
 import { meta } from "@/server/http/context";
@@ -12,6 +13,7 @@ const Schema = z.object({
   username: UsernameSchema,
   password: PasswordSchema,
   displayName: z.string().trim().min(1).max(80).optional(),
+  locale: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -21,6 +23,10 @@ export async function POST(request: NextRequest) {
   }).locale;
   const parsed = Schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return localizedJson({ error: { code: "VALIDATION_ERROR", message: localizedErrorMessage("VALIDATION_ERROR", requestLocale), details: parsed.error.format() } }, 422, requestLocale);
+  const requestedLocale = parsed.data.locale === undefined ? null : normalizeLocale(parsed.data.locale);
+  if (parsed.data.locale !== undefined && !requestedLocale) {
+    return localizedJson({ error: { code: "VALIDATION_ERROR", message: localizedErrorMessage("VALIDATION_ERROR", requestLocale) } }, 422, requestLocale);
+  }
   try {
     const clientSubject = requestIp(request) ?? "untrusted-client";
     enforceFixedWindowRateLimit({
@@ -29,7 +35,7 @@ export async function POST(request: NextRequest) {
       limit: 5,
       windowSeconds: 60,
     });
-    const user = await registerUser(parsed.data);
+    const user = await registerUser({ ...parsed.data, preferredLocale: requestedLocale ?? requestLocale });
     const session = createSession(user, { userAgent: request.headers.get("user-agent"), ip: requestIp(request) });
     const locale = resolveWebLocale({
       accountLocale: user.preferredLocale,

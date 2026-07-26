@@ -41,7 +41,7 @@ export async function verifyPassword(hash: string, password: string): Promise<bo
   }
 }
 
-export async function registerUser(input: { username: string; password: string; displayName?: string }) {
+export async function registerUser(input: { username: string; password: string; displayName?: string; preferredLocale?: AppLocale | null }) {
   if (process.env.ALLOW_REGISTRATION?.toLowerCase() === "false") {
     throw new AuthFailure("REGISTRATION_DISABLED", 403, "Registration is disabled");
   }
@@ -53,15 +53,28 @@ export async function registerUser(input: { username: string; password: string; 
     db.close();
     throw new AuthFailure("USERNAME_EXISTS", 409, "Username is already registered");
   }
-  const passwordHash = await hashPassword(input.password);
-  const id = createId("user");
-  try {
-    db.prepare(`INSERT INTO users
-      (id,username,username_normalized,password_hash,display_name,role,status,force_password_change,password_changed_at,created_at,updated_at,row_version)
-      VALUES (?,?,?,?,?,'USER','ACTIVE',0,?,?,?,1)`).run(
-      id, username, username, passwordHash, input.displayName?.trim() || username, now, now, now,
+    const passwordHash = await hashPassword(input.password);
+    const id = createId("user");
+    try {
+      db.prepare(`INSERT INTO users
+      (id,username,username_normalized,password_hash,display_name,role,status,force_password_change,preferred_locale,password_changed_at,created_at,updated_at,row_version)
+      VALUES (?,?,?,?,?,'USER','ACTIVE',0,?,?,?,?,1)`).run(
+      id, username, username, passwordHash, input.displayName?.trim() || username, input.preferredLocale ?? null, now, now, now,
     );
     const row = db.prepare("SELECT * FROM users WHERE id=?").get(id) as UserRow;
+    return toAuthUser(row);
+  } finally {
+    db.close();
+  }
+}
+
+export function setPreferredLocale(userId: string, locale: AppLocale): AuthUser {
+  const db = getDatabase();
+  try {
+    db.prepare("UPDATE users SET preferred_locale=?, updated_at=?, row_version=row_version+1 WHERE id=?")
+      .run(locale, isoNow(), userId);
+    const row = db.prepare("SELECT * FROM users WHERE id=?").get(userId) as UserRow | undefined;
+    if (!row) throw new AuthFailure("UNAUTHENTICATED", 401, "Authentication is required");
     return toAuthUser(row);
   } finally {
     db.close();

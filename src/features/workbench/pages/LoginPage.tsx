@@ -8,12 +8,14 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { FlaskConical } from "lucide-react";
 import LanguageSelector from "@/components/desktop/LanguageSelector";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
+import type { AppLocale } from "@/i18n/config";
 
 const LoginPage = () => {
   const { session, loading, signInWithPassword, signUpWithPassword } = useAuth();
   const t = useTranslations("auth");
   const common = useTranslations("common");
+  const locale = useLocale() as AppLocale;
   const navigate = useNavigate();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [username, setUsername] = useState("");
@@ -28,15 +30,15 @@ const LoginPage = () => {
     e.preventDefault();
     setSubmitting(true);
     if (mode === "signin") {
-      const { error } = await signInWithPassword(username.trim(), password);
+      const { error } = await signInWithPassword(username.trim(), password, locale);
       if (error) toast.error(error.message ?? t("login.error"));
       else navigate("/", { replace: true });
     } else {
-      const { error } = await signUpWithPassword(username.trim(), password, displayName.trim() || undefined);
+      const { error } = await signUpWithPassword(username.trim(), password, displayName.trim() || undefined, locale);
       if (error) toast.error(error.message ?? t("register.error"));
       else {
         toast.success(t("register.success"));
-        const { error: signInErr } = await signInWithPassword(username.trim(), password);
+        const { error: signInErr } = await signInWithPassword(username.trim(), password, locale);
         if (signInErr) toast.error(t("register.signInAgain"));
         else navigate("/", { replace: true });
       }

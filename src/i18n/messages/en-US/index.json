@@ -42,7 +42,8 @@
       "title": "Return to your financial workspace",
       "submit": "Sign in",
       "switchToSignup": "Don't have an account? Create one",
-      "error": "Sign-in failed. Check your username and password."
+      "error": "Sign-in failed. Check your username and password.",
+      "disclaimer": "Research and scenario analysis tool. For informational purposes only; not investment advice."
     },
     "register": {
       "eyebrow": "Create account",

@@ -24,10 +24,11 @@ describe("username and password authentication", () => {
       username: "Investor_01",
       password: "correct-horse-battery-staple",
       displayName: "Investor One",
+      locale: "en-US",
     }));
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body.data.user).toMatchObject({ username: "investor_01", role: "USER", status: "ACTIVE" });
+    expect(body.data.user).toMatchObject({ username: "investor_01", role: "USER", status: "ACTIVE", preferredLocale: "en-US" });
     const cookie = sessionCookie(response);
     const me = await getMe(new NextRequest("http://localhost/api/v1/auth/me", { headers: { cookie } }));
     expect(me.status).toBe(200);
@@ -35,16 +36,22 @@ describe("username and password authentication", () => {
 
     const db = getDatabase();
     const stored = db.prepare("SELECT password_hash FROM users WHERE username_normalized='investor_01'").get() as { password_hash: string };
+    const storedLocale = db.prepare("SELECT preferred_locale FROM users WHERE username_normalized='investor_01'").get() as { preferred_locale: string };
     const session = db.prepare("SELECT token_hash FROM api_sessions LIMIT 1").get() as { token_hash: string };
     db.close();
     expect(stored.password_hash).toMatch(/^\$argon2id\$/);
+    expect(storedLocale.preferred_locale).toBe("en-US");
     expect(session.token_hash).not.toContain(cookie.split("=")[1]);
   });
 
   it("logs in case-insensitively and revokes the session on logout", async () => {
     await register(jsonRequest("http://localhost/api/v1/auth/register", { username: "case_user", password: "very-secure-password" }));
-    const response = await login(jsonRequest("http://localhost/api/v1/auth/login", { username: "CASE_USER", password: "very-secure-password" }));
+    const response = await login(jsonRequest("http://localhost/api/v1/auth/login", { username: "CASE_USER", password: "very-secure-password", locale: "en-US" }));
     expect(response.status).toBe(200);
+    expect((await response.clone().json()).data.user.preferredLocale).toBe("en-US");
+    const db = getDatabase();
+    expect((db.prepare("SELECT preferred_locale FROM users WHERE username_normalized='case_user'").get() as { preferred_locale: string }).preferred_locale).toBe("en-US");
+    db.close();
     const cookie = sessionCookie(response);
     expect((await getMe(new NextRequest("http://localhost/api/v1/auth/me", { headers: { cookie } }))).status).toBe(200);
     expect((await logout(new NextRequest("http://localhost/api/v1/auth/logout", { method: "POST", headers: { cookie } }))).status).toBe(204);
