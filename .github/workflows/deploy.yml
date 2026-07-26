@@ -419,8 +419,9 @@ jobs:
             -d "$ADVISOR_BODY" \
             "$BASE_URL/api/a2a/message:send")"
           jq -e '
-            .kind == "task"
-            and (.status.state as $state
+            (keys == ["task"])
+            and .task.kind == "task"
+            and (.task.status.state as $state
               | ["submitted", "working", "completed", "input-required"]
               | index($state) != null)
           ' /tmp/a2a-advisor.json >/dev/null
@@ -445,7 +446,8 @@ jobs:
             -H "content-type: application/json" \
             -d "$RESEARCH_BODY" \
             "$BASE_URL/api/a2a/message:send")"
-          RESEARCH_TASK_ID="$(jq -er '.id' <<<"$RESEARCH_TASK")"
+          jq -e 'keys == ["task"] and .task.kind == "task"' <<<"$RESEARCH_TASK" >/dev/null
+          RESEARCH_TASK_ID="$(jq -er '.task.id' <<<"$RESEARCH_TASK")"
           RESEARCH_STATE=""
           for _ in $(seq 1 30); do
             RESEARCH_STATE="$(curl --fail --silent --show-error \
