@@ -4,12 +4,14 @@ const AGENT_NAME = "Factor Research Agent";
 const TEAM_NAME = "OOD Team Plus";
 const MESSAGE_SEND_PATH = "/api/a2a/message-send";
 const HTTP_MESSAGE_SEND_PATH = "/api/a2a/message:send";
+const HTTP_MESSAGE_STREAM_PATH = "/api/a2a/message:stream";
 const AGENT_CARD_PATH = "/.well-known/agent-card.json";
 
 export function buildAgentCard(request?: NextRequest) {
   const baseUrl = publicBaseUrl(request);
   const serviceEndpoint = `${baseUrl}${MESSAGE_SEND_PATH}`;
   const httpServiceEndpoint = `${baseUrl}${HTTP_MESSAGE_SEND_PATH}`;
+  const streamServiceEndpoint = `${baseUrl}${HTTP_MESSAGE_STREAM_PATH}`;
   const agentCardUrl = `${baseUrl}${AGENT_CARD_PATH}`;
 
   return {
@@ -36,9 +38,15 @@ export function buildAgentCard(request?: NextRequest) {
         protocolVersion: "1.0",
         transport: "HTTP+JSON",
       },
+      {
+        url: streamServiceEndpoint,
+        protocolBinding: "HTTP+JSON",
+        protocolVersion: "1.0",
+        transport: "HTTP+JSON",
+      },
     ],
     capabilities: {
-      streaming: false,
+      streaming: true,
       pushNotifications: false,
       stateTransitionHistory: true,
     },
@@ -99,6 +107,7 @@ export function buildAgentCard(request?: NextRequest) {
       agentCardUrl,
       serviceEndpoint,
       httpServiceEndpoint,
+      streamServiceEndpoint,
       taskListEndpoint: `${baseUrl}/api/a2a/tasks`,
       taskEndpointTemplate: `${baseUrl}/api/a2a/tasks/{id}`,
       contextDeleteEndpointTemplate: `${baseUrl}/api/a2a/contexts/{id}`,
@@ -166,6 +175,11 @@ export function buildAgentCard(request?: NextRequest) {
           "TASK_STATE_FAILED",
           "TASK_STATE_CANCELED",
         ],
+      },
+      streaming: {
+        endpoint: streamServiceEndpoint,
+        contentType: "text/event-stream",
+        responseOneOf: ["task", "message", "statusUpdate", "artifactUpdate"],
       },
       examplePrompts: [
         "Review my caller-supplied portfolio and explain the main risks.",

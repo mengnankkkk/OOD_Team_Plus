@@ -16,6 +16,7 @@ vi.mock("@/server/extensions/advisor/service", () => ({
 }));
 
 import { POST } from "./route";
+import { POST as POSTStream } from "@/app/api/a2a/message:stream/route";
 import { resetA2ARateLimitsForTests } from "@/server/a2a/auth";
 import { createExternalClient } from "@/server/a2a/client-service";
 import { getDatabase, isoNow } from "@/server/http/context";
@@ -127,6 +128,94 @@ describe("A2A message gateway", () => {
       },
     });
   });
+
+  it("streams A2A task updates through the HTTP+JSON streaming endpoint", async () => {
+    const client = createDatabaseClient(["chief_advisor_conversation"]);
+    runConversationAgentMock.mockResolvedValueOnce(completedAdvisor());
+
+    const response = await POSTStream(request(
+      advisorBody(),
+      client.token,
+      "/api/a2a/message:stream",
+    ));
+    const body = await response.text();
+    const events = body
+      .trim()
+      .split("\n\n")
+      .filter(Boolean)
+      .map((event) => JSON.parse(event.replace(/^data: /u, "")) as Record<string, unknown>);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      task: {
+        status: { state: "TASK_STATE_COMPLETED" },
+      },
+    });
+    expect(Object.keys(events[0])).toEqual(["task"]);
+  });
+
+  it("streams JSON-RPC SendStreamingMessage responses through SSE", async () => {
+    const client = createDatabaseClient(["chief_advisor_conversation"]);
+    runConversationAgentMock.mockResolvedValueOnce(completedAdvisor());
+
+    const response = await POST(request({
+      jsonrpc: "2.0",
+      id: "rpc-stream-1",
+      method: "SendStreamingMessage",
+      params: advisorBody(),
+    }, client.token));
+    const body = await response.text();
+    const events = body
+      .trim()
+      .split("\n\n")
+      .filter(Boolean)
+      .map((event) => JSON.parse(event.replace(/^data: /u, "")) as Record<string, unknown>);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      jsonrpc: "2.0",
+      id: "rpc-stream-1",
+      result: {
+        task: {
+          status: { state: "TASK_STATE_COMPLETED" },
+        },
+      },
+    });
+  });
+
+  it("emits status and artifact updates for a slow streaming task", async () => {
+    vi.stubEnv("A2A_INITIAL_RESPONSE_TIMEOUT_MS", "5");
+    vi.stubEnv("A2A_STREAM_MAX_DURATION_MS", "2000");
+    const client = createDatabaseClient(["chief_advisor_conversation"]);
+    runConversationAgentMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        setTimeout(() => resolve(completedAdvisor()), 300);
+      }),
+    );
+
+    const response = await POSTStream(request(
+      advisorBody(),
+      client.token,
+      "/api/a2a/message:stream",
+    ));
+    const body = await response.text();
+    const events = body
+      .trim()
+      .split("\n\n")
+      .filter(Boolean)
+      .map((event) => JSON.parse(event.replace(/^data: /u, "")) as Record<string, unknown>);
+
+    expect(response.status).toBe(200);
+    expect(events.map((event) => Object.keys(event))).toEqual([
+      ["task"],
+      ["statusUpdate"],
+      ["artifactUpdate"],
+    ]);
+  });
 });
 
 function advisorBody() {
@@ -158,10 +247,10 @@ function completedAdvisor() {
   };
 }
 
-function request(body: unknown, bearer?: string): NextRequest {
+function request(body: unknown, bearer?: string, path = "/api/a2a/message-send"): NextRequest {
   const headers = new Headers({ "content-type": "application/json" });
   if (bearer) headers.set("authorization", `Bearer ${bearer}`);
-  return new NextRequest("http://localhost/api/a2a/message-send", {
+  return new NextRequest(`http://localhost${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

@@ -6,6 +6,7 @@ Money Whisperer exposes its primary multi-agent research and simulation workflow
 GET  https://<host>/.well-known/agent-card.json
 POST https://<host>/api/a2a/message-send
 POST https://<host>/api/a2a/message:send
+POST https://<host>/api/a2a/message:stream
 GET  https://<host>/api/a2a/tasks
 GET  https://<host>/api/a2a/tasks/{id}
 POST https://<host>/api/a2a/tasks/{id}:cancel
@@ -60,6 +61,21 @@ holding the HTTP connection open for the full agent run. When `status.state` is
 `TASK_STATE_SUBMITTED` or `TASK_STATE_WORKING`, poll `GET /api/a2a/tasks/{id}` until the task reaches
 `TASK_STATE_COMPLETED`, `TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_FAILED`, or `TASK_STATE_CANCELED`.
 `A2A_INITIAL_RESPONSE_TIMEOUT_MS` controls the initial wait budget and defaults to 750 milliseconds.
+
+## Streaming
+
+HTTP+JSON streaming:
+
+```text
+POST https://<host>/api/a2a/message:stream
+Content-Type: application/a2a+json
+Authorization: Bearer <client-specific-token>
+```
+
+The response is `text/event-stream`. Each SSE `data:` payload contains exactly one A2A
+`StreamResponse` member: `task`, `statusUpdate`, or `artifactUpdate`. JSON-RPC clients can send
+`message/stream` or `SendStreamingMessage` to `/api/a2a/message-send`; each SSE payload is wrapped
+in a JSON-RPC response with the original request ID.
 
 ## JSON-RPC Example
 

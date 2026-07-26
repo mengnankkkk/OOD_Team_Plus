@@ -88,6 +88,7 @@ Money Whisperer 可以把 Advisor 回答或 AI 生成报告转入 `/injective`�
 | `A2A_BEARER_TOKEN` | 临时兼容 | 旧 A2A 入口的 bootstrap Bearer Token；正常接入应由管理员 API 创建数据库客户端 |
 | `A2A_BOOTSTRAP_CLIENT_TOKEN` | 生产发布可选 | 启动时幂等创建全能力外部客户端；仅保存 SHA-256 hash，原始值必须来自 Secret |
 | `A2A_INITIAL_RESPONSE_TIMEOUT_MS` | A2A 可选 | 首次响应等待预算，默认 `750ms`；超过后立即返回任务并在后台继续执行 |
+| `A2A_STREAM_MAX_DURATION_MS` | A2A 可选 | 单次 SSE 流最大持续时间，默认 `60000ms` |
 | `ADMIN_USERNAME` | 可选 | 首个管理员初始化用户名 |
 | `ADMIN_INITIAL_PASSWORD` | 可选 | 首个管理员初始化临时密码 |
 | `ALLOW_REGISTRATION` | 可选 | 是否开放注册，默认 `true` |

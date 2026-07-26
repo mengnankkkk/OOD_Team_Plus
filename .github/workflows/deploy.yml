@@ -426,6 +426,36 @@ jobs:
               | index($state) != null)
           ' /tmp/a2a-advisor.json >/dev/null
           echo "[deploy] Chief Advisor initial A2A response completed in ${ADVISOR_TIME}s."
+          STREAM_BODY="$(jq -nc --arg messageId "deploy-stream-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" '{
+            message: {
+              role: "ROLE_USER",
+              messageId: $messageId,
+              parts: [{ text: "Verify the external A2A streaming path." }],
+              metadata: {
+                capabilityId: "research_search",
+                operation: "start",
+                input: {
+                  query: "A2A streaming capability",
+                  adapters: ["KNOWLEDGE_BASE"],
+                  maximumResults: 1
+                }
+              }
+            }
+          }')"
+          STREAM_STATUS=0
+          curl --fail --silent --show-error --no-buffer \
+            --connect-timeout 5 \
+            --max-time 8 \
+            --dump-header /tmp/a2a-stream.headers \
+            --output /tmp/a2a-stream.body \
+            -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
+            -H "content-type: application/a2a+json" \
+            -d "$STREAM_BODY" \
+            "$BASE_URL/api/a2a/message:stream" || STREAM_STATUS=$?
+          test "$STREAM_STATUS" = "0" || test "$STREAM_STATUS" = "28"
+          grep -Eiq '^content-type: text/event-stream' /tmp/a2a-stream.headers
+          sed -n 's/^data: //p' /tmp/a2a-stream.body | head -n 1 | jq -e 'keys == ["task"]' >/dev/null
+          echo "[deploy] HTTP+JSON A2A streaming response verified."
           RESEARCH_BODY="$(jq -nc --arg messageId "deploy-research-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" '{
             message: {
               role: "ROLE_USER",

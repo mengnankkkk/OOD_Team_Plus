@@ -20,6 +20,7 @@ describe("A2A agent card route", () => {
     const body = await response.json();
     const serviceEndpoint = "https://agents.example.com/api/a2a/message-send";
     const httpServiceEndpoint = "https://agents.example.com/api/a2a/message:send";
+    const streamServiceEndpoint = "https://agents.example.com/api/a2a/message:stream";
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
@@ -42,6 +43,11 @@ describe("A2A agent card route", () => {
           protocolBinding: "HTTP+JSON",
           protocolVersion: "1.0",
         },
+        {
+          url: streamServiceEndpoint,
+          protocolBinding: "HTTP+JSON",
+          protocolVersion: "1.0",
+        },
       ],
       metadata: {
         agentCardUrl: "https://agents.example.com/.well-known/agent-card.json",
@@ -56,7 +62,7 @@ describe("A2A agent card route", () => {
       "research_search",
     ]);
     expect(body.capabilities).toMatchObject({
-      streaming: false,
+      streaming: true,
       pushNotifications: false,
       stateTransitionHistory: true,
     });

@@ -42,11 +42,14 @@ import { refreshA2ATaskFromDomain } from "./task-refresh";
 type AdapterRegistry = Record<CapabilityId, CapabilityAdapter>;
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS = 750;
 const MAX_INITIAL_RESPONSE_TIMEOUT_MS = 5_000;
+const DEFAULT_STREAM_MAX_DURATION_MS = 60_000;
+const STREAM_POLL_INTERVAL_MS = 250;
 
 export function createA2ARequestHandlers(adapters: AdapterRegistry) {
   return {
     handleJsonRpcA2ARequest: (request: NextRequest) => handleJsonRpcA2ARequest(request, adapters),
     handleHttpSendMessage: (request: NextRequest) => handleHttpSendMessage(request, adapters),
+    handleHttpStreamMessage: (request: NextRequest) => handleHttpStreamMessage(request, adapters),
     handleHttpListTasks: (request: NextRequest) => handleHttpListTasks(request, adapters),
     handleHttpTaskRequest: (request: NextRequest, path: string[]) =>
       handleHttpTaskRequest(request, path, adapters),
@@ -59,6 +62,13 @@ export async function handleJsonRpcA2ARequest(
 ): Promise<Response> {
   const body = await request.json().catch(() => null);
   const rpc = isRecord(body) && body.jsonrpc === "2.0";
+  if (
+    rpc
+    && isRecord(body)
+    && (body.method === "message/stream" || body.method === "SendStreamingMessage")
+  ) {
+    return handleJsonRpcA2AStreamRequest(request, body, adapters);
+  }
   let requestId: string | number | null = null;
   try {
     const principal = authenticateExternalRequest(request);
@@ -75,6 +85,29 @@ export async function handleJsonRpcA2ARequest(
   }
 }
 
+async function handleJsonRpcA2AStreamRequest(
+  request: NextRequest,
+  body: Record<string, unknown>,
+  adapters: AdapterRegistry,
+): Promise<Response> {
+  const requestId = jsonRpcRequestId(body);
+  try {
+    const principal = authenticateExternalRequest(request);
+    const command = parseJsonRpcCommand({ ...body, method: "message/send" });
+    const envelope = await executeA2ACommand(principal, command, adapters) as {
+      result?: { task?: Record<string, unknown> };
+    };
+    const task = envelope.result?.task;
+    if (!task || typeof task.id !== "string") {
+      throw new A2APublicError("A2A_INTERNAL_ERROR", 500, "A2A stream did not create a task");
+    }
+    return streamA2ATask(principal.clientId, task.id, task, requestId);
+  } catch (error) {
+    const publicError = asPublicError(error);
+    return a2aJson(jsonRpcError(requestId, publicError), publicError.status);
+  }
+}
+
 export async function handleHttpSendMessage(
   request: NextRequest,
   adapters: AdapterRegistry,
@@ -87,6 +120,158 @@ export async function handleHttpSendMessage(
   } catch (error) {
     return publicErrorResponse(error);
   }
+}
+
+export async function handleHttpStreamMessage(
+  request: NextRequest,
+  adapters: AdapterRegistry,
+): Promise<Response> {
+  try {
+    const principal = authenticateExternalRequest(request);
+    const command = parseHttpSendMessage(await request.json().catch(() => null));
+    const envelope = await executeA2ACommand(principal, command, adapters) as {
+      result?: { task?: Record<string, unknown> };
+    };
+    const task = envelope.result?.task;
+    if (!task || typeof task.id !== "string") {
+      throw new A2APublicError("A2A_INTERNAL_ERROR", 500, "A2A stream did not create a task");
+    }
+    return streamA2ATask(principal.clientId, task.id, task);
+  } catch (error) {
+    return publicErrorResponse(error);
+  }
+}
+
+function streamA2ATask(
+  clientId: string,
+  taskId: string,
+  initialTask: Record<string, unknown>,
+  jsonRpcRequestId?: string | number | null,
+): Response {
+  const encoder = new TextEncoder();
+  let cancelStream: () => void = () => undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      const timers: {
+        pollTimer?: ReturnType<typeof setInterval>;
+        maxDurationTimer?: ReturnType<typeof setTimeout>;
+      } = {};
+      let lastState = taskState(initialTask);
+      let lastArtifactCount = taskArtifacts(initialTask).length;
+
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (timers.pollTimer) clearInterval(timers.pollTimer);
+        if (timers.maxDurationTimer) clearTimeout(timers.maxDurationTimer);
+        controller.close();
+      };
+      cancelStream = close;
+
+      const emit = (payload: Record<string, unknown>) => {
+        if (closed) return;
+        const body = jsonRpcRequestId === undefined
+          ? payload
+          : jsonRpcSuccess(jsonRpcRequestId, payload);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(body)}\n\n`));
+      };
+
+      emit({ task: initialTask });
+      if (isTerminalTaskState(lastState)) {
+        close();
+        return;
+      }
+
+      const poll = () => {
+        if (closed) return;
+        try {
+          const stored = getA2ATask(clientId, taskId);
+          if (!stored) {
+            close();
+            return;
+          }
+          const current = toA2ATaskResource(refreshA2ATaskFromDomain(clientId, taskId));
+          const currentState = taskState(current);
+          if (currentState !== lastState) {
+            emit({
+              statusUpdate: {
+                taskId,
+                contextId: current.contextId,
+                status: current.status,
+              },
+            });
+            lastState = currentState;
+          }
+
+          const artifacts = taskArtifacts(current);
+          for (const artifact of artifacts.slice(lastArtifactCount)) {
+            emit({
+              artifactUpdate: {
+                taskId,
+                contextId: current.contextId,
+                artifact,
+                append: false,
+                lastChunk: true,
+              },
+            });
+          }
+          lastArtifactCount = artifacts.length;
+          if (isTerminalTaskState(currentState)) close();
+        } catch {
+          close();
+        }
+      };
+
+      timers.pollTimer = setInterval(poll, STREAM_POLL_INTERVAL_MS);
+      timers.maxDurationTimer = setTimeout(close, streamMaxDurationMs());
+    },
+    cancel() {
+      cancelStream();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
+function taskState(task: Record<string, unknown>): string {
+  return isRecord(task.status) && typeof task.status.state === "string"
+    ? task.status.state
+    : "";
+}
+
+function taskArtifacts(task: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(task.artifacts)
+    ? task.artifacts.filter(isRecord)
+    : [];
+}
+
+function isTerminalTaskState(state: string): boolean {
+  return [
+    "TASK_STATE_COMPLETED",
+    "TASK_STATE_FAILED",
+    "TASK_STATE_CANCELED",
+    "TASK_STATE_REJECTED",
+    "TASK_STATE_INPUT_REQUIRED",
+    "TASK_STATE_AUTH_REQUIRED",
+  ].includes(state);
+}
+
+function streamMaxDurationMs(): number {
+  const configured = Number(process.env.A2A_STREAM_MAX_DURATION_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_STREAM_MAX_DURATION_MS;
+  return Math.min(Math.max(Math.trunc(configured), 1_000), 300_000);
+}
+
+function jsonRpcRequestId(body: Record<string, unknown>): string | number | null {
+  return typeof body.id === "string" || typeof body.id === "number" ? body.id : null;
 }
 
 export async function handleHttpListTasks(

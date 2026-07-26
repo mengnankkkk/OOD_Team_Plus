@@ -5,6 +5,7 @@ const DOCUMENT = `# A2A External Capability Gateway
 - Agent Card: GET https://<host>/.well-known/agent-card.json
 - JSON-RPC: POST https://<host>/api/a2a/message-send
 - HTTP+JSON: POST https://<host>/api/a2a/message:send
+- HTTP+JSON streaming: POST https://<host>/api/a2a/message:stream
 - Tasks: GET https://<host>/api/a2a/tasks and GET https://<host>/api/a2a/tasks/{id}
 - Cancel: POST https://<host>/api/a2a/tasks/{id}:cancel
 - Delete context: DELETE https://<host>/api/a2a/contexts/{id}
@@ -52,6 +53,9 @@ Put capabilityId, operation, and input in message.metadata.
 The server resolves authoritative market prices. Every context receives a temporary non-login execution
 principal, remains isolated from product users and other clients, and expires after 30 days. The service is
 research- and simulation-only; it never connects to brokers or places orders.
+
+Streaming responses use \`text/event-stream\`; each \`data:\` payload contains exactly one \`task\`,
+\`statusUpdate\`, or \`artifactUpdate\` member.
 `;
 
 export const runtime = "nodejs";
