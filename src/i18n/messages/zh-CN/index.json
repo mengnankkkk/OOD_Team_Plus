@@ -80,6 +80,19 @@
         "password": { "label": "修改密码", "description": "更新当前账号登录密码" },
         "notifications": { "label": "通知偏好", "description": "提醒频率与静默时段" }
       }
+    },
+    "password": {
+      "eyebrow": "账户",
+      "title": "修改密码",
+      "description": "更新当前账号的登录密码。",
+      "currentPassword": "当前密码",
+      "currentPasswordPlaceholder": "输入当前密码",
+      "newPassword": "新密码",
+      "newPasswordPlaceholder": "输入新的安全密码",
+      "save": "保存新密码",
+      "saving": "保存中…",
+      "success": "密码已更新，请重新登录。",
+      "failure": "修改失败，请重试。"
     }
   },
   "errors": {
@@ -91,6 +104,7 @@
     "REGISTRATION_DISABLED": "当前已关闭注册。",
     "RATE_LIMITED": "请求过于频繁，请稍后再试。",
     "ACCOUNT_DISABLED": "账号已被停用。",
-    "FORBIDDEN": "你没有执行此操作的权限。"
+    "FORBIDDEN": "你没有执行此操作的权限。",
+    "PASSWORD_SAME_AS_CURRENT": "新密码必须与当前密码不同。"
   }
 }

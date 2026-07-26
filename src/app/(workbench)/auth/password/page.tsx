@@ -7,8 +7,10 @@ import { Label } from "@/components/ui/label";
 import { apiMutation } from "@/features/workbench/lib/api";
 import { PageHeading } from "@/features/workbench/components/shared";
 import { toast } from "sonner";
+import { useTranslations } from "next-intl";
 
 export default function PasswordPage() {
+  const t = useTranslations("auth.password");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -17,9 +19,9 @@ export default function PasswordPage() {
     setBusy(true);
     try {
       await apiMutation("/api/v1/auth/password", "PUT", { currentPassword, newPassword });
-      toast.success("密码已更新，请重新登录");
+      toast.success(t("success"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "修改失败");
+      toast.error(error instanceof Error ? error.message : t("failure"));
     } finally {
       setBusy(false);
     }
@@ -27,21 +29,20 @@ export default function PasswordPage() {
 
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="ACCOUNT" title="修改密码" description="这里直接对应 /api/v1/auth/password。" />
+      <PageHeading eyebrow={t("eyebrow")} title={t("title")} description={t("description")} />
       <section className="rounded-lg border border-border bg-card p-5">
         <div className="grid gap-4 max-w-md">
           <div className="space-y-2">
-            <Label htmlFor="current-password">当前密码</Label>
-            <Input id="current-password" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+            <Label htmlFor="current-password">{t("currentPassword")}</Label>
+            <Input id="current-password" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} placeholder={t("currentPasswordPlaceholder")} />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="new-password">新密码</Label>
-            <Input id="new-password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+            <Label htmlFor="new-password">{t("newPassword")}</Label>
+            <Input id="new-password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={t("newPasswordPlaceholder")} />
           </div>
-          <Button onClick={() => void submit()} disabled={busy}>保存新密码</Button>
+          <Button onClick={() => void submit()} disabled={busy}>{busy ? t("saving") : t("save")}</Button>
         </div>
       </section>
     </div>
   );
 }
-

@@ -80,6 +80,19 @@
         "password": { "label": "Change password", "description": "Update the password for this account" },
         "notifications": { "label": "Notification preferences", "description": "Reminder frequency and quiet hours" }
       }
+    },
+    "password": {
+      "eyebrow": "Account",
+      "title": "Change password",
+      "description": "Update the password used to sign in to this account.",
+      "currentPassword": "Current password",
+      "currentPasswordPlaceholder": "Enter your current password",
+      "newPassword": "New password",
+      "newPasswordPlaceholder": "Enter a new secure password",
+      "save": "Save new password",
+      "saving": "Saving…",
+      "success": "Password updated. Please sign in again.",
+      "failure": "Unable to change the password. Please try again."
     }
   },
   "errors": {
@@ -91,6 +104,7 @@
     "REGISTRATION_DISABLED": "Registration is currently disabled.",
     "RATE_LIMITED": "Too many requests. Please try again later.",
     "ACCOUNT_DISABLED": "This account has been disabled.",
-    "FORBIDDEN": "You do not have permission to perform this action."
+    "FORBIDDEN": "You do not have permission to perform this action.",
+    "PASSWORD_SAME_AS_CURRENT": "The new password must be different from the current password."
   }
 }
