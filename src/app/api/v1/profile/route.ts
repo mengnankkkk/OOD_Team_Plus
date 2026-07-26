@@ -1,21 +1,24 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { authError } from "@/server/auth/http";
+import { authError, localizedJson } from "@/server/auth/http";
 import { createId, getDatabase, getRequestContext, isoNow, meta, parseJson } from "@/server/http/context";
+import { localizedErrorMessage } from "@/i18n/errors";
+import { resolveWebLocale } from "@/i18n/resolve-locale";
 
 const ProfileSchema = z.object({ riskLevel: z.enum(["R1", "R2", "R3", "R4", "R5", "CONSERVATIVE", "BALANCED", "AGGRESSIVE"]).nullable().optional(), investmentAmount: z.string().optional(), targetAmount: z.string().optional(), targetDate: z.string().nullable().optional(), horizon: z.enum(["SHORT", "MEDIUM", "LONG"]).nullable().optional(), priority: z.enum(["STOCK", "SECTOR", "INDEX"]).nullable().optional(), maxDrawdown: z.string().nullable().optional(), preferences: z.record(z.string(), z.unknown()).optional() });
 
 export async function GET(req: NextRequest) {
   try {
+    const context = getRequestContext(req);
     const db = getDatabase();
-    const userId = getRequestContext(req).userId;
+    const userId = context.userId;
     const row = db.prepare("SELECT * FROM user_profiles WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
     const goalCount = Number((db.prepare("SELECT COUNT(*) AS count FROM goals WHERE user_id = ? AND status = 'active'").get(userId) as { count?: number } | undefined)?.count ?? 0);
     db.close();
-    return NextResponse.json({ data: row ? format(row, goalCount) : { status: "DRAFT", version: 0, riskLevel: null, preferences: {}, hasGoal: false, onboardingCompleted: false }, meta: meta() });
+    return localizedJson({ data: row ? format(row, goalCount) : { status: "DRAFT", version: 0, riskLevel: null, preferences: {}, hasGoal: false, onboardingCompleted: false }, meta: meta() }, 200, context.locale.locale);
   } catch (error) {
-    return authError(error);
+    return authError(error, req);
   }
 }
 
@@ -23,8 +26,15 @@ export async function PATCH(req: NextRequest) {
   let db: ReturnType<typeof getDatabase> | null = null;
   try {
     const parsed = ProfileSchema.safeParse(await req.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Invalid profile", details: parsed.error.format() } }, { status: 400 });
-    const { userId } = getRequestContext(req);
+    if (!parsed.success) {
+      const locale = resolveWebLocale({
+        cookieLocale: req.cookies.get("mw_locale")?.value,
+        acceptLanguage: req.headers.get("accept-language"),
+      }).locale;
+      return localizedJson({ error: { code: "VALIDATION_ERROR", message: localizedErrorMessage("VALIDATION_ERROR", locale), details: parsed.error.format() } }, 422, locale);
+    }
+    const context = getRequestContext(req);
+    const { userId } = context;
     db = getDatabase();
     const now = isoNow();
     const currentVersion = req.headers.get("If-Match");
@@ -32,12 +42,12 @@ export async function PATCH(req: NextRequest) {
     if (existing && !currentVersion) {
       db.close();
       db = null;
-      return NextResponse.json({ error: { code: "VERSION_CONFLICT", message: "If-Match required", details: { currentVersion: existing.version } } }, { status: 412 });
+      return localizedJson({ error: { code: "VERSION_CONFLICT", message: localizedErrorMessage("VERSION_CONFLICT", context.locale.locale), details: { currentVersion: existing.version } } }, 412, context.locale.locale);
     }
     if (existing && Number(currentVersion?.replaceAll('"', "")) !== existing.version) {
       db.close();
       db = null;
-      return NextResponse.json({ error: { code: "VERSION_CONFLICT", message: "Profile was modified", details: { currentVersion: existing.version } } }, { status: 412 });
+      return localizedJson({ error: { code: "VERSION_CONFLICT", message: localizedErrorMessage("VERSION_CONFLICT", context.locale.locale), details: { currentVersion: existing.version } } }, 412, context.locale.locale);
     }
     const previousPreferences = existing ? JSON.parse(String(existing.preferences_json ?? "{}")) as Record<string, unknown> : {};
     const preferences = { ...previousPreferences, ...(parsed.data.preferences ?? {}) };
@@ -50,10 +60,10 @@ export async function PATCH(req: NextRequest) {
     const goalCount = Number((db.prepare("SELECT COUNT(*) AS count FROM goals WHERE user_id = ? AND status = 'active'").get(userId) as { count?: number } | undefined)?.count ?? 0);
     db.close();
     db = null;
-    return NextResponse.json({ data: format(row, goalCount), meta: meta() });
+    return localizedJson({ data: format(row, goalCount), meta: meta() }, 200, context.locale.locale);
   } catch (error) {
     db?.close();
-    return authError(error);
+    return authError(error, req);
   }
 }
 

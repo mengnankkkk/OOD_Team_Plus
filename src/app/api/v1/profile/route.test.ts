@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authenticatedRequest, TEST_USER_ID } from "@tests/helpers/auth";
 import { getDatabase, isoNow } from "@/server/http/context";
-import { GET } from "./route";
+import { GET, PATCH } from "./route";
 
 let dbPath = "";
 
@@ -91,5 +91,17 @@ describe("/api/v1/profile", () => {
 
     expect(response.status).toBe(200);
     expect(body.data.onboardingCompleted).toBe(false);
+  });
+
+  it("localizes invalid profile updates", async () => {
+    const response = await PATCH(authenticatedRequest("http://localhost/api/v1/profile", {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "accept-language": "en-US", cookie: "mw_locale=en-US" },
+      body: JSON.stringify({ riskLevel: "INVALID" }),
+    }));
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get("content-language")).toBe("en-US");
+    expect((await response.json()).error.message).toBe("The request parameters are invalid.");
   });
 });
