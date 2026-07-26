@@ -114,14 +114,27 @@ jobs:
         run: |
           set -euo pipefail
           export SSHPASS="$DEPLOY_PASSWORD"
-          sshpass -e scp -P "$DEPLOY_PORT" \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=20 \
+          scp_with_retry() {
+            local source="$1"
+            local target="$2"
+            for attempt in 1 2 3; do
+              if sshpass -e scp -P "$DEPLOY_PORT" \
+                -o StrictHostKeyChecking=accept-new \
+                -o ConnectTimeout=20 \
+                -o ConnectionAttempts=2 \
+                "$source" "$target"; then
+                return 0
+              fi
+              echo "[deploy] SCP attempt ${attempt}/3 failed; retrying." >&2
+              sleep 10
+            done
+            return 1
+          }
+
+          scp_with_retry \
             "$(command -v doppler)" \
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/doppler"
-          sshpass -e scp -P "$DEPLOY_PORT" \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=20 \
+          scp_with_retry \
             "$SOURCE_ARCHIVE" \
             "$DEPLOY_USER@$DEPLOY_HOST:$SOURCE_REMOTE_PATH"
 
@@ -383,7 +396,10 @@ jobs:
           echo "::add-mask::$A2A_BOOTSTRAP_CLIENT_TOKEN"
           BASE_URL="${APP_ORIGIN%%,*}"
           BASE_URL="${BASE_URL%/}"
-          CARD="$(curl --fail --silent --show-error "$BASE_URL/.well-known/agent-card.json")"
+          CARD="$(curl --fail --silent --show-error \
+            --connect-timeout 5 \
+            --max-time 15 \
+            "$BASE_URL/.well-known/agent-card.json")"
           jq -e '
             [.skills[].id] == [
               "chief_advisor_conversation",
