@@ -46,6 +46,7 @@ const optionBatchShape = {
   status: z.enum(OPTION_BATCH_STATUSES),
   priceManifestJson: nonEmptyText.nullable().optional(),
   priceManifestSha256: nonEmptyText.nullable().optional(),
+  contentLocale: z.enum(["zh-CN", "en-US", "und"]).default("zh-CN"),
   createdAt: nonEmptyText,
 } as const;
 

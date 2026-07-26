@@ -1,12 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
-import { authError } from "@/server/auth/http";
+import { authError, localizedJson } from "@/server/auth/http";
 import { getRequestContext, meta } from "@/server/http/context";
 
 export async function GET(request: NextRequest) {
   try {
-    return NextResponse.json({ data: { user: getRequestContext(request).user }, meta: meta() });
+    const context = getRequestContext(request);
+    return localizedJson({ data: { user: context.user }, meta: meta() }, 200, context.locale.locale);
   } catch (error) {
-    return authError(error);
+    return authError(error, request);
   }
 }

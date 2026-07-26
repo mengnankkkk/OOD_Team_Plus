@@ -12,6 +12,7 @@ describe("database migration guard", () => {
     prepareDatabase(db as never, ":memory:");
     expect(db.pragma("user_version", { simple: true })).toBe(17);
     expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(21);
+    expect((db.prepare("SELECT name FROM schema_migrations WHERE name='0017_add_internationalization.sql'").get() as { name: string }).name).toBe("0017_add_internationalization.sql");
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
     db.close();
   });

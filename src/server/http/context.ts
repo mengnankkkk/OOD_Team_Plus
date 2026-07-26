@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { getDbClient } from "@/server/db/client";
 import { AuthFailure, type AuthUser } from "@/server/auth/contracts";
+import { resolveWebLocale, type LocaleContext } from "@/i18n/resolve-locale";
 
 type SessionRow = {
   session_id: string;
@@ -12,12 +13,13 @@ type SessionRow = {
   role: "USER" | "ADMIN";
   status: "ACTIVE" | "DISABLED";
   force_password_change: number;
+  preferred_locale: "zh-CN" | "en-US" | null;
   created_at: string;
   updated_at: string | null;
   row_version: number;
 };
 
-export function getRequestContext(request?: NextRequest): { userId: string; sessionId: string; user: AuthUser } {
+export function getRequestContext(request?: NextRequest): { userId: string; sessionId: string; user: AuthUser; locale: LocaleContext } {
   const token = request?.cookies.get("mw_session")?.value;
   if (token) {
     const db = getDatabase();
@@ -27,7 +29,18 @@ export function getRequestContext(request?: NextRequest): { userId: string; sess
         AND u.status='ACTIVE' AND u.deleted_at IS NULL LIMIT 1`).get(hashSessionToken(token), isoNow()) as SessionRow | undefined;
     if (row?.session_id) db.prepare("UPDATE api_sessions SET last_seen_at=? WHERE id=?").run(isoNow(), row.session_id);
     db.close();
-    if (row?.session_id) return { userId: row.id, sessionId: row.session_id, user: mapAuthUser(row) };
+    if (row?.session_id) {
+      return {
+        userId: row.id,
+        sessionId: row.session_id,
+        user: mapAuthUser(row),
+        locale: resolveWebLocale({
+          accountLocale: row.preferred_locale,
+          cookieLocale: request?.cookies.get("mw_locale")?.value,
+          acceptLanguage: request?.headers.get("accept-language"),
+        }),
+      };
+    }
   }
   throw new AuthFailure("UNAUTHENTICATED", 401, "Authentication is required");
 }
@@ -40,6 +53,7 @@ function mapAuthUser(row: SessionRow): AuthUser {
     role: row.role,
     status: row.status,
     forcePasswordChange: row.force_password_change === 1,
+    preferredLocale: row.preferred_locale ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
     version: row.row_version,

@@ -1,0 +1,95 @@
+{
+  "common": {
+    "app": "Money Whisperer",
+    "metadata": {
+      "title": "Money Whisperer · 专业投资顾问",
+      "description": "面向个人投资者的专业多 Agent 研究、分析与情景模拟工作台"
+    },
+    "language": {
+      "label": "语言",
+      "zhCN": "简体中文",
+      "enUS": "English",
+      "changeFailed": "语言切换失败，请稍后重试"
+    },
+    "nav": {
+      "home": "首页",
+      "assets": "资产",
+      "advisor": "顾问",
+      "watchlist": "持仓观测",
+      "simulations": "分支模拟",
+      "history": "历史记录",
+      "more": "更多",
+      "evidenceLab": "证据实验室",
+      "decisionLog": "决策日志",
+      "injective": "Injective 链上存证",
+      "systemHealth": "系统健康",
+      "semanticLayer": "语义层",
+      "userManagement": "用户管理",
+      "rssManagement": "RSS 源管理",
+      "alerts": "提醒中心",
+      "judgeMode": "评委视图 · Pandadata 路由、Skill 运行、DAG、风控拦截原因均已展开"
+    },
+    "actions": {
+      "save": "保存",
+      "cancel": "取消",
+      "retry": "重试",
+      "loading": "处理中…"
+    }
+  },
+  "auth": {
+    "login": {
+      "eyebrow": "登录",
+      "title": "回到你的财务工作台",
+      "submit": "登录",
+      "switchToSignup": "还没有账号？创建一个",
+      "error": "登录失败，请核对用户名与密码"
+    },
+    "register": {
+      "eyebrow": "创建账号",
+      "title": "开启你的目标理财管家",
+      "submit": "创建账号并登录",
+      "switchToLogin": "已经有账号？直接登录",
+      "error": "注册失败，请稍后重试",
+      "success": "账号已创建，正在进入工作台",
+      "signInAgain": "账号已创建，请使用用户名和密码重新登录"
+    },
+    "account": {
+      "displayName": "称呼",
+      "displayNamePlaceholder": "想让我怎么称呼你",
+      "username": "用户名",
+      "usernamePlaceholder": "3–32 位字母、数字或下划线",
+      "password": "密码",
+      "passwordPlaceholder": "10–128 位"
+    },
+    "settings": {
+      "eyebrow": "账户",
+      "title": "设置",
+      "description": "管理当前登录账号、个人档案和通知偏好。",
+      "languageTitle": "语言设置",
+      "languageDescription": "选择工作台和后续通知使用的语言。",
+      "loggedIn": "登录状态",
+      "loggedInDescription": "退出后需要重新登录才能访问工作台。",
+      "logout": "退出登录",
+      "guest": "游客模式",
+      "bindAccount": "绑定账号",
+      "loadingAccount": "登录中",
+      "entries": {
+        "profile": { "label": "个人财务档案", "description": "资产偏好、风险承受和个人资料" },
+        "goals": { "label": "个人目标档案", "description": "目标、期限和进度管理" },
+        "password": { "label": "修改密码", "description": "更新当前账号登录密码" },
+        "notifications": { "label": "通知偏好", "description": "提醒频率与静默时段" }
+      }
+    }
+  },
+  "errors": {
+    "UNAUTHENTICATED": "需要登录后才能继续。",
+    "VALIDATION_ERROR": "请求参数无效。",
+    "INTERNAL_ERROR": "服务暂时不可用，请稍后重试。",
+    "INVALID_CREDENTIALS": "用户名或密码不正确。",
+    "USERNAME_EXISTS": "用户名已被注册。",
+    "REGISTRATION_DISABLED": "当前已关闭注册。",
+    "RATE_LIMITED": "请求过于频繁，请稍后再试。",
+    "ACCOUNT_DISABLED": "账号已被停用。",
+    "FORBIDDEN": "你没有执行此操作的权限。"
+  }
+}

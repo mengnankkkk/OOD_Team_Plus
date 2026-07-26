@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AppLocale } from "@/i18n/config";
 
 export const UserRoleSchema = z.enum(["USER", "ADMIN"]);
 export const UserStatusSchema = z.enum(["ACTIVE", "DISABLED"]);
@@ -15,6 +16,7 @@ export type AuthUser = {
   role: UserRole;
   status: UserStatus;
   forcePasswordChange: boolean;
+  preferredLocale: AppLocale | null;
   createdAt: string;
   updatedAt: string;
   version: number;

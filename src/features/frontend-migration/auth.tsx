@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import { apiGet, apiPost, FrontendApiError } from "./api";
 
-export type FrontendAuthUser = { id: string; username: string; displayName: string; role: "USER" | "ADMIN"; status: "ACTIVE" | "DISABLED"; forcePasswordChange: boolean };
+export type FrontendAuthUser = { id: string; username: string; displayName: string; role: "USER" | "ADMIN"; status: "ACTIVE" | "DISABLED"; forcePasswordChange: boolean; preferredLocale: "zh-CN" | "en-US" | null };
 type AuthState = { user: FrontendAuthUser | null; loading: boolean; signIn: (username: string, password: string) => Promise<void>; signUp: (username: string, password: string, displayName?: string) => Promise<void>; signOut: () => Promise<void>; refresh: () => Promise<void> };
 const AuthContext = createContext<AuthState | null>(null);
 

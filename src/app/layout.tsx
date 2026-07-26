@@ -1,19 +1,29 @@
 import type { Metadata } from "next";
+import { getLocale, getMessages } from "next-intl/server";
 
 import "./globals.css";
 import "../frontend-migrated.css";
 import "../workbench.css";
 import { FrontendProviders } from "@/features/frontend-migration/query-provider";
 
-export const metadata: Metadata = {
-  title: "Money Whisperer · 专业投资顾问",
-  description: "面向个人投资者的专业多 Agent 研究、分析与情景模拟工作台",
-};
+import type { AppLocale } from "@/i18n/config";
+import { loadMessages } from "@/i18n/messages";
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export async function generateMetadata(): Promise<Metadata> {
+  const locale = await getLocale() as AppLocale;
+  const messages = await loadMessages(locale);
+  return {
+    title: messages.common.metadata.title,
+    description: messages.common.metadata.description,
+  };
+}
+
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const locale = await getLocale() as AppLocale;
+  const messages = await getMessages();
   return (
-    <html lang="zh-CN" suppressHydrationWarning data-scroll-behavior="smooth">
-      <body><FrontendProviders>{children}</FrontendProviders></body>
+    <html lang={locale} suppressHydrationWarning data-scroll-behavior="smooth">
+      <body><FrontendProviders locale={locale} messages={messages}>{children}</FrontendProviders></body>
     </html>
   );
 }

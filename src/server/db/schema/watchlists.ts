@@ -91,6 +91,7 @@ export const notifications = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     rowVersion: integer("row_version").notNull().default(1),
+    contentLocale: text("content_locale").notNull().default("zh-CN"),
   },
   (t) => [
     index("idx_notifications_user_created").on(t.userId, t.createdAt),
@@ -168,6 +169,7 @@ export const rssItems = sqliteTable(
     author: text("author"),
     publishedAt: text("published_at"),
     categoriesJson: text("categories_json"),
+    sourceLocale: text("source_locale").notNull().default("zh-CN"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [uniqueIndex("idx_rss_items_feed_guid").on(t.feedId, t.guid), index("idx_rss_items_feed_created").on(t.feedId, t.createdAt)],

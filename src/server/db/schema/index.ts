@@ -6,3 +6,4 @@ export * from "./data-queries";
 export * from "./simulation-branches";
 export * from "./watchlists";
 export * from "./a2a";
+export * from "./internationalization";

@@ -14,6 +14,7 @@ export const users = sqliteTable(
     role: text("role", { enum: ["USER", "ADMIN"] }).notNull().default("USER"),
     status: text("status", { enum: ["ACTIVE", "DISABLED"] }).notNull().default("ACTIVE"),
     forcePasswordChange: integer("force_password_change", { mode: "boolean" }).notNull().default(false),
+    preferredLocale: text("preferred_locale", { enum: ["zh-CN", "en-US"] }),
     passwordChangedAt: text("password_changed_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at"),
@@ -95,6 +96,7 @@ export const conversationSessions = sqliteTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at"),
     rowVersion: integer("row_version").notNull().default(1),
+    titleLocale: text("title_locale").notNull().default("zh-CN"),
   },
   (t) => [index("idx_conversation_sessions_user_updated").on(t.userId, t.updatedAt)],
 );
@@ -110,8 +112,28 @@ export const messages = sqliteTable(
     clientMessageId: text("client_message_id"),
     agentRunId: text("agent_run_id"),
     metadataJson: text("metadata_json").notNull().default("{}"),
+    contentLocale: text("content_locale").notNull().default("zh-CN"),
   },
   (t) => [uniqueIndex("idx_messages_session_client").on(t.sessionId, t.clientMessageId).where(sql`${t.clientMessageId} IS NOT NULL`)],
+);
+
+export const informationRequests = sqliteTable(
+  "information_requests",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    analysisId: text("analysis_id").notNull(),
+    prompt: text("prompt").notNull(),
+    fieldsJson: text("fields_json").notNull(),
+    status: text("status").notNull().default("pending"),
+    answersJson: text("answers_json"),
+    createdAt: text("created_at").notNull(),
+    answeredAt: text("answered_at"),
+    expiresAt: text("expires_at"),
+    contentLocale: text("content_locale").notNull().default("zh-CN"),
+  },
+  (t) => [index("idx_information_requests_session_status").on(t.sessionId, t.status, t.createdAt)],
 );
 
 export const agentRuns = sqliteTable(
@@ -139,6 +161,7 @@ export const agentRuns = sqliteTable(
     failureMessage: text("failure_message"),
     resultJson: text("result_json"),
     complianceJson: text("compliance_json"),
+    requestedLocale: text("requested_locale").notNull().default("zh-CN"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [
@@ -363,6 +386,7 @@ export const recommendations = sqliteTable(
     status: text("status").notNull().default("active"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    contentLocale: text("content_locale").notNull().default("zh-CN"),
   },
   (t) => [index("idx_recommendations_user_created").on(t.userId, t.createdAt)],
 );
@@ -414,6 +438,9 @@ export const evidenceItems = sqliteTable(
     freshUntil: text("fresh_until"),
     confidenceBps: integer("confidence_bps"),
     isMaterial: integer("is_material", { mode: "boolean" }).notNull().default(true),
+    sourceLocale: text("source_locale").notNull().default("zh-CN"),
+    summaryLocale: text("summary_locale").notNull().default("zh-CN"),
+    translationMetadataJson: text("translation_metadata_json").notNull().default("{}"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [index("idx_evidence_run_stance").on(t.agentRunId, t.stance, t.isMaterial)],

@@ -54,6 +54,7 @@ const notificationBaseSchema = z.object({
   createdAt: nonEmptyText,
   updatedAt: nonEmptyText,
   rowVersion: z.number().int().min(1).default(1),
+  contentLocale: z.enum(["zh-CN", "en-US", "und"]).default("zh-CN"),
 });
 
 const notificationPreferencesBaseSchema = z.object({
@@ -98,6 +99,7 @@ const rssItemBaseSchema = z.object({
   author: optionalText,
   publishedAt: optionalText,
   categoriesJson: optionalText,
+  sourceLocale: z.string().trim().min(1).default("zh-CN"),
   createdAt: nonEmptyText,
 });
 

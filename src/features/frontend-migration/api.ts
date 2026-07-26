@@ -1,4 +1,5 @@
 import { createClientId } from "@/lib/client-id";
+import { getClientLocale } from "@/i18n/client-locale";
 
 export class FrontendApiError extends Error {
   constructor(message: string, public readonly code = "API_ERROR", public readonly status = 500) { super(message); }
@@ -7,6 +8,7 @@ export class FrontendApiError extends Error {
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
+  headers.set("Accept-Language", getClientLocale());
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (init.method && init.method !== "GET" && !headers.has("Idempotency-Key")) headers.set("Idempotency-Key", createClientId());
   if (init.method && init.method !== "GET" && typeof document !== "undefined" && !headers.has("X-CSRF-Token")) {
