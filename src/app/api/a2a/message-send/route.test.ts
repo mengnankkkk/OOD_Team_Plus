@@ -64,12 +64,15 @@ describe("A2A message gateway", () => {
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
-      kind: "task",
-      contextId: "remote-context-1",
-      status: { state: "completed" },
-      metadata: { capabilityId: "chief_advisor_conversation" },
+      task: {
+        kind: "task",
+        contextId: "remote-context-1",
+        status: { state: "completed" },
+        metadata: { capabilityId: "chief_advisor_conversation" },
+      },
     });
-    expect(body.status.message.parts[0].text).toContain("Risk notice");
+    expect(Object.keys(body)).toEqual(["task"]);
+    expect(body.task.status.message.parts[0].text).toContain("Risk notice");
     expect(runConversationAgentMock).toHaveBeenCalledWith(expect.objectContaining({
       userId: expect.stringMatching(/^a2a_exec_/u),
       sessionId: "remote-context-1:advisor",
@@ -94,7 +97,8 @@ describe("A2A message gateway", () => {
       params: advisorBody(),
     }, client.token));
     const sentBody = await sent.json();
-    const taskId = sentBody.result.id;
+    const taskId = sentBody.result.task.id;
+    expect(Object.keys(sentBody.result)).toEqual(["task"]);
 
     const fetched = await POST(request({
       jsonrpc: "2.0",
@@ -118,9 +122,11 @@ describe("A2A message gateway", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      kind: "task",
-      status: { state: "completed" },
-      metadata: { capabilityId: "chief_advisor_conversation" },
+      task: {
+        kind: "task",
+        status: { state: "completed" },
+        metadata: { capabilityId: "chief_advisor_conversation" },
+      },
     });
   });
 });

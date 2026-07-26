@@ -117,6 +117,10 @@ export function toA2ATaskResource(task: A2ATaskView): Record<string, unknown> {
   };
 }
 
+export function toA2ASendMessageResponse(task: A2ATaskView): { task: Record<string, unknown> } {
+  return { task: toA2ATaskResource(task) };
+}
+
 function parseSend(body: unknown, requestId: string | number | null): A2ACommand {
   if (!isRecord(body)) throw new A2APublicError("INVALID_REQUEST", 400, "A2A request body is required");
   const value = body as MessageBody;

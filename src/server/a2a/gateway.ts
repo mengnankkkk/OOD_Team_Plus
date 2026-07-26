@@ -27,6 +27,7 @@ import {
   parseHttpSendMessage,
   parseJsonRpcCommand,
   parseLegacySendMessage,
+  toA2ASendMessageResponse,
   toA2ATaskResource,
 } from "./protocol";
 import {
@@ -184,7 +185,7 @@ export async function executeA2ACommand(
         ?? getA2ATask(principal.clientId, created.task.id)
         ?? created.task;
     }
-    return jsonRpcSuccess(command.requestId, toA2ATaskResource(task));
+    return jsonRpcSuccess(command.requestId, toA2ASendMessageResponse(task));
   }
   if (command.kind === "get-task") {
     requireA2ACapability(principal, "tasks_read");
