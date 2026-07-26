@@ -78,10 +78,19 @@ describe("A2A protocol normalization", () => {
       completedAt: "2026-07-25T00:00:02.000Z",
       events: [],
     })).toMatchObject({
-      kind: "task",
       id: "task-1",
-      status: { state: "completed" },
-      artifacts: [{ artifactId: "artifact-1", name: "research_results" }],
+      status: {
+        state: "TASK_STATE_COMPLETED",
+        message: {
+          role: "ROLE_AGENT",
+          parts: [{ text: "Done" }],
+        },
+      },
+      artifacts: [{
+        artifactId: "artifact-1",
+        name: "research_results",
+        parts: [{ text: "Done" }, { data: {} }],
+      }],
     });
   });
 

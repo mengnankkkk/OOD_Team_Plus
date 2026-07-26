@@ -401,8 +401,9 @@ jobs:
           jq -e '.items | type == "array"' /tmp/a2a-tasks.json >/dev/null
           ADVISOR_BODY="$(jq -nc --arg messageId "deploy-advisor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" '{
             message: {
+              role: "ROLE_USER",
               messageId: $messageId,
-              parts: [{ kind: "text", text: "Verify the external A2A Chief Advisor initial response path." }],
+              parts: [{ text: "Verify the external A2A Chief Advisor initial response path." }],
               metadata: {
                 capabilityId: "chief_advisor_conversation",
                 operation: "send"
@@ -420,16 +421,16 @@ jobs:
             "$BASE_URL/api/a2a/message:send")"
           jq -e '
             (keys == ["task"])
-            and .task.kind == "task"
             and (.task.status.state as $state
-              | ["submitted", "working", "completed", "input-required"]
+              | ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_COMPLETED", "TASK_STATE_INPUT_REQUIRED"]
               | index($state) != null)
           ' /tmp/a2a-advisor.json >/dev/null
           echo "[deploy] Chief Advisor initial A2A response completed in ${ADVISOR_TIME}s."
           RESEARCH_BODY="$(jq -nc --arg messageId "deploy-research-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" '{
             message: {
+              role: "ROLE_USER",
               messageId: $messageId,
-              parts: [{ kind: "text", text: "Verify the external A2A knowledge base research path." }],
+              parts: [{ text: "Verify the external A2A knowledge base research path." }],
               metadata: {
                 capabilityId: "research_search",
                 operation: "start",
@@ -446,7 +447,7 @@ jobs:
             -H "content-type: application/json" \
             -d "$RESEARCH_BODY" \
             "$BASE_URL/api/a2a/message:send")"
-          jq -e 'keys == ["task"] and .task.kind == "task"' <<<"$RESEARCH_TASK" >/dev/null
+          jq -e 'keys == ["task"]' <<<"$RESEARCH_TASK" >/dev/null
           RESEARCH_TASK_ID="$(jq -er '.task.id' <<<"$RESEARCH_TASK")"
           RESEARCH_STATE=""
           for _ in $(seq 1 30); do
@@ -454,11 +455,11 @@ jobs:
               -H "Authorization: Bearer $A2A_BOOTSTRAP_CLIENT_TOKEN" \
               "$BASE_URL/api/a2a/tasks/$RESEARCH_TASK_ID" | jq -r '.status.state')"
             case "$RESEARCH_STATE" in
-              completed) break ;;
-              failed|canceled) echo "[deploy] Research smoke test ended in $RESEARCH_STATE." >&2; exit 1 ;;
+              TASK_STATE_COMPLETED) break ;;
+              TASK_STATE_FAILED|TASK_STATE_CANCELED) echo "[deploy] Research smoke test ended in $RESEARCH_STATE." >&2; exit 1 ;;
             esac
             sleep 2
           done
-          test "$RESEARCH_STATE" = "completed"
+          test "$RESEARCH_STATE" = "TASK_STATE_COMPLETED"
           echo "[deploy] Public Agent Card: $BASE_URL/.well-known/agent-card.json"
           echo "[deploy] Client-specific A2A authentication, task listing, and research execution verified."
