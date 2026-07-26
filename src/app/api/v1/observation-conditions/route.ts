@@ -1,46 +1,72 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
-import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
+import {
+  createConditionInDb,
+  CreateConditionSchema,
+  listConditions,
+} from "@/server/extensions/notifications/condition-service";
+import {
+  IdempotencyConflictError,
+  runIdempotentMutation,
+} from "@/server/extensions/middleware/idempotency";
+import { domainResponse } from "@/server/extensions/watchlists/http";
+import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
-const Schema = z.object({
-  holdingId: z.string().optional(),
-  instrumentId: z.string().optional(),
-  conditionType: z.enum(["UNREALIZED_GAIN_REACH", "PRICE_ABOVE", "PRICE_BELOW", "DRAWDOWN_REACH"]),
-  threshold: z.string().min(1),
-  sourceRecommendationId: z.string().optional(),
-}).refine((value) => Boolean(value.holdingId || value.instrumentId), { message: "holdingId or instrumentId is required" });
+const StatusSchema = z.enum(["active", "paused", "deleted"]);
 
-export async function GET(req: NextRequest) {
-  const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM observation_conditions WHERE user_id = ? ORDER BY created_at DESC").all(getRequestContext(req).userId);
-  db.close();
-  return NextResponse.json({ data: { items: rows }, meta: meta() });
+export async function GET(request: NextRequest) {
+  const status = request.nextUrl.searchParams.get("status");
+  const parsedStatus = status ? StatusSchema.safeParse(status) : null;
+  if (parsedStatus && !parsedStatus.success) {
+    return NextResponse.json(
+      { error: { code: "OBSERVATION_CONDITION_INVALID", message: "Invalid condition status" } },
+      { status: 422 },
+    );
+  }
+  const rawLimit = Number.parseInt(request.nextUrl.searchParams.get("limit") ?? "50", 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 50;
+  const items = listConditions(getRequestContext(request).userId, {
+    watchlistItemId: request.nextUrl.searchParams.get("watchlistItemId") ?? undefined,
+    status: parsedStatus?.success ? parsedStatus.data : undefined,
+    limit,
+  });
+  return NextResponse.json({ data: { items }, meta: meta({ pagination: { limit, nextCursor: null, hasMore: false } }) });
 }
 
-export async function POST(req: NextRequest) {
-  if (!idempotencyKey(req)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } }, { status: 400 });
-  const parsed = Schema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Invalid observation condition", details: parsed.error.format() } }, { status: 422 });
-  const { userId } = getRequestContext(req);
-  const key = idempotencyKey(req)!;
-  const idem = await beginIdempotentRequest(userId, "observation_condition", key, parsed.data);
-  if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
-  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
-  const db = getDatabase();
-  if (parsed.data.holdingId && !db.prepare("SELECT id FROM holdings WHERE id=? AND user_id=? AND status='active'").get(parsed.data.holdingId, userId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Holding not found" } }, { status: 404 }); }
-  if (parsed.data.instrumentId && !db.prepare("SELECT id FROM instruments WHERE id=?").get(parsed.data.instrumentId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Instrument not found" } }, { status: 404 }); }
-  if (parsed.data.sourceRecommendationId && !db.prepare("SELECT id FROM recommendations WHERE id=? AND user_id=?").get(parsed.data.sourceRecommendationId, userId)) { db.close(); return NextResponse.json({ error: { code: "RESOURCE_NOT_FOUND", message: "Recommendation not found" } }, { status: 404 }); }
-  const now = isoNow();
-  const id = createId("condition");
-  const result = db.prepare(`INSERT INTO observation_conditions
-    (id, user_id, holding_id, instrument_id, condition_type, threshold_decimal, source_recommendation_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, userId, parsed.data.holdingId ?? null, parsed.data.instrumentId ?? null, parsed.data.conditionType, parsed.data.threshold, parsed.data.sourceRecommendationId ?? null, now, now);
-  void result;
-  const row = db.prepare("SELECT * FROM observation_conditions WHERE id = ?").get(id);
-  db.close();
-  const payload = { data: row, meta: meta() };
-  await saveIdempotentResponse(userId, "observation_condition", key, idem.requestHash, payload);
-  return NextResponse.json(payload, { status: 201 });
+export async function POST(request: NextRequest) {
+  const key = idempotencyKey(request);
+  if (!key) {
+    return NextResponse.json(
+      { error: { code: "INVALID_REQUEST", message: "Idempotency-Key required" } },
+      { status: 400 },
+    );
+  }
+  const parsed = CreateConditionSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: { code: "OBSERVATION_CONDITION_INVALID", message: "Invalid observation condition", details: parsed.error.format() } },
+      { status: 422 },
+    );
+  }
+  const { userId } = getRequestContext(request);
+  const routeCode = `observation_condition:${parsed.data.watchlistItemId}`;
+  try {
+    const result = runIdempotentMutation(
+      userId,
+      routeCode,
+      key,
+      parsed.data,
+      (db) => ({ data: createConditionInDb(db, userId, parsed.data), meta: meta() }),
+    );
+    return NextResponse.json(result.value, { status: result.replayed ? 200 : 201 });
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: { code: "IDEMPOTENCY_CONFLICT", message: error.message } },
+        { status: 409 },
+      );
+    }
+    return domainResponse(error);
+  }
 }

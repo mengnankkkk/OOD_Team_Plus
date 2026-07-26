@@ -77,6 +77,35 @@ describe("PandaData QueryPlan execution", () => {
     }, executions, 100);
     expect(combined.rows[0]).toEqual(expect.objectContaining({ symbol: "AAPL", quantity: "10", close: "220.5" }));
   });
+
+  it("reuses an existing A-share instrument whose stored symbol omits the market suffix", async () => {
+    db.prepare(`INSERT INTO instruments
+      (id,symbol,name,market,asset_type,tradable)
+      VALUES ('000001.SZ','000001','平安银行','SZ','stock',1)`).run();
+    const call = vi.fn().mockResolvedValue(pandaResult([
+      { symbol: "000001.SZ", date: "20260724", close: "12.30" },
+    ]));
+
+    await executePandaSources({
+      sources: [{
+        dataset: "MARKET_STOCK_DAILY",
+        method: "get_stock_daily",
+        parameters: { symbol: ["000001.SZ"], start_date: "20260701", end_date: "20260724", fields: [] },
+        columns: ["symbol", "date", "close"],
+        joinKeys: ["symbol", "date"],
+        assetType: "STOCK",
+      }],
+      agentRunId: "run1",
+      localRows: [],
+      db: db as never,
+      call,
+    });
+
+    expect(db.prepare("SELECT instrument_id FROM market_snapshots").get())
+      .toEqual({ instrument_id: "000001.SZ" });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM instruments WHERE UPPER(symbol) IN ('000001','000001.SZ')")
+      .get() as { count: number }).count).toBe(1);
+  });
 });
 
 function pandaResult(data: Array<Record<string, unknown>>): PandaDataResult {

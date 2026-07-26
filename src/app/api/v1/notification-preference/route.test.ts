@@ -17,6 +17,18 @@ describe("/api/v1/notification-preference", () => {
     expect(res.status).toBe(400);
   });
 
+  it.each([
+    { mode: "IMPORTANT_ONLY", quietHoursStart: "9:00", quietHoursEnd: "18:00" },
+    { mode: "IMPORTANT_ONLY", quietHoursStart: "09:00", quietHoursEnd: null },
+    { mode: "DAILY_DIGEST", quietHoursStart: "abc", quietHoursEnd: "07:00" },
+  ])("PUT rejects malformed or incomplete quiet hours", async (body) => {
+    const res = await PUT(authenticatedRequest(
+      "http://localhost/api/v1/notification-preference",
+      { method: "PUT", body: JSON.stringify(body) },
+    ));
+    expect(res.status).toBe(400);
+  });
+
   it("PUT accepts valid preference bodies", async () => {
     const res = await PUT(
       authenticatedRequest("http://localhost/api/v1/notification-preference", {

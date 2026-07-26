@@ -54,6 +54,7 @@ test("新手没有持仓也能一键开始分支模拟", async ({ page }) => {
   const username = `starter_${Date.now()}`;
   const password = "e2e_starter_password_123";
   const registration = await page.request.post("/api/v1/auth/register", {
+    headers: { "x-forwarded-for": username },
     data: { username, password, displayName: "分支模拟新手" },
   });
   expect(registration.ok()).toBeTruthy();
@@ -99,6 +100,7 @@ test("录入真实持仓后新实验会改用我的持仓", async ({ page }) => 
   const username = `real_holdings_${Date.now()}`;
   const password = "e2e_real_holdings_password_123";
   const registration = await page.request.post("/api/v1/auth/register", {
+    headers: { "x-forwarded-for": username },
     data: { username, password, displayName: "真实持仓用户" },
   });
   expect(registration.ok()).toBeTruthy();
@@ -134,8 +136,7 @@ test("录入真实持仓后新实验会改用我的持仓", async ({ page }) => 
   await page.getByLabel("标的名称").fill("Apple");
   await page.getByLabel("代码（可选）").fill("AAPL");
   await page.getByLabel("持有数量 / 份额").fill("2");
-  await page.getByLabel("当前单价 / 净值").fill("155");
-  await page.getByLabel("成本（可选）").fill("140");
+  await page.getByLabel("持仓成本价").fill("140");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText("Apple", { exact: true })).toBeVisible();
 

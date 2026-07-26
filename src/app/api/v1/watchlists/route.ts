@@ -1,45 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
-import { createId, getDatabase, getRequestContext, idempotencyKey, isoNow, meta } from "@/server/http/context";
+import { domainResponse, invalid } from "@/server/extensions/watchlists/http";
+import { createWatchlistInDb, listWatchlists } from "@/server/extensions/watchlists/service";
+import {
+  IdempotencyConflictError,
+  runIdempotentMutation,
+} from "@/server/extensions/middleware/idempotency";
+import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
-const Schema = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).optional() });
+const CreateSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().max(500).nullable().optional(),
+});
+const StatusSchema = z.enum(["active", "archived"]).default("active");
 
-export async function POST(req: NextRequest) {
-  const key = idempotencyKey(req);
+export async function POST(request: NextRequest) {
+  const key = idempotencyKey(request);
   if (!key) return invalid("Idempotency-Key required");
-  const parsed = Schema.safeParse(await req.json().catch(() => null));
+  const parsed = CreateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return invalid("Invalid request", parsed.error.format());
-  const { userId } = getRequestContext(req);
-  const idem = await beginIdempotentRequest(userId, "watchlist_create", key, parsed.data);
-  if (idem.existing?.conflict) return NextResponse.json({ error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } }, { status: 409 });
-  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
-  const now = isoNow();
-  const id = createId("watchlist");
-  const db = getDatabase();
+  const { userId } = getRequestContext(request);
   try {
-    db.prepare("INSERT INTO watchlists (id,user_id,name,description,created_at,updated_at) VALUES (?,?,?,?,?,?)").run(id, userId, parsed.data.name, parsed.data.description ?? null, now, now);
-    const row = db.prepare("SELECT * FROM watchlists WHERE id=?").get(id);
-    const payload = { data: row, meta: meta() };
-    await saveIdempotentResponse(userId, "watchlist_create", key, idem.requestHash, payload);
-    return NextResponse.json(payload, { status: 201 });
+    const result = runIdempotentMutation(
+      userId,
+      "watchlist_create",
+      key,
+      parsed.data,
+      (db) => ({ data: createWatchlistInDb(db, userId, parsed.data), meta: meta() }),
+    );
+    return NextResponse.json(result.value, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: { code: "RESOURCE_CONFLICT", message: error instanceof Error ? error.message : "Watchlist already exists" } }, { status: 409 });
-  } finally {
-    db.close();
+    if (error instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: { code: "IDEMPOTENCY_CONFLICT", message: error.message } },
+        { status: 409 },
+      );
+    }
+    return domainResponse(error);
   }
 }
 
-export async function GET(req: NextRequest) {
-  const raw = Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "20", 10);
+export async function GET(request: NextRequest) {
+  const status = StatusSchema.safeParse(request.nextUrl.searchParams.get("status") ?? undefined);
+  if (!status.success) return invalid("Invalid watchlist status", status.error.format());
+  const raw = Number.parseInt(request.nextUrl.searchParams.get("limit") ?? "20", 10);
   const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 100) : 20;
-  const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM watchlists WHERE user_id=? AND status!='deleted' ORDER BY created_at DESC LIMIT ?").all(getRequestContext(req).userId, limit);
-  db.close();
-  return NextResponse.json({ data: { items: rows }, meta: meta({ pagination: { limit, nextCursor: null, hasMore: false } }) });
-}
-
-function invalid(message: string, details?: unknown) {
-  return NextResponse.json({ error: { code: "INVALID_REQUEST", message, details } }, { status: 400 });
+  const items = listWatchlists(getRequestContext(request).userId, status.data, limit);
+  return NextResponse.json({
+    data: { items },
+    meta: meta({ pagination: { limit, nextCursor: null, hasMore: false } }),
+  });
 }

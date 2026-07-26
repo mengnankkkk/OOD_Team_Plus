@@ -369,7 +369,8 @@ const AdvisorPage = () => {
         setActiveSessionId(next.sessionId);
         await loadSessionMessages(next.sessionId);
       } else {
-        resetToNewSession();
+        setActiveSessionId(null);
+        setLoadingHistory(false);
       }
     })();
   }, [user, refreshSessions, loadSessionMessages, requestedConversationId, resetToNewSession]);
@@ -615,6 +616,8 @@ const AdvisorPage = () => {
       );
       return;
     }
+    historyRequestRef.current += 1;
+    setLoadingHistory(false);
     const relatedRecommendation = [...messages].reverse().find((message) => {
       const recommendationId = (message.metadata as { recommendationId?: unknown } | undefined)?.recommendationId;
       return message.role === "advisor" && typeof recommendationId === "string";
@@ -924,7 +927,20 @@ const AdvisorPage = () => {
               {advisorMode === "debate" ? `多空 Battle · ${stageMotion || "新辩题"}` : activeSession?.title ?? "新对话"}
             </p>
           </div>
-          {advisorMode === "debate" ? <span className="debate-header-status">{stageStatus || "用户可随时加入辩论"}</span> : null}
+          {advisorMode === "debate" ? (
+            <span className="debate-header-status">{stageStatus || "用户可随时加入辩论"}</span>
+          ) : (
+            <button
+              type="button"
+              className="grid size-9 shrink-0 place-items-center rounded-full text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 md:hidden"
+              onClick={handleNewSession}
+              disabled={sending}
+              aria-label="新对话"
+              title="新对话"
+            >
+              <MessageSquarePlus className="size-5" />
+            </button>
+          )}
         </header>
 
         <div

@@ -7,7 +7,8 @@ import { generateQueryPlan } from "./plan-generator";
 import { combineQueryResults, executePandaSources } from "./panda-query-executor";
 import { persistQueryResult } from "./result-persister";
 import type { QueryPlan } from "./types";
-import { persistSseEvent } from "../sse/event-persister";
+import { createArtifact, type ArtifactType } from "../artifacts/service";
+import { persistSseEventBestEffort } from "../sse/event-persister";
 
 export type CreateDataQueryInput = {
   userId: string;
@@ -15,6 +16,7 @@ export type CreateDataQueryInput = {
   requestedDatasets: string[];
   outputMode: "SQL_ONLY" | "CHART" | "FINANCIAL_REPORT";
   requestedLimit: number;
+  idempotencyKey?: string;
   accountScope?: string[];
   sessionId?: string;
   sourceMessageId?: string;
@@ -66,11 +68,11 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
 
   db.prepare("INSERT INTO agent_runs (id, user_id, type, status, created_at) VALUES (?, ?, ?, ?, ?)").run(analysisId, input.userId, "data_query", "running", now);
   db.prepare(`INSERT INTO data_queries
-    (id, user_id, session_id, source_message_id, agent_run_id, question_text, account_scope_json,
+    (id, user_id, idempotency_key, session_id, source_message_id, agent_run_id, question_text, account_scope_json,
      requested_datasets_json, output_mode, requested_limit, status, plan_json, redacted_sql,
      parameter_types_json, safety_checks_json, created_at, updated_at, started_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(queryId, input.userId, input.sessionId ?? null, input.sourceMessageId ?? null, analysisId,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(queryId, input.userId, input.idempotencyKey ?? null, input.sessionId ?? null, input.sourceMessageId ?? null, analysisId,
       input.questionText, json(input.accountScope ?? []), json(input.requestedDatasets), input.outputMode,
       input.requestedLimit, json(plan), sql ?? pandaSources.map((source) => `PANDADATA:${source.method}`).join(","), json([...parameters.map((value) => typeof value), ...(pandaSources.length ? ["PANDADATA_CONTRACT"] : [])]),
       json(["SEMANTIC_QUERY_PLAN", ...(sql ? ["PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] : []), ...(pandaSources.length ? ["PANDADATA_CONTRACT", "PANDADATA_DRY_RUN", "EXPLICIT_SOURCE"] : [])]), now, now, now);
@@ -91,19 +93,64 @@ export async function createAndRunDataQuery(input: CreateDataQueryInput) {
     db.prepare("UPDATE data_queries SET column_metadata_json = ?, data_as_of = ?, source_summary_json = ?, updated_at = ? WHERE id = ?")
       .run(json(result.columns), dataAsOf, json(sourceSummary), isoNow(), queryId);
     db.prepare("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?").run(isoNow(), analysisId);
-    await persistSseEvent({ analysisId, type: "query.planned", payload: { queryId, datasets: plan.datasets, columns: result.columns, planner } });
-    await persistSseEvent({ analysisId, type: "query.validated", payload: { queryId, safetyChecks: ["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] } });
-    await persistSseEvent({ analysisId, type: "query.completed", payload: { queryId, rowCount: result.rowCount, truncated: result.isTruncated } });
-    return { queryId, analysisId, status: "COMPLETED", plan, sql, result };
+    persistSseEventBestEffort({ analysisId, type: "query.planned", payload: { queryId, datasets: plan.datasets, columns: result.columns, planner } });
+    persistSseEventBestEffort({ analysisId, type: "query.validated", payload: { queryId, safetyChecks: ["SEMANTIC_QUERY_PLAN", "PARAMETERIZED_SQL", "SINGLE_SELECT", "WHITELISTED_DATASET", "SQLITE_AUTHORIZER"] } });
+    const artifactConfig = outputArtifactConfig(input.outputMode);
+    const artifact = artifactConfig
+      ? createArtifact({
+        userId: input.userId,
+        artifactType: artifactConfig.type,
+        title: artifactConfig.title,
+        sourceQueryId: queryId,
+        sessionId: input.sessionId,
+      })
+      : null;
+    persistSseEventBestEffort({
+      analysisId,
+      type: "query.completed",
+      payload: {
+        queryId,
+        rowCount: result.rowCount,
+        truncated: result.isTruncated,
+        artifactId: artifact?.artifactId ?? null,
+      },
+    });
+    return {
+      queryId,
+      analysisId,
+      status: "COMPLETED" as const,
+      plan,
+      sql,
+      result,
+      artifact: artifact ? {
+        artifactId: artifact.artifactId,
+        type: artifactConfig!.type,
+        title: artifactConfig!.title,
+        previewUrl: `/api/v1/generated-artifacts/${artifact.artifactId}/preview`,
+      } : null,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Query execution failed";
-    db.prepare("UPDATE data_queries SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ? WHERE id = ?")
+    db.prepare(`UPDATE data_queries SET status='failed',failure_code=?,failure_message=?,
+      completed_at=?,idempotency_key=NULL WHERE id=?`)
       .run("QUERY_FAILED", message.slice(0, 500), isoNow(), queryId);
     db.prepare("UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?").run(isoNow(), analysisId);
     throw error;
   } finally {
     (db as unknown as { close?: () => void }).close?.();
   }
+}
+
+export function outputArtifactConfig(
+  outputMode: CreateDataQueryInput["outputMode"],
+): { type: ArtifactType; title: string } | null {
+  if (outputMode === "FINANCIAL_REPORT") {
+    return { type: "MARKDOWN", title: "当前持仓财务分析报告" };
+  }
+  if (outputMode === "CHART") {
+    return { type: "ECHARTS_OPTION", title: "当前持仓数据图表" };
+  }
+  return null;
 }
 
 export function getDataQuery(userId: string, queryId: string) {

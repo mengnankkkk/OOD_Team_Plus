@@ -6,7 +6,9 @@ import { advisorPrompt, formatPercent, insertNotification } from "./notification
 
 export type WatchlistTarget = {
   id: string;
+  watchlist_id: string;
   instrument_id: string;
+  goal_id: string | null;
   symbol: string;
   name: string;
   market: string;
@@ -22,40 +24,114 @@ export function createWatchlistNotifications(userId: string, targets: WatchlistT
   if (targets.length === 0) return 0;
   const db = getDatabase();
   let created = 0;
-  for (const target of targets) {
-    const points = loadMarketPoints(db, target);
-    const latest = points[0];
-    if (!latest) continue;
-    const previousClose = latest.preClose ?? points[1]?.close ?? null;
-    const metadataBase = { instrumentId: target.instrument_id, symbol: target.symbol, name: target.name, dataAsOf: latest.date, watchlistItemId: target.id };
-    if (previousClose?.gt(0)) {
-      const move = latest.close.div(previousClose).minus(1);
-      if (move.abs().gte(0.04)) {
+  try {
+    for (const target of targets) {
+      const points = loadMarketPoints(db, target);
+      const latest = points[0];
+      if (!latest) continue;
+      const previousClose = latest.preClose ?? points[1]?.close ?? null;
+      const metadataBase = { instrumentId: target.instrument_id, symbol: target.symbol, name: target.name, dataAsOf: latest.date, watchlistItemId: target.id };
+      if (previousClose?.gt(0)) {
+        const move = latest.close.div(previousClose).minus(1);
+        if (move.abs().gte(0.04)) {
+          created += insertNotification(db, {
+            userId, severity: move.abs().gte(0.07) ? "important" : "attention",
+            title: `${target.name} 当日${move.gte(0) ? "上涨" : "下跌"} ${formatPercent(move.toNumber(), false)}`,
+            body: `自选标的出现显著波动，最新收盘价 ${latest.close.toDecimalPlaces(4).toString()}。这是一条观察信号，不代表追涨或抄底建议。`,
+            sourceType: "WATCHLIST_MOVE", sourceId: target.id, groupKey: `watchlist:${target.id}:move`,
+            dedupeKey: `${userId}:watchlist-move:${target.id}:${move.gte(0) ? "up" : "down"}:${latest.date}`, dataAsOf: latest.date,
+            metadata: { ...metadataBase, rule: "DAILY_MOVE", metricValue: move.toNumber(), previousValue: previousClose.toNumber(), currentValue: latest.close.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "自选标的单日异动", move.toNumber(), latest.date, target.reason) },
+          });
+        }
+      }
+      if (target.drawdown_threshold_bps != null) {
+        const peak = points.slice(0, 20).reduce((value, point) => Decimal.max(value, point.close), latest.close);
+        const drawdown = peak.gt(0) ? latest.close.div(peak).minus(1) : new Decimal(0);
+        const threshold = new Decimal(target.drawdown_threshold_bps).div(10_000).neg();
+        if (drawdown.lte(threshold)) {
+          created += insertNotification(db, {
+            userId, severity: drawdown.lte(threshold.mul(1.5)) ? "important" : "attention", title: `${target.name} 触及自选回撤线`,
+            body: `最新收盘价较近 20 个交易日高点回撤 ${formatPercent(drawdown.toNumber(), false)}，你的提醒阈值是 ${formatPercent(threshold.toNumber(), false)}。`,
+            sourceType: "WATCHLIST_DRAWDOWN", sourceId: target.id, groupKey: `watchlist:${target.id}:drawdown`,
+            dedupeKey: `${userId}:watchlist-drawdown:${target.id}:${latest.date}`, dataAsOf: latest.date,
+            metadata: { ...metadataBase, rule: "WATCHLIST_DRAWDOWN", metricValue: drawdown.toNumber(), threshold: threshold.toNumber(), currentValue: latest.close.toNumber(), peakValue: peak.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "近 20 日回撤", drawdown.toNumber(), latest.date, target.reason) },
+          });
+        }
+      }
+    }
+    return created;
+  } finally {
+    db.close();
+  }
+}
+
+export function createWatchlistEventNotifications(userId: string, targets: WatchlistTarget[]): number {
+  if (targets.length === 0) return 0;
+  const db = getDatabase();
+  let created = 0;
+  try {
+    for (const target of targets) {
+      const events = db.prepare(`SELECT ri.id,ri.title,ri.link,ri.summary,ri.published_at,ri.created_at,
+          rf.title AS source,rii.match_basis,rii.matched_text
+        FROM rss_item_instruments rii
+        JOIN rss_items ri ON ri.id=rii.rss_item_id
+        JOIN rss_feeds rf ON rf.id=ri.feed_id
+        WHERE rii.instrument_id=? AND rf.status='active' AND rf.deleted_at IS NULL
+          AND COALESCE(ri.published_at,ri.created_at) >= ?
+          AND (rii.match_basis != 'research_link' OR EXISTS (
+            SELECT 1 FROM evidence_items e
+            JOIN recommendations r ON r.id=e.recommendation_id
+            WHERE e.user_id=? AND r.user_id=?
+              AND e.source_url=rii.matched_text
+              AND r.instrument_id=rii.instrument_id
+              AND lower(r.status)!='deleted'
+          ))
+        ORDER BY COALESCE(ri.published_at,ri.created_at),ri.id`)
+        .all(
+          target.instrument_id,
+          new Date(Date.now() - 30 * 86_400_000).toISOString(),
+          userId,
+          userId,
+        ) as Array<Record<string, unknown>>;
+      for (const event of events) {
+        const dataAsOf = String(event.published_at ?? event.created_at);
         created += insertNotification(db, {
-          userId, severity: move.abs().gte(0.07) ? "important" : "attention",
-          title: `${target.name} 当日${move.gte(0) ? "上涨" : "下跌"} ${formatPercent(move.toNumber(), false)}`,
-          body: `自选标的出现显著波动，最新收盘价 ${latest.close.toDecimalPlaces(4).toString()}。这是一条观察信号，不代表追涨或抄底建议。`,
-          sourceType: "WATCHLIST_MOVE", sourceId: target.id, groupKey: `watchlist:${target.id}:move`,
-          dedupeKey: `${userId}:watchlist-move:${target.id}:${move.gte(0) ? "up" : "down"}:${latest.date}`, dataAsOf: latest.date,
-          metadata: { ...metadataBase, rule: "DAILY_MOVE", metricValue: move.toNumber(), previousValue: previousClose.toNumber(), currentValue: latest.close.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "自选标的单日异动", move.toNumber(), latest.date, target.reason) },
+          userId,
+          severity: "information",
+          title: `${target.name} 出现关联事件`,
+          body: `${String(event.title)}。关联依据：${String(event.match_basis)}。请结合持仓与目标复核影响。`,
+          sourceType: "WATCHLIST_EVENT",
+          sourceId: target.id,
+          groupKey: `watchlist:${target.id}:event`,
+          dedupeKey: `${userId}:watchlist-event:${target.id}:${String(event.id)}`,
+          dataAsOf,
+          metadata: {
+            watchlistId: target.watchlist_id,
+            watchlistItemId: target.id,
+            instrumentId: target.instrument_id,
+            goalId: target.goal_id,
+            reason: target.reason,
+            symbol: target.symbol,
+            name: target.name,
+            rssItemId: event.id,
+            eventTitle: event.title,
+            eventSummary: event.summary,
+            eventUrl: event.link,
+            eventSource: event.source,
+            matchBasis: event.match_basis,
+            matchedText: event.matched_text,
+            dataAsOf,
+            advisorPrompt: `请分析${target.name}（${target.symbol}）的关联事件“${String(event.title)}”。`
+              + `数据截至 ${dataAsOf}${target.reason ? `，我的关注理由是“${target.reason}”` : ""}。`
+              + "请给出支持证据、反方证据、组合影响、后续观察条件与可模拟方案；不要直接替我下单。",
+          },
         });
       }
     }
-    const peak = points.slice(0, 20).reduce((value, point) => Decimal.max(value, point.close), latest.close);
-    const drawdown = peak.gt(0) ? latest.close.div(peak).minus(1) : new Decimal(0);
-    const threshold = new Decimal(target.drawdown_threshold_bps ?? 1_000).div(10_000).neg();
-    if (drawdown.lte(threshold)) {
-      created += insertNotification(db, {
-        userId, severity: drawdown.lte(threshold.mul(1.5)) ? "important" : "attention", title: `${target.name} 触及自选回撤线`,
-        body: `最新收盘价较近 20 个交易日高点回撤 ${formatPercent(drawdown.toNumber(), false)}，你的提醒阈值是 ${formatPercent(threshold.toNumber(), false)}。`,
-        sourceType: "WATCHLIST_DRAWDOWN", sourceId: target.id, groupKey: `watchlist:${target.id}:drawdown`,
-        dedupeKey: `${userId}:watchlist-drawdown:${target.id}:${latest.date}`, dataAsOf: latest.date,
-        metadata: { ...metadataBase, rule: "WATCHLIST_DRAWDOWN", metricValue: drawdown.toNumber(), threshold: threshold.toNumber(), currentValue: latest.close.toNumber(), peakValue: peak.toNumber(), advisorPrompt: advisorPrompt(target.name, target.symbol, "近 20 日回撤", drawdown.toNumber(), latest.date, target.reason) },
-      });
-    }
+    return created;
+  } finally {
+    db.close();
   }
-  db.close();
-  return created;
 }
 
 export function canonicalSymbol(target: Pick<WatchlistTarget, "symbol" | "market">): string {

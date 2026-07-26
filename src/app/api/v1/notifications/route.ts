@@ -8,10 +8,19 @@ export async function GET(req: NextRequest) {
   const allowedSeverities = new Set(["INFORMATION", "ATTENTION", "IMPORTANT", "URGENT"]);
   const severity = rawSeverity?.toUpperCase() ?? null;
   if (severity && !allowedSeverities.has(severity)) return NextResponse.json({ error: { code: "INVALID_REQUEST", message: "Invalid notification severity" } }, { status: 400 });
+  const rawSourceType = req.nextUrl.searchParams.get("sourceType");
+  const sourceType = rawSourceType?.trim().toUpperCase() ?? null;
+  if (sourceType && !/^[A-Z][A-Z0-9_]{0,63}$/u.test(sourceType)) {
+    return NextResponse.json(
+      { error: { code: "INVALID_REQUEST", message: "Invalid notification source type" } },
+      { status: 400 },
+    );
+  }
   const conditions = ["n.user_id = ?", "n.dismissed_at IS NULL"];
   const params: unknown[] = [getRequestContext(req).userId];
   if (unreadOnly) conditions.push("n.read_at IS NULL");
   if (severity) { conditions.push("UPPER(n.severity) = ?"); params.push(severity); }
+  if (sourceType) { conditions.push("UPPER(n.source_type) = ?"); params.push(sourceType); }
   const raw = Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "20", 10);
   const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 100) : 20;
   params.push(limit);
@@ -23,7 +32,7 @@ export async function GET(req: NextRequest) {
   const unread = (db.prepare("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND dismissed_at IS NULL AND read_at IS NULL").get(getRequestContext(req).userId) as { count: number }).count;
   db.close();
   return NextResponse.json({
-    data: { items: rows.map((row) => ({ ...row, bodyText: row.body_text, sourceType: row.source_type, sourceId: row.source_id, conditionId: row.condition_id, eventId: row.event_id, groupKey: row.group_key, occurrenceCount: Number(row.occurrence_count ?? 1), dataAsOf: row.data_as_of, metadata: parseJson(String(row.metadata_json ?? "{}"), {}), status: row.dismissed_at ? "dismissed" : row.read_at ? "read" : "unread", actions: ["ASK_ADVISOR", "MARK_READ", "IGNORE"], version: row.row_version ?? 1 })), unreadCount: unread, filters: { unreadOnly, severity } },
+    data: { items: rows.map((row) => ({ ...row, bodyText: row.body_text, sourceType: row.source_type, sourceId: row.source_id, conditionId: row.condition_id, eventId: row.event_id, groupKey: row.group_key, occurrenceCount: Number(row.occurrence_count ?? 1), dataAsOf: row.data_as_of, metadata: parseJson(String(row.metadata_json ?? "{}"), {}), status: row.dismissed_at ? "dismissed" : row.read_at ? "read" : "unread", actions: ["ASK_ADVISOR", "MARK_READ", "IGNORE"], version: row.row_version ?? 1 })), unreadCount: unread, filters: { unreadOnly, severity, ...(sourceType ? { sourceType } : {}) } },
     meta: meta({ pagination: { limit, nextCursor: rows.length === limit ? String(limit) : null, hasMore: rows.length === limit } }),
   });
 }

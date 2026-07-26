@@ -199,6 +199,7 @@ pnpm smoke:branch
 | `ADMIN_USERNAME` | 可选 | 首次启动时创建的管理员用户名 |
 | `ADMIN_INITIAL_PASSWORD` | 可选 | 首次启动时创建的管理员初始密码 |
 | `ALLOW_REGISTRATION` | 可选 | 是否允许注册，默认 `true` |
+| `TRUST_PROXY_HEADERS` | 反向代理部署必填 | 仅当入口代理会覆盖并清洗 `X-Forwarded-*`/`X-Real-IP` 时设为 `true` |
 
 完整占位配置见 `.env.example` 和 `.env.prod.example`。
 
@@ -218,6 +219,13 @@ doppler run -- docker compose up -d
 ```
 
 Compose 默认将应用绑定到 `127.0.0.1:3000`，可通过 `HOST_BIND_ADDRESS` 和 `HOST_PORT` 调整。数据库持久化在 Docker volume `money-whisperer-data`，容器内路径为 `/app/data/money-whisperer.db`。
+
+若 Compose 位于 Nginx、Caddy、Traefik 或云负载均衡器之后，必须由代理覆盖客户端传入的
+`X-Forwarded-For`、`X-Forwarded-Proto` 与 `X-Real-IP`，再设置
+`TRUST_PROXY_HEADERS=true`。直接暴露应用端口时保持为 `false`。
+
+提醒调度器随 Node 常驻进程启动，每小时刷新活动持仓与观察列表；规则、降级行为和去重策略见
+[`docs/notification-center.md`](./docs/notification-center.md)。
 
 容器提供健康检查：
 

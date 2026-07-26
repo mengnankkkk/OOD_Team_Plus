@@ -2,23 +2,31 @@ import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getAlertSyncState, listAlerts, listDecisionLogs, subscribeAlerts } from "@/services/alertsService";
 import { useAuth } from "@/hooks/useAuth";
+import { alertKeys } from "@/hooks/alertKeys";
 
-export function useAlerts() {
+export function useAlerts(options: {
+  sourceType?: string;
+  enabled?: boolean;
+  browserNotifications?: boolean;
+} = {}) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const seenIds = useRef<Set<string> | null>(null);
 
   const query = useQuery({
-    queryKey: ["alerts", user?.id],
-    queryFn: () => listAlerts(user!.id, { statuses: ["unread", "read"] }),
-    enabled: !!user,
+    queryKey: alertKeys.list(user?.id, options.sourceType ?? "all"),
+    queryFn: () => listAlerts(user!.id, {
+      statuses: ["unread", "read"],
+      sourceType: options.sourceType,
+    }),
+    enabled: !!user && options.enabled !== false,
     staleTime: 15_000,
   });
 
   useEffect(() => {
     if (!user) return;
     const unsubscribe = subscribeAlerts(user.id, () => {
-      qc.invalidateQueries({ queryKey: ["alerts"] });
+      qc.invalidateQueries({ queryKey: alertKeys.root });
       qc.invalidateQueries({ queryKey: ["recommendations"] });
       qc.invalidateQueries({ queryKey: ["agent-runs"] });
     });
@@ -26,15 +34,15 @@ export function useAlerts() {
   }, [user, qc]);
 
   useEffect(() => {
-    if (!query.data) return;
-    const nextIds = new Set(query.data.map((item) => item.id));
+    if (!query.data || options.browserNotifications === false) return;
+    const nextIds = new Set(query.data.items.map((item) => item.id));
     if (seenIds.current && typeof window !== "undefined" && window.localStorage.getItem("mw-browser-alerts") === "enabled" && "Notification" in window && Notification.permission === "granted") {
-      for (const item of query.data) {
+      for (const item of query.data.items) {
         if (!seenIds.current.has(item.id) && item.status === "unread") new Notification(item.title, { body: item.message ?? undefined, tag: item.id });
       }
     }
     seenIds.current = nextIds;
-  }, [query.data]);
+  }, [options.browserNotifications, query.data]);
 
   return query;
 }

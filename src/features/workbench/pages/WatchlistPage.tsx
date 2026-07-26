@@ -1,118 +1,237 @@
-import { useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import { useUserGoals } from "@/hooks/useUserGoals";
-import { addWatchlistItem, listWatchlistItems, removeWatchlistItem, type WatchlistItem } from "@/services/watchlistService";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Eye, LoaderCircle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { PlusCircle, Trash2, Eye } from "lucide-react";
-import AShareInstrumentPicker from "@/components/desktop/AShareInstrumentPicker";
-import { findAShareStock, normalizeAShareCode } from "@/lib/a-share-stocks";
+
+import { Button } from "@/components/ui/button";
+import { ConditionSheet } from "@/features/workbench/components/watchlist/ConditionSheet";
+import { WatchlistEditorDialog } from "@/features/workbench/components/watchlist/WatchlistEditorDialog";
+import {
+  advisorUrl,
+  MoveWatchlistItemDialog,
+  RemoveWatchlistItemDialog,
+  showCheckResult,
+  WatchlistCardController,
+} from "@/features/workbench/components/watchlist/WatchlistItemActions";
+import { WatchlistManagerDialog } from "@/features/workbench/components/watchlist/WatchlistManagerDialog";
+import { WatchlistSummary } from "@/features/workbench/components/watchlist/WatchlistSummary";
+import { WatchlistToolbar } from "@/features/workbench/components/watchlist/WatchlistToolbar";
+import { useNavigate, useSearchParams } from "@/features/frontend-migration/router";
+import {
+  useCheckWatchlist,
+  useCreateWatchlist,
+  useMoveWatchlistItem,
+  useRemoveWatchlistItem,
+  useWatchlistItems,
+  useWatchlists,
+} from "@/hooks/useWatchlists";
+import { useUserGoals } from "@/hooks/useUserGoals";
+import type { WatchlistItem } from "@/services/watchlistService";
+
+const DEFAULT_LIST_NAME = "持仓观测";
 
 const WatchlistPage = () => {
-  const { user } = useAuth();
-  const { data: goals = [] } = useUserGoals();
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [symbol, setSymbol] = useState("");
-  const [reason, setReason] = useState("");
-  const [threshold, setThreshold] = useState("15");
-  const [goalId, setGoalId] = useState<string>("__none__");
-  const [horizon, setHorizon] = useState("");
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeLists = useWatchlists("active");
+  const archivedLists = useWatchlists("archived");
+  const createList = useCreateWatchlist();
+  const defaultCreationStarted = useRef(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<WatchlistItem | null>(null);
+  const [conditionItem, setConditionItem] = useState<WatchlistItem | null>(null);
+  const [moveItem, setMoveItem] = useState<WatchlistItem | null>(null);
+  const [moveTargetId, setMoveTargetId] = useState("");
+  const [removeItem, setRemoveItem] = useState<WatchlistItem | null>(null);
+  const goals = useUserGoals();
 
-  const { data: watchlist = [], isLoading } = useQuery({
-    queryKey: ["watchlist", user?.id],
-    queryFn: listWatchlistItems,
-    enabled: !!user,
-  });
+  const requestedListId = searchParams.get("list");
+  const activeList = useMemo(() => {
+    const lists = activeLists.data ?? [];
+    return lists.find((list) => list.id === requestedListId)
+      ?? lists.find((list) => list.name === DEFAULT_LIST_NAME)
+      ?? lists[0]
+      ?? null;
+  }, [activeLists.data, requestedListId]);
+  const activeListId = activeList?.id ?? null;
+  const items = useWatchlistItems(activeListId);
+  const checkList = useCheckWatchlist(activeListId);
+  const moveMutation = useMoveWatchlistItem(activeListId);
+  const removeMutation = useRemoveWatchlistItem(activeListId);
 
-  const handleAdd = async () => {
-    if (!user) return;
-    const matched = findAShareStock(symbol) ?? findAShareStock(name);
-    const finalName = matched?.name ?? name.trim();
-    const finalSymbol = matched?.code ?? normalizeAShareCode(symbol.trim());
-    if (!finalName) { toast.error("请选择或填写标的名称"); return; }
+  useEffect(() => {
+    if (activeLists.isLoading || activeLists.error || activeLists.data?.length
+      || defaultCreationStarted.current || createList.isPending) return;
+    defaultCreationStarted.current = true;
+    void createList.mutateAsync({
+      name: DEFAULT_LIST_NAME,
+      description: "围绕目标、规则和真实证据持续观察",
+    }).then((created) => {
+      replaceListParam(created.id);
+    }).catch((error) => {
+      defaultCreationStarted.current = false;
+      toast.error(error instanceof Error ? error.message : "默认观察列表创建失败");
+    });
+  }, [activeLists.data, activeLists.error, activeLists.isLoading, createList, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!activeListId || requestedListId === activeListId) return;
+    replaceListParam(activeListId);
+  }, [activeListId, requestedListId]);
+
+  const selectList = (id: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("list", id);
+    setSearchParams(params);
+  };
+
+  const runListCheck = async () => {
     try {
-      const drawdownThresholdPct = Number(threshold);
-      if (!Number.isFinite(drawdownThresholdPct) || drawdownThresholdPct < 1 || drawdownThresholdPct > 90) { toast.error("回撤阈值需在 1% 到 90% 之间"); return; }
-      await addWatchlistItem({ name: finalName, symbol: finalSymbol || finalName, reason, plannedHorizon: horizon, drawdownThresholdPct });
-      toast.success("已加入持仓观测");
-      setOpen(false); setName(""); setSymbol(""); setReason(""); setThreshold("15"); setHorizon(""); setGoalId("__none__");
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-    } catch (err: any) {
-      toast.error(err?.message ?? "保存失败");
+      const result = await checkList.mutateAsync();
+      showCheckResult(result);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "列表检查失败");
     }
   };
 
-  const handleDelete = async (item: WatchlistItem) => {
-    if (!user) return;
-    if (!confirm(`从持仓观测中移除「${item.name}」？`)) return;
-    await removeWatchlistItem(item);
-    toast.success("已移除");
-    qc.invalidateQueries({ queryKey: ["watchlist"] });
+  const move = async () => {
+    if (!moveItem || !moveTargetId) return;
+    try {
+      await moveMutation.mutateAsync({ item: moveItem, targetWatchlistId: moveTargetId });
+      toast.success(`已将「${moveItem.name}」移动到目标列表`);
+      setMoveItem(null);
+      setMoveTargetId("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "移动失败");
+    }
   };
 
-  return (
-    <div>
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="eyebrow">持仓观测</p>
-          <h1 className="mt-2 text-3xl font-semibold">围绕目标观察，而不是围绕涨跌焦虑</h1>
-          <p className="mt-2 text-sm text-muted-foreground">给每个持仓观测对象写清楚"为什么关注"和"什么时候需要动作"，Agent 就能在合适的时候通知你。</p>
-        </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button className="rounded-sm"><PlusCircle className="size-4" />加入持仓观测</Button></DialogTrigger>
-          <DialogContent className="max-w-lg">
-            <DialogHeader><DialogTitle>加入观察名单</DialogTitle></DialogHeader>
-            <div className="grid gap-4">
-              <AShareInstrumentPicker name={name} symbol={symbol} onChange={(next) => { setName(next.name); setSymbol(next.symbol); }} />
-              <div className="space-y-2"><Label>关注理由</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="宽基分散，估值处于历史低位" /></div>
-              <div className="grid gap-2 md:grid-cols-2">
-                <div className="space-y-2"><Label>计划持有期限</Label><Input value={horizon} onChange={(e) => setHorizon(e.target.value)} placeholder="3-5 年" /></div>
-                <div className="space-y-2"><Label>回撤阈值 (%)</Label><Input type="number" value={threshold} onChange={(e) => setThreshold(e.target.value)} placeholder="15" /></div>
-              </div>
-              <div className="space-y-2"><Label>关联目标</Label>
-                <Select value={goalId} onValueChange={setGoalId}>
-                  <SelectTrigger><SelectValue placeholder="选择一个目标（可选）" /></SelectTrigger>
-                  <SelectContent><SelectItem value="__none__">未关联</SelectItem>{goals.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter><Button variant="ghost" onClick={() => setOpen(false)}>取消</Button><Button onClick={handleAdd}>加入</Button></DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+  const remove = async () => {
+    if (!removeItem) return;
+    try {
+      await removeMutation.mutateAsync(removeItem);
+      toast.success(`已移除「${removeItem.name}」`);
+      setRemoveItem(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "移除失败");
+    }
+  };
 
-      {isLoading ? <p className="text-muted-foreground">加载持仓观测…</p> : watchlist.length === 0 ? (
-        <div className="paper-card grid place-items-center p-12 text-center text-muted-foreground">
-          <Eye className="size-8" />
-          <p className="mt-3">持仓观测是研究的取样瓶 · 先添加 3 只观察对象，Agent 会在触发条件成立时提醒你</p>
+  const openCreate = () => {
+    setEditingItem(null);
+    setEditorOpen(true);
+  };
+
+  const pageLoading = activeLists.isLoading || createList.isPending;
+  const loadError = activeLists.error ?? items.error;
+
+  return (
+    <div className="page-stack watchlist-workbench">
+      <header className="page-heading">
+        <div>
+          <span className="section-kicker">OBSERVATION DESK</span>
+          <h1>持仓观测</h1>
+          <p>按目标与规则持续观察已持有和未持有标的。高级状态只展示真实证据，缺失数据会明确标注。</p>
+        </div>
+      </header>
+
+      <WatchlistToolbar
+        lists={activeLists.data ?? []}
+        activeListId={activeListId}
+        checking={checkList.isPending}
+        onSelectList={selectList}
+        onManageLists={() => setManagerOpen(true)}
+        onCheck={() => void runListCheck()}
+        onAdd={openCreate}
+      />
+
+      {items.data ? <WatchlistSummary {...items.data.summary} /> : null}
+
+      {loadError ? (
+        <div className="state-panel error">
+          <strong>观察数据加载失败</strong>
+          <span>{loadError instanceof Error ? loadError.message : "请稍后重试"}</span>
+          <Button type="button" variant="outline" onClick={() => void Promise.all([activeLists.refetch(), items.refetch()])}>
+            <RefreshCw className="size-4" />重新加载
+          </Button>
+        </div>
+      ) : pageLoading || items.isLoading ? (
+        <div className="state-panel"><LoaderCircle className="size-5 animate-spin" />正在加载持仓观测</div>
+      ) : !activeList ? (
+        <div className="state-panel"><LoaderCircle className="size-5 animate-spin" />正在创建默认观察列表</div>
+      ) : !items.data?.items.length ? (
+        <div className="watchlist-empty">
+          <Eye className="size-9" />
+          <strong>当前列表还没有观察对象</strong>
+          <span>添加一个真实标的，写下关注理由，并用结构化规则定义何时需要复核。</span>
+          <Button type="button" onClick={openCreate}>添加第一个标的</Button>
         </div>
       ) : (
-        <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {watchlist.map((w) => (
-            <li key={w.id} className="paper-card p-5">
-              <div className="flex items-start justify-between">
-                <div><p className="font-semibold">{w.name}</p><p className="mt-0.5 font-mono text-xs text-muted-foreground">{w.symbol}</p></div>
-                <button onClick={() => handleDelete(w)} className="text-muted-foreground hover:text-destructive"><Trash2 className="size-4" /></button>
-              </div>
-              {w.reason && <p className="mt-4 text-sm text-muted-foreground">{w.reason}</p>}
-              <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                {w.planned_horizon && <span className="rounded border border-border px-2 py-0.5">持有 {w.planned_horizon}</span>}
-                {w.drawdown_threshold && <span className="rounded border border-border px-2 py-0.5">近 20 日回撤 ≥ {w.drawdown_threshold}% 提醒</span>}
-              </div>
-              <div className="mt-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">Agent 将持续关注：估值、事件、组合关联度、行业拥挤度</div>
-            </li>
+        <section className="watchlist-grid" aria-label={`${activeList.name}观察对象`}>
+          {items.data.items.map((item) => (
+            <WatchlistCardController
+              key={item.id}
+              item={item}
+              watchlistId={activeListId}
+              onAskAdvisor={() => navigate(advisorUrl(item))}
+              onEdit={() => {
+                setEditingItem(item);
+                setEditorOpen(true);
+              }}
+              onConditions={() => setConditionItem(item)}
+              onMove={() => {
+                setMoveTargetId("");
+                setMoveItem(item);
+              }}
+              onRemove={() => setRemoveItem(item)}
+            />
           ))}
-        </ul>
+        </section>
       )}
+
+      <WatchlistEditorDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        watchlistId={activeListId}
+        item={editingItem}
+        goals={goals.data ?? []}
+      />
+      <WatchlistManagerDialog
+        open={managerOpen}
+        onOpenChange={setManagerOpen}
+        activeLists={activeLists.data ?? []}
+        archivedLists={archivedLists.data ?? []}
+      />
+      <ConditionSheet
+        open={Boolean(conditionItem)}
+        onOpenChange={(open) => !open && setConditionItem(null)}
+        watchlistId={activeListId}
+        item={conditionItem}
+      />
+
+      <MoveWatchlistItemDialog
+        item={moveItem}
+        activeListId={activeListId}
+        lists={activeLists.data ?? []}
+        targetId={moveTargetId}
+        pending={moveMutation.isPending}
+        onTargetChange={setMoveTargetId}
+        onClose={() => setMoveItem(null)}
+        onConfirm={() => void move()}
+      />
+      <RemoveWatchlistItemDialog
+        item={removeItem}
+        onClose={() => setRemoveItem(null)}
+        onConfirm={() => void remove()}
+      />
     </div>
   );
 };
 
 export default WatchlistPage;
+
+function replaceListParam(id: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("list", id);
+  window.history.replaceState(window.history.state, "", url);
+}
