@@ -131,3 +131,6 @@ Agent Card
 
 The product is research- and simulation-only. It does not connect to brokers, place orders, guarantee
 returns, or provide individualized investment advice.
+
+The product is research- and simulation-only. It does not connect to brokers, place orders, guarantee
+returns, or provide individualized investment advice.

@@ -10,6 +10,7 @@ import type { MarketDatasetKey, PandaQuerySource } from "@/server/extensions/que
 import { getDatabase, parseJson } from "@/server/http/context";
 import type { BranchScenarioOption, BranchScenarioPlan } from "./scenario-contracts";
 import { runBranchScenarioAgent } from "./scenario-agent";
+import { completeScenarioEvidence, type ScenarioResearchRecord } from "./scenario-evidence";
 
 export interface SimulationCandidate {
   sequenceNo: number;
@@ -31,6 +32,7 @@ export interface SimulationCandidate {
     counterEvidence: string[];
     risks: string[];
     assumptions: string[];
+    invalidationConditions?: string[];
     stressTests: ReturnType<typeof runPortfolioStressTests>;
   };
 }
@@ -66,6 +68,9 @@ export type ScenarioInstrument = {
   market?: string;
   asset_type?: string;
   sector?: string | null;
+  raw_payload_json?: string;
+  freshness_status?: string;
+  quality_status?: string;
 };
 
 export type ScenarioNormalizationContext = {
@@ -75,6 +80,7 @@ export type ScenarioNormalizationContext = {
   allowedInstrumentIds: Set<string>;
   priceManifest: PriceManifest;
   riskAssumption?: string;
+  research?: ScenarioResearchRecord[];
 };
 
 export async function generateCandidates(
@@ -124,6 +130,18 @@ export async function generateCandidates(
     assets[String(target.id)] = { assetType: String(target.asset_type ?? "UNKNOWN"), sector: target.sector == null ? null : String(target.sector) };
   }
 
+  const instrumentById = new Map(instruments.map((instrument) => [String(instrument.id), instrument]));
+  const researchInstruments = [...new Set([
+    ...sortedRows.map((row) => row.instrument_id),
+    target ? String(target.id) : "",
+  ])].flatMap((instrumentId) => {
+    const instrument = instrumentById.get(instrumentId);
+    return instrument ? [toScenarioInstrument(instrument)] : [];
+  });
+  hooks.onAgentStarted?.("DATA_RESEARCH", `从数据源整理 ${researchInstruments.length} 个相关标的的行情序列`);
+  const research = await fetchScenarioResearch(researchInstruments, hooks.agentRunId);
+  hooks.onAgentCompleted?.("DATA_RESEARCH", `已整理 ${research.length} 条研究记录，提供给候选 Agent 总结依据、反方证据和风险`);
+
   const capturedAt = new Date().toISOString();
   const priceManifest: PriceManifest = { prices, assets, feeRate: "0.001", capturedAt, sha256: "" };
   priceManifest.sha256 = hashPriceManifest(priceManifest);
@@ -153,7 +171,7 @@ export async function generateCandidates(
     snapshot: { ...parentSnapshot, portfolioSnapshotId },
     holdings: sortedRows.map((row) => ({ ...row })),
     instruments,
-    research: [],
+    research,
     riskConstraints: { maxDrawdown: riskBudget.value.toString(), assumption: riskBudget.assumption },
   }, hooks);
   provider = scenario.provider;
@@ -163,7 +181,6 @@ export async function generateCandidates(
   if (provider === "CHIEF_ADVISOR") {
     const missingInstrumentIds = referencedInstrumentIds(scenario.plan.options)
       .filter((instrumentId) => !priceManifest.prices[instrumentId]);
-    const instrumentById = new Map(instruments.map((instrument) => [String(instrument.id), instrument]));
     const missingInstruments = missingInstrumentIds.flatMap((instrumentId) => {
       const instrument = instrumentById.get(instrumentId);
       return instrument ? [toScenarioInstrument(instrument)] : [];
@@ -201,6 +218,7 @@ export async function generateCandidates(
       allowedInstrumentIds: new Set(Object.keys(priceManifest.prices)),
       priceManifest,
       riskAssumption: riskBudget.assumption,
+      research,
     });
     for (const rejection of normalized.rejections) {
       hooks.onAgentCompleted?.("SCENARIO_VALIDATOR", `候选 ${rejection.sequenceNo + 1} 未通过交易校验，已跳过：${rejection.message}`);
@@ -212,10 +230,10 @@ export async function generateCandidates(
       provider = "DETERMINISTIC_FALLBACK";
       delegatedAgents = ["DETERMINISTIC_FALLBACK"];
       fallbackReason = "SCENARIO_VALIDATION_FAILED";
-      candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
+      candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption, research));
     }
   } else {
-    candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption));
+    candidates = candidateInputs.map((input, sequenceNo) => buildCandidate(sequenceNo, input, objective, cash, sortedRows, priceManifest, riskBudget.assumption, research));
   }
   return { candidates, priceManifest, provider, delegatedAgents, fallbackReason };
 }
@@ -276,6 +294,7 @@ export function normalizeScenarioOption(
     rows,
     context.priceManifest,
     context.riskAssumption ?? "风险预算由分支模拟上下文提供",
+    context.research,
   );
 }
 
@@ -339,6 +358,53 @@ export async function fetchScenarioInstrumentPrices(
   return prices;
 }
 
+export async function fetchScenarioResearch(
+  instruments: ScenarioInstrument[],
+  agentRunId: string | undefined,
+  execute: typeof executePandaSources = executePandaSources,
+): Promise<ScenarioResearchRecord[]> {
+  const localRecords = new Map(instruments.map((instrument) => [instrument.id, localResearchRecord(instrument)]));
+  if (!agentRunId || !instruments.length) return [...localRecords.values()];
+
+  const grouped = new Map<PandaDataMethod, ScenarioInstrument[]>();
+  for (const instrument of instruments) {
+    const method = marketMethod(instrument);
+    grouped.set(method, [...(grouped.get(method) ?? []), instrument]);
+  }
+  const db = getDatabase() as unknown as SqliteDb;
+  try {
+    for (const [preferredMethod, groupedInstruments] of grouped) {
+      let unresolved = groupedInstruments;
+      const methods: PandaDataMethod[] = preferredMethod === "get_stock_rt_daily"
+        ? ["get_stock_rt_daily", "get_stock_daily"]
+        : [preferredMethod];
+      for (const method of methods) {
+        if (!unresolved.length) break;
+        try {
+          const source = scenarioResearchSource(method, unresolved.map((instrument) => instrument.symbol));
+          const [execution] = await execute({ sources: [source], agentRunId, localRows: [], db });
+          const rowsBySymbol = new Map<string, Array<Record<string, unknown>>>();
+          for (const row of execution?.result.data ?? []) {
+            const symbol = String(row.symbol ?? row.ts_code ?? row.code ?? "").trim().toUpperCase();
+            if (symbol) rowsBySymbol.set(symbol, [...(rowsBySymbol.get(symbol) ?? []), row]);
+          }
+          unresolved = unresolved.filter((instrument) => {
+            const rows = rowsBySymbol.get(instrument.symbol.toUpperCase()) ?? [];
+            if (!rows.length) return true;
+            localRecords.set(instrument.id, summarizeResearchRows(instrument, rows, method, execution.result.fresh, execution.result.asOfDate));
+            return false;
+          });
+        } catch {
+          // Keep the local snapshot and expose the missing source as evidence instead of inventing a trend.
+        }
+      }
+    }
+  } finally {
+    db.close();
+  }
+  return [...localRecords.values()];
+}
+
 export function hashPriceManifest(manifest: Omit<PriceManifest, "sha256"> | PriceManifest): string {
   const canonical = {
     capturedAt: manifest.capturedAt,
@@ -364,6 +430,7 @@ function buildCandidate(
   rows: HoldingRow[],
   manifest: PriceManifest,
   riskAssumption: string,
+  research: ScenarioResearchRecord[] = [],
 ): SimulationCandidate {
   const projection = project(parentCash, rows, input.trades, manifest);
   const portfolio = calculatePortfolioMetrics(projection.cash, projection.holdings);
@@ -373,6 +440,27 @@ function buildCandidate(
   const worst = stressTests.reduce((value, item) => Decimal.min(value, decimal(item.changeRatio)), new Decimal(0));
   const magnitude = worst.abs();
   const riskLevel = magnitude.gt("0.2") ? "HIGH" : magnitude.gt("0.1") ? "MEDIUM" : "LOW";
+  const evidence = completeScenarioEvidence(
+    {
+      strategy: input.strategy,
+      trades: input.trades,
+      rationale: input.evidence?.rationale,
+      counterEvidence: input.evidence?.counterEvidence,
+      risks: input.evidence?.risks,
+      assumptions: input.evidence?.assumptions,
+      invalidationConditions: input.evidence?.invalidationConditions,
+    },
+    {
+      objective,
+      research,
+      holdings: rows.map((row) => ({ ...row })),
+      riskConstraints: { assumption: riskAssumption },
+    },
+    {
+      concentrationHhi: decimal(portfolio.concentrationHhi).toNumber(),
+      bearCaseReturn: decimal(bear.changeRatio).toNumber(),
+    },
+  );
   return {
     sequenceNo,
     label: input.label,
@@ -391,20 +479,17 @@ function buildCandidate(
         maxDrawdown: worst.toNumber(),
         concentrationHHI: decimal(portfolio.concentrationHhi).toNumber(),
       },
-      rationale: input.evidence?.rationale ?? [
-        input.trades.length ? `交易数量由风险预算方程和冻结价格计算，模拟后 HHI 为 ${decimal(portfolio.concentrationHhi).toDecimalPlaces(4).toString()}` : "不产生交易费用，完整保留父分支资产",
-        `所有候选围绕目标“${objective}”使用同一价格清单与压力参数比较`,
-        `熊市压力结果为 ${percent(decimal(bear.changeRatio))}，不是收益预测`,
-      ],
-      counterEvidence: input.evidence?.counterEvidence ?? [input.trades.length ? "再平衡后原持仓若继续上涨，组合可能少获得部分收益" : "保持不动会延续当前集中度与压力损失"],
-      risks: input.evidence?.risks ?? ["冻结价格不代表未来成交价", "压力场景不包含发生概率", "缺少历史序列时不展示年化波动"],
+      rationale: evidence.rationale,
+      counterEvidence: evidence.counterEvidence,
+      risks: evidence.risks,
       assumptions: [
-        ...(input.evidence?.assumptions ?? []),
+        ...evidence.assumptions,
         riskAssumption,
         `交易费率 ${percent(decimal(manifest.feeRate!))}`,
         `压力参数 ${STRESS_PARAMETER_VERSION}`,
         "不使用杠杆、卖空或虚构价格",
       ].slice(0, 8),
+      invalidationConditions: evidence.invalidationConditions,
       stressTests,
     },
   };
@@ -491,6 +576,9 @@ function toScenarioInstrument(instrument: Record<string, unknown>): ScenarioInst
     market: instrument.market == null ? undefined : String(instrument.market),
     asset_type: instrument.asset_type == null ? undefined : String(instrument.asset_type),
     sector: instrument.sector == null ? null : String(instrument.sector),
+    raw_payload_json: instrument.raw_payload_json == null ? undefined : String(instrument.raw_payload_json),
+    freshness_status: instrument.freshness_status == null ? undefined : String(instrument.freshness_status),
+    quality_status: instrument.quality_status == null ? undefined : String(instrument.quality_status),
   };
 }
 
@@ -525,6 +613,87 @@ function scenarioPriceSource(method: PandaDataMethod, symbols: string[]): PandaQ
     joinKeys: ["symbol", "date"],
     assetType: assetTypeForMethod(method),
   };
+}
+
+function scenarioResearchSource(method: PandaDataMethod, symbols: string[]): PandaQuerySource {
+  const fields = ["symbol", "date", "open", "high", "low", "close", "volume", "amount"];
+  const parameters: Record<string, unknown> = { symbol: symbols, fields };
+  if (method !== "get_stock_rt_daily") {
+    const end = new Date();
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - 90);
+    parameters.start_date = compactDate(start);
+    parameters.end_date = compactDate(end);
+  }
+  return {
+    dataset: datasetForMethod(method),
+    method,
+    parameters,
+    columns: fields,
+    joinKeys: ["symbol", "date"],
+    assetType: assetTypeForMethod(method),
+  };
+}
+
+function localResearchRecord(instrument: ScenarioInstrument): ScenarioResearchRecord {
+  const payload = parseJson<Record<string, unknown>>(instrument.raw_payload_json ?? "{}", {});
+  const close = decimalOrNull(payload.close ?? payload.price ?? payload.nav);
+  return {
+    instrumentId: instrument.id,
+    symbol: instrument.symbol,
+    source: "LOCAL_MARKET_SNAPSHOT",
+    method: instrument.freshness_status ? "stored_snapshot" : "unavailable",
+    fresh: instrument.freshness_status?.toLowerCase() === "fresh",
+    asOfDate: textValue(payload.date ?? payload.trade_date),
+    sampleCount: close ? 1 : 0,
+    latestClose: close ? clean(close) : undefined,
+    periodStartClose: close ? clean(close) : undefined,
+    periodReturn: close ? "0" : undefined,
+    periodHigh: close ? clean(close) : undefined,
+    periodLow: close ? clean(close) : undefined,
+    dataStatus: close && instrument.quality_status?.toLowerCase() === "valid" ? "VALID" : "UNAVAILABLE",
+  };
+}
+
+function summarizeResearchRows(
+  instrument: ScenarioInstrument,
+  rows: Array<Record<string, unknown>>,
+  method: PandaDataMethod,
+  fresh: boolean,
+  asOfDate: string | null,
+): ScenarioResearchRecord {
+  const samples = rows
+    .map((row) => ({
+      date: textValue(row.date ?? row.trade_date) ?? "",
+      close: decimalOrNull(row.close ?? row.price ?? row.nav),
+    }))
+    .filter((row): row is { date: string; close: Decimal } => Boolean(row.date) && row.close != null && row.close.gt(0))
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const first = samples[0]?.close;
+  const latest = samples.at(-1)?.close;
+  const highs = samples.map((sample) => sample.close);
+  const periodReturn = first?.gt(0) && latest ? latest.div(first).minus(1).mul(100) : null;
+  return {
+    instrumentId: instrument.id,
+    symbol: instrument.symbol,
+    source: "PandaData",
+    method,
+    fresh,
+    asOfDate: asOfDate ?? samples.at(-1)?.date ?? null,
+    sampleCount: samples.length,
+    latestClose: latest ? clean(latest) : undefined,
+    periodStartClose: first ? clean(first) : undefined,
+    periodReturn: periodReturn ? clean(periodReturn) : "0",
+    periodHigh: highs.length ? clean(Decimal.max(...highs)) : undefined,
+    periodLow: highs.length ? clean(Decimal.min(...highs)) : undefined,
+    dataStatus: fresh ? "VALID" : "STALE",
+  };
+}
+
+function textValue(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  const text = String(value).trim();
+  return text || undefined;
 }
 
 function datasetForMethod(method: PandaDataMethod): MarketDatasetKey {

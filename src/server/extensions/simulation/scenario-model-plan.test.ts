@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseBranchScenarioModelPlan } from "./scenario-model-plan";
 
 describe("parseBranchScenarioModelPlan", () => {
-  it("repairs optional narrative fields instead of discarding a usable model option", () => {
+  it("keeps a usable model option without inventing narrative evidence", () => {
     const plan = parseBranchScenarioModelPlan({
       provider: "model-owned-field",
       options: [{
@@ -21,8 +21,8 @@ describe("parseBranchScenarioModelPlan", () => {
       trades: [{ instrumentId: "a", action: "SELL", quantity: "1" }],
       targetAllocations: [],
     });
-    expect(plan.options[0]?.rationale.length).toBeGreaterThan(0);
-    expect(plan.options[0]?.risks.length).toBeGreaterThan(0);
+    expect(plan.options[0]?.rationale).toEqual([]);
+    expect(plan.options[0]?.risks).toEqual([]);
     expect(plan.delegatedAgents).toEqual([]);
   });
 
@@ -50,7 +50,7 @@ describe("parseBranchScenarioModelPlan", () => {
       trades: [{ instrumentId: "a", action: "SELL", quantity: "1" }],
       rationale: ["集中度过高"],
     });
-    expect(plan.options?.[0]?.risks).toEqual(["候选结果仅用于模拟，不代表未来收益"]);
+    expect(plan.options?.[0]?.risks).toEqual([]);
   });
 
   it("drops empty streamed placeholders while keeping a valid partial option", () => {

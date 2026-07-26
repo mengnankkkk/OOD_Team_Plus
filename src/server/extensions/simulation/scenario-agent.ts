@@ -12,6 +12,7 @@ import {
   type BranchScenarioOption,
   type BranchScenarioPlan,
 } from "./scenario-contracts";
+import { completeScenarioEvidence } from "./scenario-evidence";
 import { mergeBranchScenarioPartial, normalizeScenarioStrategy, parseBranchScenarioModelPlan } from "./scenario-model-plan";
 
 export type BranchScenarioAgentResult = {
@@ -47,12 +48,17 @@ export async function runBranchScenarioAgent(
       ...modelPlan,
       provider: "CHIEF_ADVISOR",
       delegatedAgents: Array.isArray(modelPlan.delegatedAgents) ? modelPlan.delegatedAgents : [],
-      options: (modelPlan.options ?? []).map((option, index) => ({
-        ...option,
-        strategy: normalizeScenarioStrategy(option.strategy, option.trades ?? []),
-        label: scenarioLabel(normalizeScenarioStrategy(option.strategy, option.trades ?? []), index),
-        trades: normalizeModelTrades(option.trades),
-      })),
+      options: (modelPlan.options ?? []).map((option, index) => {
+        const trades = normalizeModelTrades(option.trades);
+        const strategy = normalizeScenarioStrategy(option.strategy, trades);
+        return {
+          ...option,
+          strategy,
+          label: scenarioLabel(strategy, index),
+          trades,
+          ...completeScenarioEvidence({ ...option, strategy, trades }, input),
+        };
+      }),
     });
     for (const role of ["PROFILE_CONTEXT", "DATA_RESEARCH", "PORTFOLIO_RISK", "SCENARIO_PLANNER", "COMPLIANCE_REVIEWER"]) {
       callbacks.onAgentCompleted?.(role, "已完成分支模拟阶段");
@@ -73,12 +79,12 @@ async function generateModelPlan(agent: Agent, prompt: string): Promise<BranchSc
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请输出紧凑的 options 数组。" : "上一轮输出不完整。请只补齐 options、description、strategy、trades，解释字段可以省略。"}`, {
+      const stream = await agent.stream(`${prompt}\n${attempt === 0 ? "请输出紧凑的 options 数组。" : "上一轮输出不完整。请补齐 options、description、strategy、trades 以及基于 research 的依据、反方证据、风险和假设字段。"}`, {
         maxSteps: 10,
         modelSettings: { maxOutputTokens: 4_000, temperature: 0.1 },
         structuredOutput: {
           schema: BranchScenarioModelPlanSchema,
-          instructions: "只输出 JSON。优先保证 options 数组和每个方案的 description、strategy、trades；rationale、counterEvidence、risks、assumptions、invalidationConditions 可以省略，服务端会补齐。不要输出 provider 或 label；交易中禁止输出 price，所有价格由服务端冻结。",
+          instructions: "只输出 JSON。每个方案必须输出 description、strategy、trades、rationale、counterEvidence、risks、assumptions、invalidationConditions；这些文案必须引用输入 research 中的标的、数值、日期或明确的数据缺口，禁止使用固定模板。不要输出 provider 或 label；交易中禁止输出 price，所有价格由服务端冻结。",
         },
       });
       let latestPartial: Partial<BranchScenarioModelPlan> = {};
@@ -123,13 +129,16 @@ export function createBranchScenarioAgent() {
     },
     instructions: [
       "你是分支模拟的 Chief Advisor，需要根据用户目标动态协作，而不是机械套用固定工作流。",
-      "输出 1 到 3 个互斥的候选方案，优先保证每个方案有 description、strategy、trades 三个字段。",
-      "rationale、counterEvidence、risks、assumptions、invalidationConditions 是可选的，缺失时由服务端补齐。",
+      "输出 1 到 3 个互斥的候选方案，每个方案都必须有 description、strategy、trades、rationale、counterEvidence、risks、assumptions、invalidationConditions。",
+      "主要依据、反方证据和主要风险必须引用 research 中的具体标的、数值、日期或明确的数据缺口，禁止输出“基于当前分支上下文生成的模型候选”“市场变化可能使当前方案失效”等模板句。",
       "只输出交易意图 instrumentId/action/quantity，禁止输出 price；服务端会使用冻结价格。",
       "不允许修改真实 holdings，不允许声称真实收益或未来概率。",
     ].join("\n"),
   });
 }
+
+type ScenarioOptionDraft = Omit<BranchScenarioOption, "rationale" | "counterEvidence" | "risks" | "assumptions" | "invalidationConditions">
+  & Partial<Pick<BranchScenarioOption, "rationale" | "counterEvidence" | "risks" | "assumptions" | "invalidationConditions">>;
 
 function deterministicFallback(input: BranchScenarioAgentInput): BranchScenarioPlan {
   const largest = [...input.holdings]
@@ -153,24 +162,15 @@ function deterministicFallback(input: BranchScenarioAgentInput): BranchScenarioP
       quantity: sellQuantity,
     });
   }
-  const options: BranchScenarioOption[] = [
-    option("A · 保持观察", "不产生模拟交易，保留当前分支作为对照组", "HOLD", [], [
-      `围绕目标“${input.objective}”保留现状作为基准`,
-      "不产生交易费用或成交数量变化",
-    ], ["如果集中度继续上升，组合压力损失不会自动改善"]),
-    option("B · 风险预算再平衡", "从最大持仓释放一部分风险预算，优先承接到已有允许的分散标的", "BALANCED", rebalanceTrades, [
-      "先降低最大持仓，避免一次性改变整个组合",
-      "使用小额、可回溯的模拟交易观察组合影响",
-    ], ["若最大持仓随后上涨，分散化可能短期落后"]),
+  const options = [
+    option("A · 保持观察", "不产生模拟交易，保留当前分支作为对照组", "HOLD", []),
+    option("B · 风险预算再平衡", "从最大持仓释放一部分风险预算，优先承接到已有允许的分散标的", "BALANCED", rebalanceTrades),
     option("C · 压力约束降险", "只执行卖出并把释放资金留在现金，优先提高缓冲", "DEFENSIVE", largest && sellQuantity ? [{
       instrumentId: String(largest.instrument_id),
       action: "SELL",
       quantity: sellQuantity,
-    }] : [], [
-      "现金缓冲能降低权益集中冲击下的组合波动",
-      "在信息不足时减少不可逆的买入动作",
-    ], ["现金也会带来再投资机会成本，不能保证绝对收益"]),
-  ];
+    }] : []),
+  ].map((draft) => ({ ...draft, ...completeScenarioEvidence(draft, input) }));
   return BranchScenarioPlanSchema.parse({
     provider: "DETERMINISTIC_FALLBACK",
     options,
@@ -184,20 +184,13 @@ function option(
   description: string,
   strategy: BranchScenarioOption["strategy"],
   trades: BranchScenarioOption["trades"],
-  rationale: string[],
-  counterEvidence: string[],
-): BranchScenarioOption {
+): ScenarioOptionDraft {
   return {
     label,
     description,
     strategy,
     trades,
     targetAllocations: [],
-    rationale,
-    counterEvidence,
-    risks: ["冻结价格仅用于比较，不代表未来成交价", "模拟结果不包含真实滑点和税费差异"],
-    assumptions: ["不使用杠杆、卖空或虚构标的", "服务端将剔除模型价格并使用冻结价格", "模拟不会修改真实持仓"],
-    invalidationConditions: ["用户风险画像或资金用途发生变化", "标的数据源不可用或价格清单过期"],
   };
 }
 
@@ -211,7 +204,7 @@ function positiveHalf(value: string): string | null {
 function buildPrompt(input: BranchScenarioAgentInput): string {
   return [
     "请为资产分支模拟生成候选方案。",
-    "输出必须是紧凑的结构化 JSON，不要 Markdown，不要隐藏思维链。优先输出 1 到 3 个 options，每个只需 description、strategy、trades；解释数组可省略。provider 和 label 由服务端生成，禁止输出这两个字段。",
+    "输出必须是紧凑的结构化 JSON，不要 Markdown，不要隐藏思维链。输出 1 到 3 个 options，每个必须包含 description、strategy、trades、rationale、counterEvidence、risks、assumptions、invalidationConditions；文案必须引用 research 的具体事实或数据缺口。provider 和 label 由服务端生成，禁止输出这两个字段。",
     "模型只负责场景理解和交易意图，禁止填写 price；不得创造不在 instruments 中的标的。",
     JSON.stringify(input),
   ].join("\n");

@@ -82,4 +82,29 @@ describe("branch scenario contracts", () => {
     expect(result.plan.options.map((option) => option.strategy)).toEqual(["HOLD", "BALANCED", "DEFENSIVE"]);
     expect(result.delegatedAgents).toContain("DETERMINISTIC_FALLBACK");
   });
+
+  it("grounds fallback evidence in the supplied market research", async () => {
+    const result = await runBranchScenarioAgent({
+      ...baseInput,
+      research: [{
+        instrumentId: "instrument_a",
+        symbol: "AAA",
+        source: "PandaData",
+        asOfDate: "2026-07-24",
+        sampleCount: 20,
+        periodStartClose: "100",
+        latestClose: "112.5",
+        periodReturn: "12.5",
+        periodHigh: "115",
+        periodLow: "98",
+        fresh: true,
+        dataStatus: "VALID",
+      }],
+    });
+
+    expect(result.plan.options[0]?.rationale.join(" ")).toContain("AAA");
+    expect(result.plan.options[0]?.counterEvidence.join(" ")).toContain("2026-07-24");
+    expect(result.plan.options[0]?.risks.join(" ")).toContain("60.0%");
+    expect(JSON.stringify(result.plan)).not.toContain("基于当前分支上下文生成的模型候选");
+  });
 });

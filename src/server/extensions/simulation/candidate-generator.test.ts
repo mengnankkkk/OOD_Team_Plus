@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PriceManifest } from "./candidate-generator";
 import {
   fetchScenarioInstrumentPrices,
+  fetchScenarioResearch,
   normalizeScenarioOption,
   normalizeValidScenarioOptions,
 } from "./candidate-generator";
@@ -43,8 +44,9 @@ describe("candidate generator scenario normalization", () => {
     });
 
     expect(candidate.trades[0]).toMatchObject({ instrumentId: "a", action: "SELL", quantity: "1", price: "100" });
-    expect(candidate.analysis.rationale).toEqual(["集中度过高"]);
-    expect(candidate.analysis.counterEvidence).toEqual(["上涨时可能落后"]);
+    expect(candidate.analysis.rationale[0]).toContain("本方案计划卖出 a 1 单位");
+    expect(candidate.analysis.counterEvidence[0]).toContain("当前研究数据不足");
+    expect(candidate.analysis.risks[0]).toContain("当前最大持仓 a");
   });
 
   it("rejects model plans that reference unknown instruments", () => {
@@ -121,6 +123,42 @@ describe("candidate generator scenario normalization", () => {
       parameters: expect.objectContaining({ symbol: ["510300.SH"] }),
     });
     expect(prices).toEqual({ "510300.SH": "4.12" });
+  });
+
+  it("summarizes research facts from the market data source", async () => {
+    const execute = vi.fn(async (options: { sources: Array<{ method: string; parameters: Record<string, unknown> }> }) => [{
+      source: options.sources[0],
+      result: {
+        data: [
+          { symbol: "AAA.US", date: "20260701", close: 100 },
+          { symbol: "AAA.US", date: "20260724", close: 112.5 },
+        ],
+        fresh: true,
+        asOfDate: "2026-07-24",
+      },
+      toolCallId: "tool-research",
+      skillRunId: "skill-research",
+      marketSnapshotIds: ["market-research"],
+    }]);
+
+    const research = await fetchScenarioResearch([{
+      id: "asset-a",
+      symbol: "AAA.US",
+      market: "US",
+      asset_type: "stock",
+    }], "analysis-research", execute as never);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(research).toEqual([expect.objectContaining({
+      instrumentId: "asset-a",
+      symbol: "AAA.US",
+      source: "PandaData",
+      periodStartClose: "100",
+      latestClose: "112.5",
+      periodReturn: "12.5",
+      asOfDate: "2026-07-24",
+      dataStatus: "VALID",
+    })]);
   });
 
   it("keeps valid model options when another option cannot be normalized", () => {
