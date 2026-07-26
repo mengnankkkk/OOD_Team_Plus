@@ -56,26 +56,25 @@ Task reads require `tasks_read`; cancellation and early context deletion require
 ## Execution Time
 
 The send endpoint waits briefly for fast capabilities, then returns the persisted task instead of
-holding the HTTP connection open for the full agent run. When `status.state` is `submitted` or
-`working`, poll `GET /api/a2a/tasks/{id}` until the task reaches `completed`, `input-required`,
-`failed`, or `canceled`. `A2A_INITIAL_RESPONSE_TIMEOUT_MS` controls the initial wait budget and
-defaults to 750 milliseconds.
+holding the HTTP connection open for the full agent run. When `status.state` is
+`TASK_STATE_SUBMITTED` or `TASK_STATE_WORKING`, poll `GET /api/a2a/tasks/{id}` until the task reaches
+`TASK_STATE_COMPLETED`, `TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_FAILED`, or `TASK_STATE_CANCELED`.
+`A2A_INITIAL_RESPONSE_TIMEOUT_MS` controls the initial wait budget and defaults to 750 milliseconds.
 
 ## JSON-RPC Example
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": "demo-1",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "kind": "message",
-      "role": "user",
-      "messageId": "demo-message-1",
-      "parts": [
-        { "kind": "text", "text": "Search independent sources for current AAPL supply-chain risks." }
-      ],
+    "id": "demo-1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "ROLE_USER",
+        "messageId": "demo-message-1",
+        "parts": [
+        { "text": "Search independent sources for current AAPL supply-chain risks." }
+        ],
       "metadata": {
         "capabilityId": "research_search",
         "operation": "start",

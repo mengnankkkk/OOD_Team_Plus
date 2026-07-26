@@ -23,14 +23,13 @@ Put capabilityId, operation, and input in message.metadata.
 {
   "jsonrpc": "2.0",
   "id": "demo-1",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "kind": "message",
-      "role": "user",
+    "method": "message/send",
+    "params": {
+      "message": {
+      "role": "ROLE_USER",
       "messageId": "demo-message-1",
       "parts": [
-        { "kind": "text", "text": "Start a bull/bear debate on AAPL valuation." }
+        { "text": "Start a bull/bear debate on AAPL valuation." }
       ],
       "metadata": {
         "capabilityId": "debate_mode",

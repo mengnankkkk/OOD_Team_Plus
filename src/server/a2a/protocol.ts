@@ -4,6 +4,7 @@ import {
   A2APublicError,
   CapabilityIdSchema,
   type A2ACommand,
+  type A2ATaskStatus,
   type A2ATaskView,
   type PublicA2AError,
 } from "./contracts";
@@ -83,27 +84,25 @@ function jsonRpcErrorCode(code: string): number {
 export function toA2ATaskResource(task: A2ATaskView): Record<string, unknown> {
   const messageId = createId("a2a_agent_message");
   return {
-    kind: "task",
     id: task.id,
     contextId: task.contextId,
     status: {
-      state: task.status,
+      state: protoTaskState(task.status),
       timestamp: task.completedAt ?? task.startedAt ?? task.createdAt ?? isoNow(),
       message: task.result ? {
-        kind: "message",
-        role: "agent",
+        role: "ROLE_AGENT",
         messageId,
         taskId: task.id,
         contextId: task.contextId,
-        parts: [{ kind: "text", text: task.result.message }],
+        parts: [{ text: task.result.message }],
       } : undefined,
     },
     artifacts: (task.result?.artifacts ?? []).map((artifact) => ({
       artifactId: artifact.artifactId,
       name: artifact.name,
       parts: [
-        { kind: "text", text: artifact.text },
-        { kind: "data", data: artifact.data },
+        { text: artifact.text },
+        { data: artifact.data },
       ],
     })),
     metadata: {
@@ -115,6 +114,18 @@ export function toA2ATaskResource(task: A2ATaskView): Record<string, unknown> {
       events: task.events,
     },
   };
+}
+
+function protoTaskState(status: A2ATaskStatus): string {
+  const states: Record<A2ATaskStatus, string> = {
+    submitted: "TASK_STATE_SUBMITTED",
+    working: "TASK_STATE_WORKING",
+    "input-required": "TASK_STATE_INPUT_REQUIRED",
+    completed: "TASK_STATE_COMPLETED",
+    failed: "TASK_STATE_FAILED",
+    canceled: "TASK_STATE_CANCELED",
+  };
+  return states[status];
 }
 
 export function toA2ASendMessageResponse(task: A2ATaskView): { task: Record<string, unknown> } {

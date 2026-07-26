@@ -65,9 +65,8 @@ describe("A2A message gateway", () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
       task: {
-        kind: "task",
         contextId: "remote-context-1",
-        status: { state: "completed" },
+        status: { state: "TASK_STATE_COMPLETED" },
         metadata: { capabilityId: "chief_advisor_conversation" },
       },
     });
@@ -110,7 +109,7 @@ describe("A2A message gateway", () => {
     expect(await fetched.json()).toMatchObject({
       jsonrpc: "2.0",
       id: "rpc-get",
-      result: { id: taskId, status: { state: "completed" } },
+      result: { id: taskId, status: { state: "TASK_STATE_COMPLETED" } },
     });
   });
 
@@ -123,8 +122,7 @@ describe("A2A message gateway", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       task: {
-        kind: "task",
-        status: { state: "completed" },
+        status: { state: "TASK_STATE_COMPLETED" },
         metadata: { capabilityId: "chief_advisor_conversation" },
       },
     });

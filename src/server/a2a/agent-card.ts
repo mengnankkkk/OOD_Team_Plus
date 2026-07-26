@@ -159,8 +159,13 @@ export function buildAgentCard(request?: NextRequest) {
       taskExecution: {
         mode: "bounded_initial_wait_then_async_polling",
         pollEndpointTemplate: `${baseUrl}/api/a2a/tasks/{id}`,
-        pendingStates: ["submitted", "working"],
-        terminalStates: ["completed", "input-required", "failed", "canceled"],
+        pendingStates: ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"],
+        terminalStates: [
+          "TASK_STATE_COMPLETED",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_FAILED",
+          "TASK_STATE_CANCELED",
+        ],
       },
       examplePrompts: [
         "Review my caller-supplied portfolio and explain the main risks.",

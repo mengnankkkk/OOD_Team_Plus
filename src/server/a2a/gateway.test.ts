@@ -52,8 +52,7 @@ describe("A2A capability gateway", () => {
       id: "rpc-1",
       result: {
         task: {
-          kind: "task",
-          status: { state: "completed" },
+          status: { state: "TASK_STATE_COMPLETED" },
           metadata: { capabilityId: "chief_advisor_conversation" },
         },
       },
@@ -86,8 +85,7 @@ describe("A2A capability gateway", () => {
       result: {
         result: {
           task: {
-            kind: "task",
-            status: { state: "submitted" },
+            status: { state: "TASK_STATE_SUBMITTED" },
           },
         },
       },
@@ -122,7 +120,7 @@ describe("A2A capability gateway", () => {
     expect(result).toMatchObject({
       jsonrpc: "2.0",
       id: "rpc-2",
-      result: { id: sent.result.task.id, status: { state: "completed" } },
+      result: { id: sent.result.task.id, status: { state: "TASK_STATE_COMPLETED" } },
     });
   });
 
