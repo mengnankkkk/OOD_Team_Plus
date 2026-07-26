@@ -26,6 +26,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       DB_PATH: /app/data/money-whisperer.db
       PANDADATA_PYTHON: /opt/pandadata-venv/bin/python
     volumes:

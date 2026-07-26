@@ -12,6 +12,7 @@ export const SSE_EVENT_TYPES = [
   "search.source.completed",
   "portfolio.refreshed",
   "rss.synced",
+  "rss.linked",
   "agent.started",
   "agent.delegated",
   "agent.completed",
@@ -50,19 +51,47 @@ export interface SseEvent {
 
 export function persistSseEvent(event: Omit<SseEvent, "id" | "createdAt">): void {
   const db = getDatabase();
-  const now = isoNow();
-  const run = db.prepare("SELECT session_id,root_run_id FROM agent_runs WHERE id=?").get(event.analysisId) as { session_id?: string; root_run_id?: string | null } | undefined;
-  const rootRunId = run?.root_run_id || event.analysisId;
-  const transaction = db.transaction(() => {
-    const sequence = db.prepare("SELECT COALESCE(MAX(sequence_no),0)+1 AS next FROM agent_run_events WHERE root_run_id=?").get(rootRunId) as { next: number };
-    db.prepare(`INSERT INTO agent_run_events
-      (id,agent_run_id,root_run_id,session_id,sequence_no,event_type,payload_json,occurred_at,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
-      createId("event"), event.analysisId, rootRunId, run?.session_id ?? null, sequence.next, event.type, json(event.payload), now, now,
-    );
-  });
-  transaction();
-  db.close();
+  try {
+    const now = isoNow();
+    const run = db.prepare("SELECT session_id,root_run_id FROM agent_runs WHERE id=?")
+      .get(event.analysisId) as {
+        session_id?: string;
+        root_run_id?: string | null;
+      } | undefined;
+    const rootRunId = run?.root_run_id || event.analysisId;
+    const transaction = db.transaction(() => {
+      const sequence = db.prepare(`SELECT COALESCE(MAX(sequence_no),0)+1 AS next
+        FROM agent_run_events WHERE root_run_id=?`)
+        .get(rootRunId) as { next: number };
+      db.prepare(`INSERT INTO agent_run_events
+        (id,agent_run_id,root_run_id,session_id,sequence_no,event_type,payload_json,occurred_at,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(
+        createId("event"),
+        event.analysisId,
+        rootRunId,
+        run?.session_id ?? null,
+        sequence.next,
+        event.type,
+        json(event.payload),
+        now,
+        now,
+      );
+    });
+    transaction();
+  } finally {
+    db.close();
+  }
+}
+
+export function persistSseEventBestEffort(
+  event: Omit<SseEvent, "id" | "createdAt">,
+): boolean {
+  try {
+    persistSseEvent(event);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getSseEvents(analysisId: string, lastEventId?: string | null): SseEvent[] {

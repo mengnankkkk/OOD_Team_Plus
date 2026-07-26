@@ -43,7 +43,7 @@ export function resolveArtifactSource(input: ArtifactSourceInput) {
     const chunks = query ? db.prepare("SELECT rows_json FROM data_query_result_chunks WHERE query_id=? ORDER BY chunk_no").all(query.id) as Array<{ rows_json: string }> : [];
     let rows = query ? chunks.flatMap((chunk) => parseJson<Record<string, unknown>[]>(chunk.rows_json, [])) : input.sourceRows ?? [];
     let columns = query ? parseJson<Array<{ name: string; type?: string }>>(String(query.column_metadata_json ?? "[]"), []) : input.sourceColumns ?? [];
-    if (!rows.length && !input.sourceRows) {
+    if (!query && !rows.length && input.sourceRows === undefined) {
       rows = loadCurrentPortfolioRows(db, input.userId);
       columns = [{ name: "symbol", type: "string" }, { name: "marketValue", type: "decimal-string" }, { name: "unrealizedPnl", type: "decimal-string" }, { name: "weightBps", type: "integer" }];
     }

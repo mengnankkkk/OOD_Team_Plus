@@ -9,7 +9,7 @@ const settingEntries = [
   { path: "/profile", label: "个人财务档案", description: "资产偏好、风险承受和个人资料", icon: WalletCards },
   { path: "/goals", label: "个人目标档案", description: "目标、期限和进度管理", icon: Target },
   { path: "/auth/password", label: "修改密码", description: "更新当前账号登录密码", icon: KeyRound },
-  { path: "/notification-preference", label: "通知偏好", description: "提醒频率与静默时段", icon: Bell },
+  { path: "/notification-preference", label: "通知偏好", description: "提醒级别与静默时段", icon: Bell },
 ];
 
 export default function SettingsPage() {

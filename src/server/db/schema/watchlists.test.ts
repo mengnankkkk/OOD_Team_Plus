@@ -16,6 +16,28 @@ describe("WatchlistItemInsert", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("accepts goal and user source on a valid item", () => {
+    const result = watchlistItemInsertSchema.safeParse({
+      id: "wi_1",
+      watchlistId: "wl_1",
+      instrumentId: "AAPL",
+      goalId: "goal_1",
+      sourceType: "user",
+      status: "active",
+      addedAt: "2026-07-24T00:00:00Z",
+      createdAt: "2026-07-24T00:00:00Z",
+      updatedAt: "2026-07-24T00:00:00Z",
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({
+        goalId: "goal_1",
+        sourceType: "user",
+      });
+    }
+  });
 });
 
 describe("RssItemInsert", () => {

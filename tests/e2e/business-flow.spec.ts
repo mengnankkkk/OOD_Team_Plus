@@ -8,6 +8,7 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   const username = `investor_${projectSuffix(testInfo.project.name)}`;
   const password = "e2e_investor_password_123";
 
+  await page.setExtraHTTPHeaders({ "x-forwarded-for": username });
   await page.goto("/login");
   await page.getByRole("button", { name: "还没有账号？创建一个" }).click();
   await page.getByLabel("称呼").fill("端到端投资者");
@@ -59,13 +60,36 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await page.goto("/assets");
   await expect(page.getByText("Apple", { exact: true })).toBeVisible();
 
-  await page.goto("/query");
-  await page.getByLabel("查数问题").fill("列出我的持仓代码、数量、市值和浮盈亏");
-  await page.getByRole("button", { name: /执行查询/u }).click();
-  await expect(page.getByText("QUERY RESULT")).toBeVisible();
-  await expect(page.getByRole("link", { name: "查看生成产物" })).toBeVisible();
-  await page.getByRole("link", { name: "查看生成产物" }).click();
-  await expect(page).toHaveURL(/\/artifacts/u);
+  await page.goto("/analysis");
+  await expect(page.getByRole("heading", { name: "静态资产分析" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "持仓明细" })).toBeVisible();
+  await expect(page.getByText("AAPL", { exact: true })).toBeVisible();
+
+  const csrfCookie = (await page.context().cookies()).find((cookie) => cookie.name === "mw_csrf");
+  expect(csrfCookie?.value).toBeTruthy();
+  const reportTitle = "当前持仓财务分析报告";
+  const queryResponse = await page.request.post("/api/v1/data-queries", {
+    headers: {
+      "X-CSRF-Token": csrfCookie!.value,
+      "Idempotency-Key": `business-report-${projectSuffix(testInfo.project.name)}`,
+    },
+    data: {
+      questionText: "列出我的持仓代码、数量、市值和浮盈亏",
+      requestedDatasets: ["PORTFOLIO_HOLDINGS"],
+      outputMode: "FINANCIAL_REPORT",
+      requestedLimit: 50,
+    },
+  });
+  expect(queryResponse.ok()).toBeTruthy();
+  const queryBody = await queryResponse.json();
+  expect(queryBody.data.artifact).toMatchObject({
+    type: "MARKDOWN",
+    title: reportTitle,
+  });
+
+  await page.goto("/artifacts");
+  await expect(page.getByRole("heading", { name: "报告产物" })).toBeVisible();
+  await expect(page.getByText(reportTitle, { exact: true }).first()).toBeVisible();
 
   await page.goto("/simulations");
   await page.getByLabel("新实验名称").fill("E2E 组合实验");
@@ -73,22 +97,22 @@ test("完整用户业务闭环", async ({ page }, testInfo) => {
   await expect(page.getByText("E2E 组合实验", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "仅在模拟分支中执行" }).first()).toBeVisible({ timeout: 90_000 });
   await page.getByRole("button", { name: "仅在模拟分支中执行" }).first().click();
-  await expect(page.getByRole("button", { name: "撤回到父分支" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "撤回", exact: true })).toBeVisible();
 
   await page.goto("/advisor");
   const advisorPrompt = "请诊断当前组合健康度、集中度和压力情景，并给出支持证据与反方证据。";
   await page.getByPlaceholder("发消息…").fill(advisorPrompt);
-  await page.getByPlaceholder("发消息…").press("Control+Enter");
-  await expect(page.getByText(/建议状态：(ACTIVE|DEGRADED)/u)).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText(/建议状态：(可以继续执行|谨慎参考)/u)).toBeVisible({ timeout: 60_000 });
 
   await page.getByRole("button", { name: "新对话" }).click();
   const newConversationPrompt = "新对话回归测试：请总结当前最重要的一条理财原则。";
   await page.getByPlaceholder("发消息…").fill(newConversationPrompt);
-  await page.getByPlaceholder("发消息…").press("Control+Enter");
+  await page.getByRole("button", { name: "发送" }).click();
   const activeConversation = page.locator("section");
   await expect(activeConversation.getByText(advisorPrompt, { exact: true })).toHaveCount(0);
   await expect(activeConversation.getByText(newConversationPrompt, { exact: true })).toBeVisible();
-  await expect(activeConversation.getByText(/建议状态：(ACTIVE|DEGRADED)/u)).toBeVisible({ timeout: 60_000 });
+  await expect(activeConversation.getByText(/先按目前信息给你一版不涉及具体标的的个人理财方案/u)).toBeVisible({ timeout: 60_000 });
   await page.screenshot({ path: testInfo.outputPath("user-business-flow.png"), fullPage: true });
 });
 

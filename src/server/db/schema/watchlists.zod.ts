@@ -4,6 +4,7 @@ import { NOTIFICATION_MODES, NOTIFICATION_SEVERITIES, RSS_FEED_STATUSES } from "
 
 export const WATCHLIST_STATUSES = ["active", "archived", "deleted"] as const;
 export const WATCHLIST_ITEM_STATUSES = ["active", "removed"] as const;
+export const WATCHLIST_ITEM_SOURCES = ["user", "agent", "import"] as const;
 
 const nonEmptyText = z.string().trim().min(1);
 const optionalText = nonEmptyText.nullable().optional();
@@ -25,6 +26,8 @@ const watchlistItemBaseSchema = z.object({
   id: nonEmptyText,
   watchlistId: nonEmptyText,
   instrumentId: z.string().trim().min(1),
+  goalId: optionalText,
+  sourceType: z.enum(WATCHLIST_ITEM_SOURCES).default("user"),
   reason: optionalText,
   plannedHorizon: optionalText,
   status: z.enum(WATCHLIST_ITEM_STATUSES).default("active"),

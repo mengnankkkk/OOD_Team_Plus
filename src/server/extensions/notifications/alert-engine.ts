@@ -1,127 +1,270 @@
 import Decimal from "decimal.js";
 
-import { createId, getDatabase, isoNow, parseJson } from "@/server/http/context";
+import { createId, getDatabase, isoNow } from "@/server/http/context";
 
-export type ObservationConditionType = "UNREALIZED_GAIN_REACH" | "PRICE_ABOVE" | "PRICE_BELOW" | "DRAWDOWN_REACH";
+import type { ObservationConditionType } from "./condition-contract";
+import { readObservedMetric, shanghaiDate, type ConditionRow, type ObservedMetric } from "./condition-metrics";
+import { insertNotification, type NotificationSeverity } from "./notification-writer";
+
+export type { ObservationConditionType } from "./condition-contract";
+
+type Evaluation = {
+  conditionId: string;
+  status: "evaluated" | "insufficient_data" | "failed";
+  triggered: boolean;
+  observedValue: string | null;
+  dataAsOf: string | null;
+  eventId?: string;
+  duplicate?: boolean;
+  notificationCreated?: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+};
 
 export async function evaluateWatchConditions(conditionIds: string[], reason: string, userId?: string): Promise<void> {
   evaluateConditions(conditionIds, reason, userId);
 }
 
-export function evaluateConditions(conditionIds: string[] | undefined, reason: string, userId?: string) {
+export function evaluateConditions(
+  conditionIds: string[] | undefined,
+  reason: string,
+  userId?: string,
+): Evaluation[] {
   const db = getDatabase();
+  try {
+    const conditions = loadConditions(db, conditionIds, userId);
+    const evaluatedAt = isoNow();
+    return conditions.map((condition) => {
+      try {
+        return evaluateOne(db, condition, reason, evaluatedAt);
+      } catch {
+        return {
+          ...result(condition.id, "failed", false, null, null),
+          notificationCreated: false,
+          errorCode: "CONDITION_EVALUATION_FAILED",
+          errorMessage: "观察规则评估失败。",
+        };
+      }
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export function hasConditionCrossed(
+  type: ObservationConditionType,
+  previous: string | null,
+  current: string,
+  threshold: string,
+): boolean {
+  const prior = previous == null ? null : decimal(previous);
+  const value = decimal(current);
+  const target = decimal(threshold);
+  if (prior === null) return false;
+  if (type === "PRICE_BELOW") return prior.gt(target) && value.lte(target);
+  if (type === "REVIEW_DATE" || type === "DAILY_MOVE_REACH") return false;
+  return prior.lt(target) && value.gte(target);
+}
+
+export function dailyMoveEvaluationKey(conditionId: string, tradingDate: string): string {
+  return `${conditionId}:DAILY_MOVE_REACH:${tradingDate}`;
+}
+
+export function reviewDateEvaluationKey(conditionId: string, thresholdDate: string): string {
+  return `${conditionId}:REVIEW_DATE:${thresholdDate}`;
+}
+
+function evaluateOne(
+  db: ReturnType<typeof getDatabase>,
+  condition: ConditionRow,
+  reason: string,
+  evaluatedAt: string,
+): Evaluation {
+  const observed = readObservedMetric(db, condition);
+  if (observed.value === null) {
+    updateObservation(db, condition.id, null, observed.dataAsOf, evaluatedAt, false);
+    return result(condition.id, "insufficient_data", false, null, observed.dataAsOf);
+  }
+
+  const observedText = clean(observed.value);
+  const triggered = isTriggered(condition, observed, observedText);
+  if (!triggered) {
+    updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, false);
+    return result(condition.id, "evaluated", false, observedText, observed.dataAsOf);
+  }
+
+  const evaluationKey = evaluationKeyFor(condition, observed, observedText);
+  const eventId = createId("watch_event");
+  let outcome: Evaluation | undefined;
+  db.transaction(() => {
+    const inserted = db.prepare(`INSERT INTO observation_condition_events
+      (id,condition_id,user_id,observed_value,threshold_decimal,evaluation_key,triggered_at,reason)
+      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(evaluation_key) DO NOTHING`)
+      .run(
+        eventId,
+        condition.id,
+        condition.user_id,
+        observedText,
+        condition.threshold_decimal,
+        evaluationKey,
+        evaluatedAt,
+        reason,
+      );
+    if (!inserted.changes) {
+      updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, false);
+      outcome = {
+        ...result(condition.id, "evaluated", false, observedText, observed.dataAsOf),
+        duplicate: true,
+        notificationCreated: false,
+      };
+      return;
+    }
+
+    const notificationCreated = writeConditionNotification(db, condition, observed, observedText, eventId);
+    updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, true);
+    outcome = {
+      ...result(condition.id, "evaluated", true, observedText, observed.dataAsOf),
+      eventId,
+      notificationCreated,
+    };
+  })();
+  if (!outcome) throw new Error("Condition evaluation did not produce an outcome");
+  return outcome;
+}
+
+function isTriggered(condition: ConditionRow, observed: ObservedMetric, observedText: string): boolean {
+  if (condition.condition_type === "REVIEW_DATE") {
+    const thresholdDate = String(condition.threshold_date ?? "");
+    return Boolean(thresholdDate) && shanghaiDate() >= thresholdDate;
+  }
+  if (condition.condition_type === "DAILY_MOVE_REACH") {
+    return observed.value!.gte(decimal(condition.threshold_decimal));
+  }
+  const previous = condition.last_observed_decimal == null ? null : String(condition.last_observed_decimal);
+  return hasConditionCrossed(
+    condition.condition_type,
+    previous,
+    observedText,
+    String(condition.threshold_decimal),
+  );
+}
+
+function evaluationKeyFor(condition: ConditionRow, observed: ObservedMetric, observedText: string): string {
+  if (condition.condition_type === "DAILY_MOVE_REACH") {
+    const tradingDate = String(observed.metricSnapshot.tradingDate ?? observed.dataAsOf ?? "")
+      .replace(/\D/gu, "")
+      .slice(0, 8);
+    return dailyMoveEvaluationKey(condition.id, tradingDate);
+  }
+  if (condition.condition_type === "REVIEW_DATE") {
+    return reviewDateEvaluationKey(condition.id, String(condition.threshold_date));
+  }
+  return `${condition.id}:${condition.condition_type}:${observed.evaluationSourceKey ?? observed.dataAsOf ?? observedText}`;
+}
+
+function writeConditionNotification(
+  db: ReturnType<typeof getDatabase>,
+  condition: ConditionRow,
+  observed: ObservedMetric,
+  observedText: string,
+  eventId: string,
+): boolean {
+  const context = readNotificationContext(db, condition);
+  const label = conditionLabel(condition.condition_type);
+  const threshold = condition.condition_type === "REVIEW_DATE"
+    ? String(condition.threshold_date)
+    : String(condition.threshold_decimal);
+  const dataAsOf = observed.dataAsOf ?? isoNow();
+  return insertNotification(db, {
+    userId: condition.user_id,
+    severity: String(condition.severity ?? "attention") as NotificationSeverity,
+    title: `${context.name ?? context.symbol ?? "观察标的"}${label}`,
+    body: `规则“${label}”已触发。当前值 ${observedText}，阈值 ${threshold}。`,
+    sourceType: "WATCH_CONDITION",
+    sourceId: condition.id,
+    groupKey: `${condition.watchlist_item_id ?? condition.instrument_id ?? condition.id}:${condition.condition_type}`,
+    dedupeKey: `condition-event:${eventId}`,
+    dataAsOf,
+    conditionId: condition.id,
+    eventId,
+    metadata: {
+      ...context,
+      conditionId: condition.id,
+      rule: condition.condition_type,
+      metricValue: observed.value?.toNumber() ?? null,
+      threshold,
+      dataAsOf,
+      metricSnapshot: observed.metricSnapshot,
+      advisorPrompt: `请结合我的持仓、目标和关注理由，分析“${label}”触发后的证据、风险与可模拟方案，不要直接替我下单。`,
+    },
+  }) > 0;
+}
+
+function readNotificationContext(db: ReturnType<typeof getDatabase>, condition: ConditionRow): Record<string, unknown> {
+  if (!condition.watchlist_item_id) return { instrumentId: condition.instrument_id };
+  const row = db.prepare(`SELECT wi.watchlist_id,wi.id AS watchlist_item_id,wi.instrument_id,wi.goal_id,wi.reason,
+      i.symbol,i.name FROM watchlist_items wi JOIN instruments i ON i.id=wi.instrument_id WHERE wi.id=?`)
+    .get(condition.watchlist_item_id) as Record<string, unknown> | undefined;
+  return row ? {
+    watchlistId: row.watchlist_id,
+    watchlistItemId: row.watchlist_item_id,
+    instrumentId: row.instrument_id,
+    goalId: row.goal_id,
+    reason: row.reason,
+    symbol: row.symbol,
+    name: row.name,
+  } : { instrumentId: condition.instrument_id };
+}
+
+function updateObservation(
+  db: ReturnType<typeof getDatabase>,
+  id: string,
+  observedValue: string | null,
+  dataAsOf: string | null,
+  now: string,
+  triggered: boolean,
+): void {
+  db.prepare(`UPDATE observation_conditions SET last_observed_decimal=?,last_evaluated_at=?,
+    last_triggered_at=CASE WHEN ? THEN ? ELSE last_triggered_at END,updated_at=? WHERE id=?`)
+    .run(observedValue, now, triggered ? 1 : 0, now, now, id);
+}
+
+function loadConditions(
+  db: ReturnType<typeof getDatabase>,
+  conditionIds: string[] | undefined,
+  userId?: string,
+): ConditionRow[] {
   const ownerClause = userId ? " AND user_id = ?" : "";
   const ownerParams = userId ? [userId] : [];
-  const conditions = conditionIds?.length
-    ? db.prepare("SELECT * FROM observation_conditions WHERE id IN (" + conditionIds.map(() => "?").join(",") + ") AND status='active'" + ownerClause).all(...conditionIds, ...ownerParams)
-    : db.prepare("SELECT * FROM observation_conditions WHERE status='active'" + ownerClause).all(...ownerParams);
-  const results: Array<Record<string, unknown>> = [];
-  const now = isoNow();
-
-  for (const condition of conditions as Array<Record<string, unknown>>) {
-    const observed = readObservedValue(db, condition);
-    const conditionType = String(condition.condition_type) as ObservationConditionType;
-    const previous = condition.last_observed_decimal === null || condition.last_observed_decimal === undefined ? null : decimal(condition.last_observed_decimal);
-    const threshold = decimal(condition.threshold_decimal);
-    const crossed = observed !== null && hasCrossed(conditionType, previous, observed, threshold);
-    if (observed === null || !crossed) {
-      db.prepare("UPDATE observation_conditions SET last_observed_decimal = ?, last_evaluated_at = ?, updated_at = ? WHERE id = ?").run(observed === null ? null : clean(observed), now, now, condition.id);
-      results.push({ conditionId: condition.id, triggered: false, observedValue: observed === null ? null : clean(observed) });
-      continue;
-    }
-
-    const observedText = clean(observed);
-    const evaluationKey = `${condition.id}:${String(condition.condition_type)}:${String(condition.threshold_decimal)}:${observedText}`;
-    const eventId = createId("watch_event");
-    const inserted = db.prepare(`INSERT INTO observation_condition_events
-      (id, condition_id, user_id, observed_value, threshold_decimal, evaluation_key, triggered_at, reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(evaluation_key) DO NOTHING`).run(eventId, condition.id, condition.user_id, observedText, condition.threshold_decimal, evaluationKey, now, reason);
-    if (inserted.changes) {
-      const title = conditionTitle(String(condition.condition_type), observed, threshold);
-      const groupKey = `${condition.instrument_id ?? condition.holding_id ?? condition.id}:${condition.condition_type}`;
-      db.prepare(`INSERT INTO notifications
-        (id, user_id, severity, title, body_text, source_type, source_id, group_key, condition_id, event_id, created_at, updated_at)
-        VALUES (?, ?, 'important', ?, ?, 'WATCH_CONDITION', ?, ?, ?, ?, ?, ?)`).run(
-        createId("notification"),
-        condition.user_id,
-        title,
-        `${title}。当前值 ${formatDecimal(observed)}，阈值 ${formatDecimal(threshold)}。`,
-        condition.id,
-        groupKey,
-        condition.id,
-        eventId,
-        now,
-        now,
-      );
-      results.push({ conditionId: condition.id, triggered: true, eventId, observedValue: observedText });
-    } else {
-      results.push({ conditionId: condition.id, triggered: false, duplicate: true, observedValue: observedText });
-    }
-    db.prepare("UPDATE observation_conditions SET last_observed_decimal = ?, last_evaluated_at = ?, updated_at = ? WHERE id = ?").run(observedText, now, now, condition.id);
-  }
-  db.close();
-  return results;
+  return (conditionIds?.length
+    ? db.prepare(`SELECT * FROM observation_conditions WHERE id IN (${conditionIds.map(() => "?").join(",")})
+      AND status='active'${ownerClause}`).all(...conditionIds, ...ownerParams)
+    : db.prepare(`SELECT * FROM observation_conditions WHERE status='active'${ownerClause}`).all(...ownerParams)
+  ) as ConditionRow[];
 }
 
-function readObservedValue(db: { prepare: (sql: string) => { get: (...params: unknown[]) => unknown } }, condition: Record<string, unknown>): Decimal | null {
-  if (condition.holding_id) {
-    const holding = db.prepare(`SELECT h.quantity_decimal, h.cost_decimal, s.price_decimal, s.market_value_decimal, s.unrealized_pnl_decimal
-      FROM holdings h LEFT JOIN portfolio_snapshots p ON p.portfolio_id = h.portfolio_id AND p.user_id = h.user_id
-      LEFT JOIN holding_snapshots s ON s.portfolio_snapshot_id = p.id AND s.instrument_id = h.instrument_id
-      WHERE h.id = ? AND h.user_id = ? AND h.status='active' ORDER BY p.created_at DESC LIMIT 1`).get(condition.holding_id, condition.user_id) as Record<string, unknown> | undefined;
-    if (!holding) return null;
-    const quantity = decimal(holding.quantity_decimal);
-    const cost = decimal(holding.cost_decimal).mul(quantity);
-    if (condition.condition_type === "UNREALIZED_GAIN_REACH") return cost.gt(0) ? decimal(holding.unrealized_pnl_decimal ?? 0).div(cost) : null;
-    if (condition.condition_type === "DRAWDOWN_REACH") return cost.gt(0) ? decimal(holding.market_value_decimal ?? 0).minus(cost).div(cost) : null;
-    return decimal(holding.price_decimal);
-  }
-  if (condition.instrument_id) {
-    const row = db.prepare(`SELECT price_decimal FROM holding_snapshots h JOIN portfolio_snapshots p ON p.id = h.portfolio_snapshot_id
-      WHERE h.instrument_id = ? AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 1`).get(condition.instrument_id, condition.user_id) as { price_decimal?: string } | undefined;
-    if (row?.price_decimal) return decimal(row.price_decimal);
-    const instrument = db.prepare("SELECT symbol,market FROM instruments WHERE id=?").get(condition.instrument_id) as { symbol?: string; market?: string } | undefined;
-    if (!instrument?.symbol) return null;
-    const symbol = instrument.symbol.toUpperCase();
-    const canonical = symbol.includes(".") || !/^\d{6}$/u.test(symbol) ? symbol : `${symbol}.${instrument.market || (symbol.startsWith("6") ? "SH" : "SZ")}`.toUpperCase();
-    const snapshot = db.prepare(`SELECT ms.raw_payload_json FROM market_snapshots ms JOIN instruments i ON i.id=ms.instrument_id
-      WHERE UPPER(i.symbol) IN (?,?) ORDER BY ms.trading_date DESC,ms.created_at DESC LIMIT 1`).get(symbol, canonical) as { raw_payload_json?: string } | undefined;
-    const payload = parseJson<Record<string, unknown>>(snapshot?.raw_payload_json, {});
-    return payload.close === undefined ? null : decimal(payload.close);
-  }
-  return null;
+function result(
+  conditionId: string,
+  status: Evaluation["status"],
+  triggered: boolean,
+  observedValue: string | null,
+  dataAsOf: string | null,
+): Evaluation {
+  return { conditionId, status, triggered, observedValue, dataAsOf };
 }
 
-function isTriggered(type: ObservationConditionType, value: Decimal, threshold: Decimal): boolean {
-  if (type === "PRICE_BELOW" || type === "DRAWDOWN_REACH") return value.lte(threshold);
-  return value.gte(threshold);
+function conditionLabel(type: ObservationConditionType): string {
+  return ({
+    PRICE_ABOVE: "价格上穿阈值",
+    PRICE_BELOW: "价格下穿阈值",
+    DRAWDOWN_REACH: "回撤达到阈值",
+    DAILY_MOVE_REACH: "单日异动达到阈值",
+    POSITION_WEIGHT_ABOVE: "持仓权重达到阈值",
+    UNREALIZED_GAIN_REACH: "浮盈达到阈值",
+    REVIEW_DATE: "到达复查日期",
+  })[type];
 }
 
-function hasCrossed(type: ObservationConditionType, previous: Decimal | null, current: Decimal, threshold: Decimal): boolean {
-  if (previous === null) return isTriggered(type, current, threshold);
-  if (type === "PRICE_BELOW" || type === "DRAWDOWN_REACH") return previous.gt(threshold) && current.lte(threshold);
-  return previous.lt(threshold) && current.gte(threshold);
-}
+function decimal(value: unknown): Decimal { return new Decimal(String(value ?? 0)); }
 
-function conditionTitle(type: string, value: Decimal, threshold: Decimal): string {
-  const labels: Record<string, string> = {
-    UNREALIZED_GAIN_REACH: "持仓浮盈达到提醒阈值",
-    PRICE_ABOVE: "标的价格上穿提醒阈值",
-    PRICE_BELOW: "标的价格下穿提醒阈值",
-    DRAWDOWN_REACH: "持仓回撤达到提醒阈值",
-  };
-  return `${labels[type] ?? "观察条件已触发"}（${formatDecimal(value)} / ${formatDecimal(threshold)}）`;
-}
-
-function decimal(value: unknown): Decimal {
-  return new Decimal(String(value ?? 0));
-}
-
-function clean(value: Decimal): string {
-  return value.toDecimalPlaces(8).toString();
-}
-
-function formatDecimal(value: Decimal): string {
-  return clean(value).replace(/0+$/u, "").replace(/\.$/u, "");
-}
+function clean(value: Decimal): string { return value.toDecimalPlaces(8).toString(); }

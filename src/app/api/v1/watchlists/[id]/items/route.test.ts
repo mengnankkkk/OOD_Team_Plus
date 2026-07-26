@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { authenticatedRequest } from "@tests/helpers/auth";
+import { getDatabase } from "@/server/http/context";
+import { authenticatedRequest, seedAuthenticatedUser } from "@tests/helpers/auth";
 import { DELETE, PATCH } from "../../../watchlist-items/[id]/route";
 import { GET, POST } from "./route";
 
@@ -10,23 +11,71 @@ const itemUrl = "http://localhost/api/v1/watchlist-items/i1";
 const context = { params: Promise.resolve({ id: "w1" }) };
 
 describe("watchlist item routes", () => {
+  const userId = "watchlist-item-route-user";
+
+  beforeEach(() => {
+    seedAuthenticatedUser({ userId });
+    const db = getDatabase();
+    db.prepare("DELETE FROM observation_conditions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM watchlist_items WHERE watchlist_id = 'w1'").run();
+    db.prepare("DELETE FROM watchlists WHERE id = 'w1' OR user_id = ?").run(userId);
+    db.prepare("DELETE FROM goals WHERE id = 'goal-route' OR user_id = ?").run(userId);
+    db.prepare(`INSERT INTO watchlists
+      (id,user_id,name,status,created_at,updated_at) VALUES ('w1',?,'持仓观测','active',?,?)`)
+      .run(userId, "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.prepare(`INSERT INTO goals
+      (id,user_id,name,target_amount_decimal,horizon,priority,status,created_at,updated_at)
+      VALUES ('goal-route',?,'长期目标','1000000','LONG','HIGH','active',?,?)`)
+      .run(userId, "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.close();
+  });
+
   it("POST returns 400 for an invalid item", async () => {
-    const req = authenticatedRequest(collectionUrl, { method: "POST", body: "{}" });
+    const req = authenticatedRequest(collectionUrl, { method: "POST", body: "{}" }, { userId });
     expect((await POST(req, context)).status).toBe(400);
   });
 
   it("POST returns 404 for a valid item when watchlist is absent", async () => {
-    const req = authenticatedRequest(collectionUrl, {
+    const req = authenticatedRequest("http://localhost/api/v1/watchlists/missing/items", {
       method: "POST",
       body: JSON.stringify({ instrumentId: "AAPL", reason: "Review earnings" }),
       headers: { "Idempotency-Key": "item-key-1" },
-    });
-    expect((await POST(req, context)).status).toBe(404);
+    }, { userId });
+    expect((await POST(req, { params: Promise.resolve({ id: "missing" }) })).status).toBe(404);
   });
 
   it("GET enforces watchlist ownership", async () => {
-    const response = await GET(authenticatedRequest(collectionUrl), context);
+    const response = await GET(authenticatedRequest(
+      "http://localhost/api/v1/watchlists/missing/items",
+      {},
+      { userId },
+    ), { params: Promise.resolve({ id: "missing" }) });
     expect(response.status).toBe(404);
+  });
+
+  it("GET returns aggregate items with a collection summary", async () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO watchlist_items
+      (id,watchlist_id,instrument_id,source_type,status,added_at,created_at,updated_at)
+      VALUES ('i1','w1','AAPL','user','active',?,?,?)`)
+      .run("2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
+    db.close();
+
+    const response = await GET(authenticatedRequest(collectionUrl, {}, { userId }), context);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.items[0]).toMatchObject({
+      id: "i1",
+      instrument: { id: "AAPL", symbol: "AAPL" },
+      portfolioRelation: { isHeld: true },
+    });
+    expect(body.data.summary).toMatchObject({
+      itemCount: 1,
+      heldCount: 1,
+      activeConditionCount: 0,
+      unreadAlertCount: 0,
+    });
   });
 
   it("PATCH returns 400 without If-Match", async () => {
@@ -35,5 +84,104 @@ describe("watchlist item routes", () => {
 
   it("DELETE returns 400 without If-Match", async () => {
     expect((await DELETE(new NextRequest(itemUrl, { method: "DELETE" }), context)).status).toBe(400);
+  });
+
+  it("persists goal metadata and returns an existing-item conflict", async () => {
+    const first = await POST(
+      authenticatedRequest(collectionUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          instrumentId: "AAPL",
+          reason: "长期观察",
+          plannedHorizon: "3-5 年",
+          goalId: "goal-route",
+          source: "USER",
+          initialDrawdownThresholdPct: 15,
+        }),
+        headers: { "Idempotency-Key": "item-create-1" },
+      }, { userId }),
+      context,
+    );
+    expect(first.status).toBe(201);
+    expect((await first.json()).data).toMatchObject({
+      goalId: "goal-route",
+      plannedHorizon: "3-5 年",
+      activeConditionCount: 1,
+    });
+
+    const duplicate = await POST(
+      authenticatedRequest(collectionUrl, {
+        method: "POST",
+        body: JSON.stringify({ instrumentId: "AAPL", source: "USER" }),
+        headers: { "Idempotency-Key": "item-create-2" },
+      }, { userId }),
+      context,
+    );
+    const duplicateBody = await duplicate.json();
+    expect(duplicate.status).toBe(409);
+    expect(duplicateBody.error).toMatchObject({
+      code: "WATCHLIST_ITEM_EXISTS",
+      details: { watchlistId: "w1", instrumentId: "AAPL" },
+    });
+  });
+
+  it("accepts the legacy drawdown field and preserves compatibility aliases", async () => {
+    const request = () => authenticatedRequest(collectionUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          instrumentId: "SPY",
+          plannedHorizon: "2 年",
+          drawdownThresholdPct: 11,
+        }),
+        headers: { "Idempotency-Key": "legacy-drawdown-create" },
+      }, { userId });
+    const response = await POST(request(), context);
+    const replay = await POST(request(), context);
+    expect(response.status).toBe(201);
+    expect(replay.status).toBe(201);
+    expect((await replay.json()).data.id).toBe((await response.clone().json()).data.id);
+    const collection = await GET(authenticatedRequest(collectionUrl, {}, { userId }), context);
+    const item = (await collection.json()).data.items.find((value: { instrument: { id: string } }) =>
+      value.instrument.id === "SPY");
+    expect(item).toMatchObject({
+      name: "SPDR S&P 500 ETF",
+      symbol: "SPY",
+      planned_horizon: "2 年",
+      drawdown_threshold_bps: 1100,
+      row_version: 1,
+    });
+    const db = getDatabase();
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
+      WHERE watchlist_item_id=? AND condition_type='DRAWDOWN_REACH'`).get(item.id) as { count: number }).count)
+      .toBe(1);
+    db.close();
+  });
+
+  it("edits reason, free-text horizon, and goal", async () => {
+    const created = await POST(
+      authenticatedRequest(collectionUrl, {
+        method: "POST",
+        body: JSON.stringify({ instrumentId: "MSFT", source: "USER" }),
+        headers: { "Idempotency-Key": "item-edit-create" },
+      }, { userId }),
+      context,
+    );
+    const item = (await created.json()).data as { id: string; version: number };
+
+    const response = await PATCH(
+      authenticatedRequest(`http://localhost/api/v1/watchlist-items/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason: "等待估值", plannedHorizon: "18-24 个月", goalId: "goal-route" }),
+        headers: { "If-Match": String(item.version) },
+      }, { userId }),
+      { params: Promise.resolve({ id: item.id }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({
+      reason: "等待估值",
+      plannedHorizon: "18-24 个月",
+      goalId: "goal-route",
+    });
   });
 });

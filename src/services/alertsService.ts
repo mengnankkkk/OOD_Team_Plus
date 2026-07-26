@@ -42,10 +42,24 @@ function mapSeverity(value: string): Alert["severity"] {
   return "info";
 }
 
-export async function listAlerts(_userId: string, opts?: { statuses?: string[]; limit?: number }): Promise<Alert[]> {
+export async function listAlerts(
+  _userId: string,
+  opts?: { statuses?: string[]; limit?: number; sourceType?: string },
+): Promise<{ items: Alert[]; unreadCount: number }> {
   const unreadOnly = opts?.statuses?.length === 1 && opts.statuses[0] === "unread";
-  const result = await apiGet<{ items: NotificationRow[] }>(`/api/v1/notifications?limit=${opts?.limit ?? 40}&unreadOnly=${unreadOnly}`);
-  return result.items.map(mapAlert).filter((alert) => !opts?.statuses || opts.statuses.includes(alert.status));
+  const params = new URLSearchParams({
+    limit: String(opts?.limit ?? 40),
+    unreadOnly: String(unreadOnly),
+  });
+  if (opts?.sourceType) params.set("sourceType", opts.sourceType);
+  const result = await apiGet<{ items: NotificationRow[]; unreadCount: number }>(
+    `/api/v1/notifications?${params.toString()}`,
+  );
+  return {
+    items: result.items.map(mapAlert)
+      .filter((alert) => !opts?.statuses || opts.statuses.includes(alert.status)),
+    unreadCount: result.unreadCount,
+  };
 }
 
 export async function updateAlertStatus(_userId: string, id: string, status: AlertStatus): Promise<void> {
@@ -59,7 +73,7 @@ export async function markAllAlertsRead(): Promise<number> {
 }
 
 export async function syncAlerts(forceMarketRefresh = false) {
-  return apiPost<{ status: string; createdCount: number; marketRefreshSucceeded: boolean; dataAsOf: string | null; errorCode: string | null; errorMessage: string | null }>(
+  return apiPost<{ status: string; skippedReason: "MUTED" | null; createdCount: number; marketRefreshSucceeded: boolean; dataAsOf: string | null; errorCode: string | null; errorMessage: string | null }>(
     "/api/v1/notifications/sync",
     { forceMarketRefresh },
   );

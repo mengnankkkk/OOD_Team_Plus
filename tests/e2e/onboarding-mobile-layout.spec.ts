@@ -7,6 +7,7 @@ function projectSuffix(name: string) {
 test("低高度手机端始终显示建档操作按钮并允许正文滚动", async ({ page }, testInfo) => {
   const username = `onboarding_${projectSuffix(testInfo.project.name)}_${Date.now().toString(36)}`;
 
+  await page.setExtraHTTPHeaders({ "x-forwarded-for": username });
   await page.setViewportSize({ width: 360, height: 640 });
   await page.goto("/login");
   await page.getByRole("button", { name: "还没有账号？创建一个" }).click();

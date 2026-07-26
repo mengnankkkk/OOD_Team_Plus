@@ -36,7 +36,7 @@ const adminEntries = [
 export default function TopNavigation() {
   const { profile, user, isAnonymous } = useAuth();
   const { judgeMode } = useDemoMode();
-  const { data: alerts = [] } = useAlerts();
+  const alerts = useAlerts();
   const navigate = useNavigate();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -63,7 +63,7 @@ export default function TopNavigation() {
     };
   }, []);
 
-  const unreadCount = alerts.filter((item) => item.status === "unread").length;
+  const unreadCount = alerts.data?.unreadCount ?? 0;
   const entries = user?.role === "ADMIN" ? [...workspaceEntries, ...adminEntries] : workspaceEntries;
   const active = entries.some((entry) => location.pathname.startsWith(entry.path));
   const historyActive = location.pathname.startsWith("/history");

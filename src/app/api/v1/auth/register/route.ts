@@ -16,7 +16,13 @@ export async function POST(request: NextRequest) {
   const parsed = Schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: { code: "VALIDATION_ERROR", message: "Invalid registration", details: parsed.error.format() } }, { status: 422 });
   try {
-    enforceFixedWindowRateLimit({ scope: "auth_register", subject: requestIp(request) ?? "unknown", limit: 5, windowSeconds: 60 });
+    const clientSubject = requestIp(request) ?? "untrusted-client";
+    enforceFixedWindowRateLimit({
+      scope: "auth_register",
+      subject: `${clientSubject}:${parsed.data.username}`,
+      limit: 5,
+      windowSeconds: 60,
+    });
     const user = await registerUser(parsed.data);
     const session = createSession(user, { userAgent: request.headers.get("user-agent"), ip: requestIp(request) });
     const response = NextResponse.json({ data: { user, csrfToken: session.csrfToken, expiresAt: session.expiresAt }, meta: meta() }, { status: 201 });
