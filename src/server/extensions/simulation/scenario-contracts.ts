@@ -117,11 +117,11 @@ export type BranchScenarioModelOptionDraft = {
   strategy: string;
   trades: Array<{ instrumentId: string; action: "BUY" | "SELL"; quantity: string }>;
   targetAllocations: Array<{ instrumentId: string; weight: string }>;
-  rationale: string[];
-  counterEvidence: string[];
-  risks: string[];
-  assumptions: string[];
-  invalidationConditions: string[];
+  rationale?: string[];
+  counterEvidence?: string[];
+  risks?: string[];
+  assumptions?: string[];
+  invalidationConditions?: string[];
 };
 export type BranchScenarioModelPlan = {
   options: BranchScenarioModelOptionDraft[];

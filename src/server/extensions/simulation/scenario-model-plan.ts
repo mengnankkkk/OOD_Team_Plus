@@ -75,22 +75,22 @@ function normalizeModelOption(value: unknown): Record<string, unknown> | null {
     strategy: normalizeScenarioStrategy(value.strategy ?? value.mode, trades),
     trades,
     targetAllocations,
-    rationale: normalizeList(value.rationale, "基于当前分支上下文生成的模型候选", 3),
-    counterEvidence: normalizeList(value.counterEvidence, "市场变化可能使当前方案失效", 3),
-    risks: normalizeList(value.risks, "候选结果仅用于模拟，不代表未来收益", 3),
-    assumptions: normalizeList(value.assumptions, "价格由服务端冻结并用于比较", 8),
-    invalidationConditions: normalizeList(value.invalidationConditions, "风险画像、资金用途或市场数据发生变化", 6),
+    rationale: normalizeList(value.rationale, 3),
+    counterEvidence: normalizeList(value.counterEvidence, 3),
+    risks: normalizeList(value.risks, 3),
+    assumptions: normalizeList(value.assumptions, 8),
+    invalidationConditions: normalizeList(value.invalidationConditions, 6),
   };
 }
 
-function normalizeList(value: unknown, fallback: string, limit: number): string[] {
+function normalizeList(value: unknown, limit: number): string[] {
   const rawItems = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
   const items = rawItems.map((item) => {
     if (typeof item === "string") return item.trim();
     if (!isRecord(item)) return "";
     return normalizeText(item.text ?? item.reason ?? item.message ?? item.value) ?? "";
   }).filter((item) => item.length > 0).slice(0, limit);
-  return items.length ? items : [fallback];
+  return items;
 }
 
 function normalizeModelTrade(value: unknown): Record<string, unknown> | null {
