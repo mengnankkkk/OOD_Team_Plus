@@ -51,9 +51,11 @@ describe("A2A capability gateway", () => {
       jsonrpc: "2.0",
       id: "rpc-1",
       result: {
-        kind: "task",
-        status: { state: "completed" },
-        metadata: { capabilityId: "chief_advisor_conversation" },
+        task: {
+          kind: "task",
+          status: { state: "completed" },
+          metadata: { capabilityId: "chief_advisor_conversation" },
+        },
       },
     });
   });
@@ -83,8 +85,10 @@ describe("A2A capability gateway", () => {
       kind: "returned",
       result: {
         result: {
-          kind: "task",
-          status: { state: "submitted" },
+          task: {
+            kind: "task",
+            status: { state: "submitted" },
+          },
         },
       },
     });
@@ -106,19 +110,19 @@ describe("A2A capability gateway", () => {
         artifacts: [],
       }));
     const sent = await executeA2ACommand(principal(), sendCommand(), registry({ run })) as {
-      result: { id: string };
+      result: { task: { id: string } };
     };
 
     const result = await executeA2ACommand(
       principal(),
-      { kind: "get-task", requestId: "rpc-2", taskId: sent.result.id },
+      { kind: "get-task", requestId: "rpc-2", taskId: sent.result.task.id },
       registry(),
     );
 
     expect(result).toMatchObject({
       jsonrpc: "2.0",
       id: "rpc-2",
-      result: { id: sent.result.id, status: { state: "completed" } },
+      result: { id: sent.result.task.id, status: { state: "completed" } },
     });
   });
 
