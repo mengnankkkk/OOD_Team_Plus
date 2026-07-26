@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { saveInjectiveProofDraft } from "@/lib/injective-proof";
+import { useTranslations } from "next-intl";
 
 type Conversation = { id: string; title: string; status: "active" | "archived"; updated_at: string; last_message_preview?: string | null; row_version?: number };
 type ConversationDetail = Conversation & { messages: Array<{ id: string; role: string; content: string; created_at: string }> };
@@ -24,12 +25,6 @@ type ResearchSummary = { id: string; query_text: string; status: string; created
 type ResearchResult = { id: string; title: string | null; snippet: string | null; url: string | null; adapter: string; source_name?: string | null };
 type ResearchSourceStatus = { adapter: string; status: string; result_count: number; error: { message?: string } | null };
 type NotificationPreference = { mode: "IMPORTANT_ONLY" | "DAILY_DIGEST" | "MUTED"; quietHoursStart: string | null; quietHoursEnd: string | null; version: number };
-const NOTIFICATION_MODE_LABELS: Record<NotificationPreference["mode"], string> = {
-  IMPORTANT_ONLY: "仅重要提醒",
-  DAILY_DIGEST: "全部提醒（中心汇总）",
-  MUTED: "暂停所有提醒",
-};
-
 function Shell({ title, eyebrow, children, actions }: { title: string; eyebrow: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <section className="rounded-lg border border-border bg-card p-5">
@@ -372,6 +367,8 @@ export function RiskAssessmentsPage() {
 }
 
 export function NotificationPreferencePage() {
+  const t = useTranslations("notifications");
+  const common = useTranslations("common");
   const pref = useApiResource<NotificationPreference>("/api/v1/notification-preference");
   const [mode, setMode] = useState<NotificationPreference["mode"]>("IMPORTANT_ONLY");
   const [start, setStart] = useState("");
@@ -381,11 +378,17 @@ export function NotificationPreferencePage() {
     try {
       await apiMutation("/api/v1/notification-preference", "PUT", { mode, quietHoursStart: start || null, quietHoursEnd: end || null }, pref.data ? { "If-Match": String(pref.data.version) } : undefined);
       await pref.reload();
+      toast.success(t("saved"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存失败");
+      toast.error(error instanceof Error ? error.message : t("saveFailed"));
     }
   }
-  return <div className="page-stack"><PageHeading eyebrow="NOTIFICATIONS" title="通知偏好" description="设置提醒级别和静默时段；提醒统一进入提醒中心。" />{pref.loading ? <LoadingBlock label="正在读取偏好…" /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title="偏好设置" eyebrow="PREFERENCE"><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>提醒方式</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(NOTIFICATION_MODE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>静默开始</Label><Input type="time" value={start} onChange={(e) => setStart(e.target.value)} /></div><div className="space-y-2"><Label>静默结束</Label><Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></div></div><Button className="mt-4" onClick={() => void save()}>保存偏好</Button></Shell>}</div>;
+  const modeLabels = {
+    IMPORTANT_ONLY: t("modes.importantOnly"),
+    DAILY_DIGEST: t("modes.dailyDigest"),
+    MUTED: t("modes.muted"),
+  } satisfies Record<NotificationPreference["mode"], string>;
+  return <div className="page-stack"><PageHeading eyebrow={t("eyebrow")} title={t("title")} description={t("description")} />{pref.loading ? <LoadingBlock label={common("actions.loading")} /> : pref.error ? <ErrorBlock message={pref.error} retry={pref.reload} /> : <Shell title={t("preferenceTitle")} eyebrow={t("preferenceEyebrow")}><div className="grid gap-4 md:grid-cols-3"><div className="space-y-2"><Label>{t("modeLabel")}</Label><Select value={mode} onValueChange={(v) => setMode(v as NotificationPreference["mode"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(modeLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>{t("quietStart")}</Label><Input type="time" value={start} onChange={(e) => setStart(e.target.value)} /></div><div className="space-y-2"><Label>{t("quietEnd")}</Label><Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></div></div><Button className="mt-4" onClick={() => void save()}>{common("actions.save")}</Button></Shell>}</div>;
 }
 
 export function DemoBootstrapPage() {

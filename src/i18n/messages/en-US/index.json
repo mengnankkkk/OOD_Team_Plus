@@ -95,6 +95,23 @@
       "failure": "Unable to change the password. Please try again."
     }
   },
+  "notifications": {
+    "eyebrow": "Notifications",
+    "title": "Notification preferences",
+    "description": "Set alert levels and quiet hours; all alerts appear in the alerts center.",
+    "preferenceTitle": "Preferences",
+    "preferenceEyebrow": "PREFERENCE",
+    "modeLabel": "Alert mode",
+    "quietStart": "Quiet hours start",
+    "quietEnd": "Quiet hours end",
+    "saved": "Notification preferences saved.",
+    "saveFailed": "Unable to save preferences. Please try again.",
+    "modes": {
+      "importantOnly": "Important alerts only",
+      "dailyDigest": "All alerts in the center",
+      "muted": "Mute all alerts"
+    }
+  },
   "errors": {
     "UNAUTHENTICATED": "Authentication is required to continue.",
     "VALIDATION_ERROR": "The request parameters are invalid.",
@@ -105,6 +122,7 @@
     "RATE_LIMITED": "Too many requests. Please try again later.",
     "ACCOUNT_DISABLED": "This account has been disabled.",
     "FORBIDDEN": "You do not have permission to perform this action.",
-    "PASSWORD_SAME_AS_CURRENT": "The new password must be different from the current password."
+    "PASSWORD_SAME_AS_CURRENT": "The new password must be different from the current password.",
+    "VERSION_CONFLICT": "These preferences changed. Refresh and try again."
   }
 }

@@ -13,8 +13,14 @@ describe("/api/v1/notification-preference", () => {
   });
 
   it("PUT rejects invalid preference bodies", async () => {
-    const res = await PUT(authenticatedRequest("http://localhost/api/v1/notification-preference", { method: "PUT", body: JSON.stringify({ mode: "ALWAYS" }) }));
-    expect(res.status).toBe(400);
+    const res = await PUT(authenticatedRequest("http://localhost/api/v1/notification-preference", {
+      method: "PUT",
+      headers: { "accept-language": "en-US", "cookie": "mw_locale=en-US" },
+      body: JSON.stringify({ mode: "ALWAYS" }),
+    }));
+    expect(res.status).toBe(422);
+    expect(res.headers.get("content-language")).toBe("en-US");
+    expect((await res.json()).error.message).toBe("The request parameters are invalid.");
   });
 
   it.each([
@@ -26,7 +32,7 @@ describe("/api/v1/notification-preference", () => {
       "http://localhost/api/v1/notification-preference",
       { method: "PUT", body: JSON.stringify(body) },
     ));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 
   it("PUT accepts valid preference bodies", async () => {

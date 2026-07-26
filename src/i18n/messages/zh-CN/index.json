@@ -95,6 +95,23 @@
       "failure": "修改失败，请重试。"
     }
   },
+  "notifications": {
+    "eyebrow": "提醒",
+    "title": "通知偏好",
+    "description": "设置提醒级别和静默时段；提醒统一进入提醒中心。",
+    "preferenceTitle": "偏好设置",
+    "preferenceEyebrow": "PREFERENCE",
+    "modeLabel": "提醒方式",
+    "quietStart": "静默开始",
+    "quietEnd": "静默结束",
+    "saved": "通知偏好已保存。",
+    "saveFailed": "保存失败，请重试。",
+    "modes": {
+      "importantOnly": "仅重要提醒",
+      "dailyDigest": "全部提醒（中心汇总）",
+      "muted": "暂停所有提醒"
+    }
+  },
   "errors": {
     "UNAUTHENTICATED": "需要登录后才能继续。",
     "VALIDATION_ERROR": "请求参数无效。",
@@ -105,6 +122,7 @@
     "RATE_LIMITED": "请求过于频繁，请稍后再试。",
     "ACCOUNT_DISABLED": "账号已被停用。",
     "FORBIDDEN": "你没有执行此操作的权限。",
-    "PASSWORD_SAME_AS_CURRENT": "新密码必须与当前密码不同。"
+    "PASSWORD_SAME_AS_CURRENT": "新密码必须与当前密码不同。",
+    "VERSION_CONFLICT": "偏好已被修改，请刷新后重试。"
   }
 }
