@@ -212,9 +212,12 @@ describe("A2A message gateway", () => {
     expect(response.status).toBe(200);
     expect(events.map((event) => Object.keys(event))).toEqual([
       ["task"],
-      ["statusUpdate"],
       ["artifactUpdate"],
+      ["statusUpdate"],
     ]);
+    expect(events.at(-1)?.statusUpdate).toMatchObject({
+      status: { state: "TASK_STATE_COMPLETED" },
+    });
   });
 });
 

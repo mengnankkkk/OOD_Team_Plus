@@ -193,17 +193,6 @@ function streamA2ATask(
           }
           const current = toA2ATaskResource(refreshA2ATaskFromDomain(clientId, taskId));
           const currentState = taskState(current);
-          if (currentState !== lastState) {
-            emit({
-              statusUpdate: {
-                taskId,
-                contextId: current.contextId,
-                status: current.status,
-              },
-            });
-            lastState = currentState;
-          }
-
           const artifacts = taskArtifacts(current);
           for (const artifact of artifacts.slice(lastArtifactCount)) {
             emit({
@@ -217,6 +206,16 @@ function streamA2ATask(
             });
           }
           lastArtifactCount = artifacts.length;
+          if (currentState !== lastState) {
+            emit({
+              statusUpdate: {
+                taskId,
+                contextId: current.contextId,
+                status: current.status,
+              },
+            });
+            lastState = currentState;
+          }
           if (isTerminalTaskState(currentState)) close();
         } catch {
           close();
