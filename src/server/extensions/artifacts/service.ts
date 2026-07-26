@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { getDatabase, createId, isoNow, json, parseJson } from "@/server/http/context";
 import { sanitizeEChartsOption } from "@/server/extensions/sanitizers/echarts-sanitizer";
 import { sanitizeMarkdown } from "@/server/extensions/sanitizers/markdown-sanitizer";
-import { persistSseEvent } from "@/server/extensions/sse/event-persister";
+import { persistSseEventBestEffort } from "@/server/extensions/sse/event-persister";
 
 import { resolveArtifactSource } from "./source";
 
@@ -68,7 +68,11 @@ export function createArtifact(input: ArtifactInput) {
   });
   publish();
   db.close();
-  void persistSseEvent({ analysisId, type: "artifact.completed", payload: { artifactId, type: input.artifactType } });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "artifact.completed",
+    payload: { artifactId, type: input.artifactType },
+  });
   return { artifactId, analysisId, status: "READY", version: 1 };
 }
 

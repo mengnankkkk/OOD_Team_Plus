@@ -80,6 +80,45 @@ describe("scoped watchlist checks", () => {
     });
   });
 
+  it("continues a list check when one rule fails", async () => {
+    const db = getDatabase();
+    db.prepare(`UPDATE observation_conditions
+      SET condition_type='PRICE_ABOVE',threshold_decimal='150',threshold_date=NULL,
+        severity='important',last_observed_decimal='149'
+      WHERE id='check-condition-a'`).run();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
+       last_observed_decimal,config_json,created_at,updated_at)
+      VALUES ('check-condition-a-failed',?,'AAPL','PRICE_ABOVE','150','active',
+        'check-item-a','important','149','{}',?,?)`).run(userId, now, now);
+    db.prepare(`INSERT INTO market_snapshots
+      (id,instrument_id,data_source_id,snapshot_type,as_of,trading_date,market_timezone,
+       freshness_status,quality_status,raw_payload_json,created_at)
+      VALUES ('check-market-a','AAPL','source-pandadata-api','daily',
+        '2026-07-25T08:00:00.000Z','2026-07-25','America/New_York','fresh','valid',
+        '{"date":"2026-07-25","close":151}','2026-07-25T08:00:00.000Z')`).run();
+    db.exec(`CREATE TRIGGER check_rule_notification_failure
+      BEFORE INSERT ON notifications
+      WHEN NEW.condition_id = 'check-condition-a-failed'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced watchlist rule failure');
+      END`);
+    db.close();
+
+    const result = await checkWatchlist(userId, "check-list-a", {
+      forceMarketRefresh: false,
+    });
+
+    const cleanupDb = getDatabase();
+    cleanupDb.exec("DROP TRIGGER check_rule_notification_failure");
+    cleanupDb.close();
+    expect(result).toMatchObject({
+      status: "PARTIAL",
+      evaluatedConditionCount: 1,
+      errorCode: "WATCHLIST_EVALUATION_PARTIAL",
+    });
+  });
+
   it("revalidates scope after refresh before creating side effects", async () => {
     process.env.DEFAULT_USERNAME = "configured";
     process.env.DEFAULT_PASSWORD = "configured";

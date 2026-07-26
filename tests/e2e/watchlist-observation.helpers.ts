@@ -22,6 +22,7 @@ type AlertFixture = {
 export async function prepareWatchlistUser(page: Page, mobile: boolean) {
   const username = `wl_${mobile ? "m" : "d"}_${Date.now().toString(36)}`;
   const registration = await page.request.post("/api/v1/auth/register", {
+    headers: { "x-forwarded-for": username },
     data: {
       username,
       password: "watchlist_e2e_password_123",

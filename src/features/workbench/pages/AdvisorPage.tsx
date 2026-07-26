@@ -214,7 +214,8 @@ const AdvisorPage = () => {
         setActiveSessionId(data[0].sessionId);
         await loadSessionMessages(data[0].sessionId);
       } else {
-        resetToNewSession();
+        setActiveSessionId(null);
+        setLoadingHistory(false);
       }
     })();
   }, [user, refreshSessions, loadSessionMessages, resetToNewSession]);
@@ -307,6 +308,8 @@ const AdvisorPage = () => {
 
   const send = async (text: string) => {
     if (!user || !text.trim() || sending) return;
+    historyRequestRef.current += 1;
+    setLoadingHistory(false);
     const relatedRecommendationId = [...messages].reverse().find((message) => {
       const recommendationId = (message.metadata as { recommendationId?: unknown } | undefined)?.recommendationId;
       return message.role === "advisor" && typeof recommendationId === "string";
@@ -630,10 +633,20 @@ const AdvisorPage = () => {
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col md:min-h-0">
-        <header className="flex flex-col items-start justify-between gap-2 border-b border-border px-3 py-3 sm:flex-row sm:items-center sm:px-6">
+        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-6">
           <div className="min-w-0">
             <p className="line-clamp-1 text-sm font-medium">{activeSession?.title ?? "新对话"}</p>
           </div>
+          <button
+            type="button"
+            className="grid size-9 shrink-0 place-items-center rounded-full text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 md:hidden"
+            onClick={handleNewSession}
+            disabled={sending}
+            aria-label="新对话"
+            title="新对话"
+          >
+            <MessageSquarePlus className="size-5" />
+          </button>
         </header>
 
         {advisorMode === "debate" ? (

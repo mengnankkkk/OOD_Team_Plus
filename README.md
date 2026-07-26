@@ -77,6 +77,7 @@ tests/                          # E2E 与辅助代码
 | `ADMIN_USERNAME` | 可选 | 首个管理员初始化用户名 |
 | `ADMIN_INITIAL_PASSWORD` | 可选 | 首个管理员初始化临时密码 |
 | `ALLOW_REGISTRATION` | 可选 | 是否开放注册，默认 `true` |
+| `TRUST_PROXY_HEADERS` | 反向代理部署必填 | 仅当入口代理会覆盖并清洗 `X-Forwarded-*`/`X-Real-IP` 时设为 `true` |
 
 示例骨架维护在 `.env.example` 和 `.env.prod.example`，其中只能放不可用占位值。
 
@@ -100,6 +101,10 @@ doppler run -- docker compose up -d
 ```
 
 应用数据写入命名 volume `money-whisperer-data`，容器内数据库默认路径为 `/app/data/money-whisperer.db`。
+
+若 Compose 位于 Nginx、Caddy、Traefik 或云负载均衡器之后，必须由代理覆盖客户端传入的
+`X-Forwarded-For`、`X-Forwarded-Proto` 与 `X-Real-IP`，再设置
+`TRUST_PROXY_HEADERS=true`。直接暴露应用端口时保持为 `false`。
 
 提醒调度器随 Node 常驻进程启动，每小时使用 Pandadata 刷新活动持仓与自选标的；规则、降级行为和去重策略见 [提醒中心上线说明](./docs/notification-center.md)。
 

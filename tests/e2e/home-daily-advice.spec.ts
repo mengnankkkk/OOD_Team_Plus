@@ -21,6 +21,9 @@ const recommendation = {
 test("首页从建议卡生成今日组合建议", async ({ page }, testInfo) => {
   let generated = false;
 
+  await page.setExtraHTTPHeaders({
+    "x-forwarded-for": `daily-advice-${testInfo.project.name}`,
+  });
   await page.route("**/api/v1/profile", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({

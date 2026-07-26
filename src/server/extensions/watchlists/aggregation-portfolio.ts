@@ -1,14 +1,20 @@
+import Decimal from "decimal.js";
+
 import type { getDatabase } from "@/server/http/context";
 
 import type { IndustryConcentrationAggregate, PortfolioRelationAggregate } from "./types";
 
 type Db = ReturnType<typeof getDatabase>;
-type SnapshotRow = { id: string; as_of: string };
+type SnapshotRow = {
+  id: string;
+  as_of: string;
+  total_market_value_decimal: string;
+};
 type HoldingRow = {
   quantity_decimal: string;
   cost_decimal: string;
+  market_value_decimal: string;
   unrealized_pnl_decimal: string;
-  weight_bps: number;
 };
 
 export function readPortfolioRelation(
@@ -16,23 +22,34 @@ export function readPortfolioRelation(
   userId: string,
   instrumentId: string,
 ): PortfolioRelationAggregate {
-  const snapshot = latestSnapshot(db, userId);
-  if (!snapshot) return unavailableRelation();
-  const holding = db.prepare(`SELECT quantity_decimal,cost_decimal,unrealized_pnl_decimal,weight_bps
-    FROM holding_snapshots WHERE portfolio_snapshot_id = ? AND instrument_id = ? LIMIT 1`)
-    .get(snapshot.id, instrumentId) as HoldingRow | undefined;
-  if (!holding) return { ...unavailableRelation(), dataAsOf: snapshot.as_of };
-  const quantity = finiteNumber(holding.quantity_decimal);
-  const cost = finiteNumber(holding.cost_decimal);
-  const unrealizedPnl = finiteNumber(holding.unrealized_pnl_decimal);
-  const costBasis = quantity !== null && cost !== null ? quantity * cost : null;
+  const snapshots = currentSnapshots(db, userId);
+  if (!snapshots.length) return unavailableRelation();
+  const snapshotIds = snapshots.map((snapshot) => snapshot.id);
+  const holdings = db.prepare(`SELECT quantity_decimal,cost_decimal,market_value_decimal,
+      unrealized_pnl_decimal FROM holding_snapshots
+    WHERE portfolio_snapshot_id IN (${snapshotIds.map(() => "?").join(",")})
+      AND instrument_id = ?`)
+    .all(...snapshotIds, instrumentId) as HoldingRow[];
+  const dataAsOf = latestAsOf(snapshots);
+  if (!holdings.length) return { ...unavailableRelation(), dataAsOf };
+  const quantity = sum(holdings, (holding) => holding.quantity_decimal);
+  const marketValue = sum(holdings, (holding) => holding.market_value_decimal);
+  const unrealizedPnl = sum(holdings, (holding) => holding.unrealized_pnl_decimal);
+  const costBasis = holdings.reduce(
+    (total, holding) => total.plus(decimal(holding.quantity_decimal).mul(holding.cost_decimal)),
+    new Decimal(0),
+  );
+  const totalMarketValue = snapshots.reduce(
+    (total, snapshot) => total.plus(snapshot.total_market_value_decimal),
+    new Decimal(0),
+  );
   return {
     isHeld: true,
-    quantity,
-    weight: Number(holding.weight_bps) / 10_000,
-    cost,
-    unrealizedGainPct: costBasis && unrealizedPnl !== null ? unrealizedPnl / costBasis : null,
-    dataAsOf: snapshot.as_of,
+    quantity: quantity.toNumber(),
+    weight: totalMarketValue.gt(0) ? marketValue.div(totalMarketValue).toNumber() : null,
+    cost: quantity.gt(0) ? costBasis.div(quantity).toNumber() : null,
+    unrealizedGainPct: costBasis.gt(0) ? unrealizedPnl.div(costBasis).toNumber() : null,
+    dataAsOf,
   };
 }
 
@@ -41,31 +58,58 @@ export function readIndustryConcentration(
   userId: string,
   sector: string | null,
 ): IndustryConcentrationAggregate {
-  const snapshot = latestSnapshot(db, userId);
-  if (!snapshot || !sector) return unavailableConcentration(sector);
-  const row = db.prepare(`SELECT COALESCE(SUM(h.weight_bps),0) AS weight_bps
+  const snapshots = currentSnapshots(db, userId);
+  if (!snapshots.length || !sector) return unavailableConcentration(sector);
+  const snapshotIds = snapshots.map((snapshot) => snapshot.id);
+  const row = db.prepare(`SELECT COALESCE(SUM(CAST(h.market_value_decimal AS REAL)),0) AS market_value
     FROM holding_snapshots h JOIN instruments i ON i.id = h.instrument_id
-    WHERE h.portfolio_snapshot_id = ? AND i.sector = ?`)
-    .get(snapshot.id, sector) as { weight_bps: number };
-  const weight = Number(row.weight_bps) / 10_000;
+    WHERE h.portfolio_snapshot_id IN (${snapshotIds.map(() => "?").join(",")})
+      AND i.sector = ?`)
+    .get(...snapshotIds, sector) as { market_value: number };
+  const totalMarketValue = snapshots.reduce(
+    (total, snapshot) => total.plus(snapshot.total_market_value_decimal),
+    new Decimal(0),
+  );
+  const weight = totalMarketValue.gt(0)
+    ? new Decimal(row.market_value).div(totalMarketValue).toNumber()
+    : 0;
   return {
     label: "组合行业集中度",
     sector,
     weight,
     level: weight >= 0.5 ? "critical" : weight >= 0.35 ? "high" : weight >= 0.2 ? "medium" : "low",
-    dataAsOf: snapshot.as_of,
+    dataAsOf: latestAsOf(snapshots),
   };
 }
 
-function latestSnapshot(db: Db, userId: string): SnapshotRow | undefined {
-  return db.prepare(`SELECT id,as_of FROM portfolio_snapshots
-    WHERE user_id = ? ORDER BY as_of DESC,created_at DESC,id DESC LIMIT 1`)
-    .get(userId) as SnapshotRow | undefined;
+function currentSnapshots(db: Db, userId: string): SnapshotRow[] {
+  return db.prepare(`SELECT ps.id,ps.as_of,ps.total_market_value_decimal
+    FROM portfolio_snapshots ps
+    WHERE ps.user_id=?
+      AND EXISTS (
+        SELECT 1 FROM holdings current
+        WHERE current.user_id=ps.user_id
+          AND current.portfolio_id=ps.portfolio_id
+          AND current.status='active'
+      )
+      AND ps.id=(
+        SELECT latest.id FROM portfolio_snapshots latest
+        WHERE latest.user_id=ps.user_id AND latest.portfolio_id=ps.portfolio_id
+        ORDER BY latest.as_of DESC,latest.created_at DESC,latest.id DESC LIMIT 1
+      )
+    ORDER BY ps.portfolio_id,ps.id`).all(userId) as SnapshotRow[];
 }
 
-function finiteNumber(value: unknown): number | null {
-  const result = Number(value);
-  return Number.isFinite(result) ? result : null;
+function latestAsOf(snapshots: SnapshotRow[]): string | null {
+  return snapshots.map((snapshot) => snapshot.as_of).sort().at(-1) ?? null;
+}
+
+function sum<T>(items: T[], value: (item: T) => string): Decimal {
+  return items.reduce((total, item) => total.plus(decimal(value(item))), new Decimal(0));
+}
+
+function decimal(value: unknown): Decimal {
+  return new Decimal(String(value ?? 0));
 }
 
 function unavailableRelation(): PortfolioRelationAggregate {

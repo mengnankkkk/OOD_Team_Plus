@@ -72,4 +72,30 @@ describe("RSS sync instrument linkage", () => {
       linkedCount: 1,
     });
   });
+
+  it("keeps the completed feed and run state when SSE event persistence fails", async () => {
+    vi.mocked(fetchPublicHttpUrl).mockResolvedValue(new Response(`<?xml version="1.0"?>
+      <rss><channel><item>
+        <guid>service-sse-failure</guid>
+        <title>AAPL 事件更新</title>
+      </item></channel></rss>`, { status: 200 }));
+    const db = getDatabase();
+    db.exec(`CREATE TRIGGER reject_rss_sse_events
+      BEFORE INSERT ON agent_run_events BEGIN
+        SELECT RAISE(ABORT, 'forced SSE event failure');
+      END`);
+    db.close();
+
+    const result = await syncRssFeed("rss-service-feed", userId, { force: true });
+
+    const verifyDb = getDatabase();
+    const feed = verifyDb.prepare("SELECT status,last_error_message FROM rss_feeds WHERE id=?")
+      .get("rss-service-feed");
+    const run = verifyDb.prepare("SELECT status,failure_code FROM agent_runs WHERE id=?")
+      .get(result.analysisId);
+    verifyDb.close();
+    expect(result.status).toBe("COMPLETED");
+    expect(feed).toEqual({ status: "active", last_error_message: null });
+    expect(run).toEqual({ status: "completed", failure_code: null });
+  });
 });

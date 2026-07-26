@@ -5,6 +5,7 @@ export type SemanticDatasetKey = "PORTFOLIO_SNAPSHOTS" | "PORTFOLIO_HOLDINGS" | 
 export type DatasetDefinition = {
   from: string;
   tables: string[];
+  baseCondition?: string;
   ownerColumn?: string;
   scopeColumn?: string;
   timeColumn?: string;
@@ -20,8 +21,8 @@ export const SEMANTIC_DATASETS: Record<SemanticDatasetKey, DatasetDefinition> = 
     columns: { id: "ps.id", portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", cash: "ps.cash_decimal", market_value: "ps.total_market_value_decimal", total_assets: "json_object('cash', ps.cash_decimal, 'marketValue', ps.total_market_value_decimal)", data_quality: "ps.data_quality", as_of: "ps.as_of" },
     metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "snapshot_count" }, "SUM(total_assets)": { expression: "json_group_array(json_object('cash', ps.cash_decimal, 'marketValue', ps.total_market_value_decimal))", alias: "total_assets_components" } },
   },
-  PORTFOLIO_HOLDINGS: holdingDataset(),
-  HOLDING_SNAPSHOTS: holdingDataset(),
+  PORTFOLIO_HOLDINGS: holdingDataset(true),
+  HOLDING_SNAPSHOTS: holdingDataset(false),
   PORTFOLIO_METRICS: {
     from: "portfolio_score_snapshots score JOIN portfolio_snapshots ps ON ps.id = score.portfolio_snapshot_id", tables: ["portfolio_score_snapshots", "portfolio_snapshots"], ownerColumn: "ps.user_id", scopeColumn: "ps.portfolio_id", timeColumn: "score.computed_at",
     defaultDimensions: ["portfolio_id", "health_score", "risk_score", "score_version", "computed_at"],
@@ -35,10 +36,20 @@ export const SEMANTIC_DATASETS: Record<SemanticDatasetKey, DatasetDefinition> = 
   },
 };
 
-function holdingDataset(): DatasetDefinition {
+function holdingDataset(currentOnly: boolean): DatasetDefinition {
   return {
     from: "holding_snapshots h JOIN portfolio_snapshots ps ON ps.id = h.portfolio_snapshot_id LEFT JOIN instruments i ON i.id = h.instrument_id",
     tables: ["holding_snapshots", "portfolio_snapshots", "instruments"], ownerColumn: "ps.user_id", scopeColumn: "ps.portfolio_id", timeColumn: "ps.as_of",
+    baseCondition: currentOnly
+      ? `ps.id = (
+          SELECT latest.id
+          FROM portfolio_snapshots latest
+          WHERE latest.user_id = ps.user_id
+            AND latest.portfolio_id = ps.portfolio_id
+          ORDER BY latest.as_of DESC, latest.created_at DESC, latest.id DESC
+          LIMIT 1
+        )`
+      : undefined,
     defaultDimensions: ["symbol", "name", "asset_type", "sector", "quantity", "average_cost", "market_price", "market_value", "unrealized_pnl", "weight_pct"],
     columns: { portfolio_id: "ps.portfolio_id", account_id: "ps.portfolio_id", symbol: "i.symbol", name: "i.name", asset_type: "UPPER(i.asset_type)", sector: "COALESCE(i.sector, '未分类')", quantity: "h.quantity_decimal", average_cost: "h.cost_decimal", market_price: "h.price_decimal", market_value: "h.market_value_decimal", unrealized_pnl: "h.unrealized_pnl_decimal", weight: "h.weight_bps", weight_pct: "h.weight_bps", as_of: "ps.as_of" },
     metrics: { "COUNT(*)": { expression: "COUNT(*)", alias: "holding_count" }, "SUM(market_value)": { expression: "json_group_array(h.market_value_decimal)", alias: "market_value_components" }, "SUM(unrealized_pnl)": { expression: "json_group_array(h.unrealized_pnl_decimal)", alias: "unrealized_pnl_components" }, "AVG(weight)": { expression: "AVG(h.weight_bps)", alias: "average_weight_bps" } },
@@ -67,7 +78,7 @@ export function compileSemanticPlan(plan: QueryPlan, userId: string, accountScop
   if (!selections.length) throw new Error("QueryPlan did not select any fields");
 
   const parameters: unknown[] = [];
-  const conditions: string[] = [];
+  const conditions: string[] = dataset.baseCondition ? [dataset.baseCondition] : [];
   if (dataset.ownerColumn) { conditions.push(`${dataset.ownerColumn} = ?`); parameters.push(userId); }
   if (dataset.scopeColumn && accountScope?.length) {
     conditions.push(`${dataset.scopeColumn} IN (${accountScope.map(() => "?").join(", ")})`);

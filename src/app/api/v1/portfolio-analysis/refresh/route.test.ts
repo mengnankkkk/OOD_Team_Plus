@@ -83,6 +83,33 @@ describe("POST /api/v1/portfolio-analysis/refresh", () => {
     expect(data.data.portfolioSnapshotId).toMatch(/^portfolio_snapshot_/u);
   });
 
+  it("keeps portfolio refresh successful when SSE event persistence fails", async () => {
+    const db = getDatabase();
+    db.exec(`CREATE TRIGGER reject_portfolio_sse_events
+      BEFORE INSERT ON agent_run_events BEGIN
+        SELECT RAISE(ABORT, 'forced SSE event failure');
+      END`);
+    db.close();
+
+    for (const idempotencyKey of ["sse-failure-first", "sse-failure-second"]) {
+      const response = await POST(authenticatedRequest(url, {
+        method: "POST",
+        body: JSON.stringify({ portfolioId: TEST_PORTFOLIO_ID }),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      }));
+      expect(response.status).toBe(202);
+      expect((await response.json()).data.analysis.status).toBe("COMPLETED");
+    }
+
+    const verifyDb = getDatabase();
+    const runs = verifyDb.prepare(`SELECT status FROM agent_runs
+      WHERE user_id=? AND type='portfolio_refresh' ORDER BY created_at`)
+      .all(TEST_USER_ID) as Array<{ status: string }>;
+    verifyDb.close();
+    expect(runs).toHaveLength(2);
+    expect(runs.every((run) => run.status === "completed")).toBe(true);
+  });
+
   it("uses the A-share realtime daily source for the latest stock price", async () => {
     const db = getDatabase();
     db.prepare("INSERT INTO instruments (id,symbol,name,market,asset_type,sector,tradable) VALUES (?,?,?,?,?,?,1)")

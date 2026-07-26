@@ -151,5 +151,48 @@ function mergeMatches(
 
 function exactTokenPattern(value: string): RegExp {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`, "iu");
+  if (/[\p{Script=Han}]/u.test(value)) {
+    const financialNewsPredicate = [
+      "发布",
+      "公告",
+      "披露",
+      "宣布",
+      "回应",
+      "表示",
+      "召开",
+      "签署",
+      "完成",
+      "获得",
+      "收购",
+      "出售",
+      "上涨",
+      "下跌",
+      "涨停",
+      "跌停",
+      "停牌",
+      "复牌",
+      "回购",
+      "增持",
+      "减持",
+      "分红",
+      "业绩",
+      "股价",
+      "拟",
+      "将",
+      "预计",
+      "实现",
+      "启动",
+      "因",
+      "被",
+      "遭",
+    ].join("|");
+    return new RegExp(
+      `(?:^|[\\p{P}\\p{Z}\\s])${escaped}(?=$|[\\p{P}\\p{Z}\\s]|${financialNewsPredicate})`,
+      "iu",
+    );
+  }
+  return new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+    "iu",
+  );
 }

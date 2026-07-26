@@ -10,6 +10,7 @@ const rowObjectSchema = z.record(z.string(), scalarValueSchema);
 const dataQueryBaseSchema = z.object({
   id: z.string().trim().min(1),
   userId: z.string().trim().min(1),
+  idempotencyKey: z.string().trim().min(1).nullable().optional(),
   sessionId: z.string().trim().min(1).nullable().optional(),
   sourceMessageId: z.string().trim().min(1).nullable().optional(),
   agentRunId: z.string().trim().min(1),
@@ -105,6 +106,7 @@ export const dataQueries = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
+    idempotencyKey: text("idempotency_key"),
     sessionId: text("session_id"),
     sourceMessageId: text("source_message_id"),
     agentRunId: text("agent_run_id").notNull().unique(),
@@ -136,6 +138,7 @@ export const dataQueries = sqliteTable(
     index("idx_dq_session_created").on(t.sessionId, t.createdAt),
     index("idx_dq_status_created").on(t.status, t.createdAt),
     uniqueIndex("idx_dq_agent_run").on(t.agentRunId),
+    uniqueIndex("idx_data_queries_user_idempotency").on(t.userId, t.idempotencyKey),
   ],
 );
 

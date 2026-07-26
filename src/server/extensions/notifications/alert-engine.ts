@@ -10,12 +10,15 @@ export type { ObservationConditionType } from "./condition-contract";
 
 type Evaluation = {
   conditionId: string;
-  status: "evaluated" | "insufficient_data";
+  status: "evaluated" | "insufficient_data" | "failed";
   triggered: boolean;
   observedValue: string | null;
   dataAsOf: string | null;
   eventId?: string;
   duplicate?: boolean;
+  notificationCreated?: boolean;
+  errorCode?: string;
+  errorMessage?: string;
 };
 
 export async function evaluateWatchConditions(conditionIds: string[], reason: string, userId?: string): Promise<void> {
@@ -30,7 +33,19 @@ export function evaluateConditions(
   const db = getDatabase();
   try {
     const conditions = loadConditions(db, conditionIds, userId);
-    return conditions.map((condition) => evaluateOne(db, condition, reason));
+    const evaluatedAt = isoNow();
+    return conditions.map((condition) => {
+      try {
+        return evaluateOne(db, condition, reason, evaluatedAt);
+      } catch {
+        return {
+          ...result(condition.id, "failed", false, null, null),
+          notificationCreated: false,
+          errorCode: "CONDITION_EVALUATION_FAILED",
+          errorMessage: "观察规则评估失败。",
+        };
+      }
+    });
   } finally {
     db.close();
   }
@@ -63,44 +78,58 @@ function evaluateOne(
   db: ReturnType<typeof getDatabase>,
   condition: ConditionRow,
   reason: string,
+  evaluatedAt: string,
 ): Evaluation {
   const observed = readObservedMetric(db, condition);
-  const now = isoNow();
   if (observed.value === null) {
-    updateObservation(db, condition.id, null, observed.dataAsOf, now, false);
+    updateObservation(db, condition.id, null, observed.dataAsOf, evaluatedAt, false);
     return result(condition.id, "insufficient_data", false, null, observed.dataAsOf);
   }
 
   const observedText = clean(observed.value);
   const triggered = isTriggered(condition, observed, observedText);
   if (!triggered) {
-    updateObservation(db, condition.id, observedText, observed.dataAsOf, now, false);
+    updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, false);
     return result(condition.id, "evaluated", false, observedText, observed.dataAsOf);
   }
 
   const evaluationKey = evaluationKeyFor(condition, observed, observedText);
   const eventId = createId("watch_event");
-  const inserted = db.prepare(`INSERT INTO observation_condition_events
-    (id,condition_id,user_id,observed_value,threshold_decimal,evaluation_key,triggered_at,reason)
-    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(evaluation_key) DO NOTHING`)
-    .run(
-      eventId,
-      condition.id,
-      condition.user_id,
-      observedText,
-      condition.threshold_decimal,
-      evaluationKey,
-      now,
-      reason,
-    );
-  if (!inserted.changes) {
-    updateObservation(db, condition.id, observedText, observed.dataAsOf, now, false);
-    return { ...result(condition.id, "evaluated", false, observedText, observed.dataAsOf), duplicate: true };
-  }
+  let outcome: Evaluation | undefined;
+  db.transaction(() => {
+    const inserted = db.prepare(`INSERT INTO observation_condition_events
+      (id,condition_id,user_id,observed_value,threshold_decimal,evaluation_key,triggered_at,reason)
+      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(evaluation_key) DO NOTHING`)
+      .run(
+        eventId,
+        condition.id,
+        condition.user_id,
+        observedText,
+        condition.threshold_decimal,
+        evaluationKey,
+        evaluatedAt,
+        reason,
+      );
+    if (!inserted.changes) {
+      updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, false);
+      outcome = {
+        ...result(condition.id, "evaluated", false, observedText, observed.dataAsOf),
+        duplicate: true,
+        notificationCreated: false,
+      };
+      return;
+    }
 
-  writeConditionNotification(db, condition, observed, observedText, eventId);
-  updateObservation(db, condition.id, observedText, observed.dataAsOf, now, true);
-  return { ...result(condition.id, "evaluated", true, observedText, observed.dataAsOf), eventId };
+    const notificationCreated = writeConditionNotification(db, condition, observed, observedText, eventId);
+    updateObservation(db, condition.id, observedText, observed.dataAsOf, evaluatedAt, true);
+    outcome = {
+      ...result(condition.id, "evaluated", true, observedText, observed.dataAsOf),
+      eventId,
+      notificationCreated,
+    };
+  })();
+  if (!outcome) throw new Error("Condition evaluation did not produce an outcome");
+  return outcome;
 }
 
 function isTriggered(condition: ConditionRow, observed: ObservedMetric, observedText: string): boolean {
@@ -122,12 +151,15 @@ function isTriggered(condition: ConditionRow, observed: ObservedMetric, observed
 
 function evaluationKeyFor(condition: ConditionRow, observed: ObservedMetric, observedText: string): string {
   if (condition.condition_type === "DAILY_MOVE_REACH") {
-    return dailyMoveEvaluationKey(condition.id, String(observed.dataAsOf ?? "").replace(/\D/gu, "").slice(0, 8));
+    const tradingDate = String(observed.metricSnapshot.tradingDate ?? observed.dataAsOf ?? "")
+      .replace(/\D/gu, "")
+      .slice(0, 8);
+    return dailyMoveEvaluationKey(condition.id, tradingDate);
   }
   if (condition.condition_type === "REVIEW_DATE") {
     return reviewDateEvaluationKey(condition.id, String(condition.threshold_date));
   }
-  return `${condition.id}:${condition.condition_type}:${String(condition.threshold_decimal)}:${observedText}`;
+  return `${condition.id}:${condition.condition_type}:${observed.evaluationSourceKey ?? observed.dataAsOf ?? observedText}`;
 }
 
 function writeConditionNotification(
@@ -136,14 +168,14 @@ function writeConditionNotification(
   observed: ObservedMetric,
   observedText: string,
   eventId: string,
-): void {
+): boolean {
   const context = readNotificationContext(db, condition);
   const label = conditionLabel(condition.condition_type);
   const threshold = condition.condition_type === "REVIEW_DATE"
     ? String(condition.threshold_date)
     : String(condition.threshold_decimal);
   const dataAsOf = observed.dataAsOf ?? isoNow();
-  insertNotification(db, {
+  return insertNotification(db, {
     userId: condition.user_id,
     severity: String(condition.severity ?? "attention") as NotificationSeverity,
     title: `${context.name ?? context.symbol ?? "观察标的"}${label}`,
@@ -165,7 +197,7 @@ function writeConditionNotification(
       metricSnapshot: observed.metricSnapshot,
       advisorPrompt: `请结合我的持仓、目标和关注理由，分析“${label}”触发后的证据、风险与可模拟方案，不要直接替我下单。`,
     },
-  });
+  }) > 0;
 }
 
 function readNotificationContext(db: ReturnType<typeof getDatabase>, condition: ConditionRow): Record<string, unknown> {
@@ -233,10 +265,6 @@ function conditionLabel(type: ObservationConditionType): string {
   })[type];
 }
 
-function decimal(value: unknown): Decimal {
-  return new Decimal(String(value ?? 0));
-}
+function decimal(value: unknown): Decimal { return new Decimal(String(value ?? 0)); }
 
-function clean(value: Decimal): string {
-  return value.toDecimalPlaces(8).toString();
-}
+function clean(value: Decimal): string { return value.toDecimalPlaces(8).toString(); }

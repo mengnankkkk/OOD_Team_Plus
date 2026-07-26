@@ -8,6 +8,7 @@ import { getDatabase, isoNow } from "@/server/http/context";
 
 import { evaluateConditions } from "./alert-engine";
 import { createPortfolioNotifications } from "./portfolio-alerts";
+import { readNotificationPreference } from "./preference-policy";
 
 const MARKET_REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
 
@@ -15,6 +16,7 @@ type SyncStatus = "succeeded" | "partial" | "failed";
 
 export type NotificationSyncResult = {
   status: SyncStatus;
+  skippedReason: "MUTED" | null;
   createdCount: number;
   evaluatedConditionCount: number;
   marketRefreshAttempted: boolean;
@@ -28,6 +30,22 @@ export async function syncUserNotifications(
   userId: string,
   options: { forceMarketRefresh?: boolean; reason?: string } = {},
 ): Promise<NotificationSyncResult> {
+  if (notificationMode(userId) === "muted") {
+    const now = isoNow();
+    markSyncMuted(userId, now);
+    const snapshot = latestSnapshot(userId);
+    return {
+      status: "succeeded",
+      skippedReason: "MUTED",
+      createdCount: 0,
+      evaluatedConditionCount: 0,
+      marketRefreshAttempted: false,
+      marketRefreshSucceeded: false,
+      dataAsOf: snapshot?.as_of ? String(snapshot.as_of) : null,
+      errorCode: null,
+      errorMessage: null,
+    };
+  }
   const now = isoNow();
   const context = loadSyncContext(userId);
   markSyncRunning(userId, now);
@@ -37,7 +55,7 @@ export async function syncUserNotifications(
   const errors: Array<{ code: string; message: string }> = [];
   const due = options.forceMarketRefresh || !context.lastMarketRefreshAt
     || Date.now() - Date.parse(context.lastMarketRefreshAt) >= MARKET_REFRESH_INTERVAL_MS;
-  const hasTargets = Boolean(context.portfolioId || context.watchlistTargets.length);
+  const hasTargets = context.portfolioIds.length > 0 || context.watchlistTargets.length > 0;
   let watchlistCheck: Awaited<ReturnType<typeof checkWatchlistTargets>> | null = null;
 
   if (due && hasTargets) {
@@ -47,10 +65,10 @@ export async function syncUserNotifications(
     } else {
       let successfulMarketTasks = 0;
       let attemptedMarketTasks = 0;
-      if (context.portfolioId) {
+      for (const portfolioId of context.portfolioIds) {
         attemptedMarketTasks += 1;
         try {
-          await refreshPortfolio(userId, context.portfolioId);
+          await refreshPortfolio(userId, portfolioId);
           successfulMarketTasks += 1;
         } catch (error) {
           errors.push(publicError(error, "PORTFOLIO_REFRESH_FAILED", "持仓行情刷新失败，已继续使用最近一次有效快照。"));
@@ -96,8 +114,15 @@ export async function syncUserNotifications(
     const conditionResults = conditionIds.length
       ? evaluateConditions(conditionIds, options.reason ?? "notification-sync", userId)
       : [];
-    evaluatedConditionCount += conditionResults.length;
-    createdCount += conditionResults.filter((item) => item.triggered).length;
+    const failedConditionResults = conditionResults.filter((item) => item.status === "failed");
+    evaluatedConditionCount += conditionResults.length - failedConditionResults.length;
+    createdCount += conditionResults.filter((item) => item.notificationCreated).length;
+    if (failedConditionResults.length) {
+      errors.push({
+        code: "NOTIFICATION_EVALUATION_PARTIAL",
+        message: `部分提醒规则评估失败（${failedConditionResults.length} 条），其余规则已继续完成。`,
+      });
+    }
     createdCount += createPortfolioNotifications(userId);
   } catch (error) {
     errors.push(publicError(error, "NOTIFICATION_EVALUATION_FAILED", "提醒规则评估失败。"));
@@ -112,10 +137,20 @@ export async function syncUserNotifications(
     errorCode: primaryError?.code ?? null, errorMessage: primaryError?.message ?? null,
   });
   return {
-    status, createdCount, evaluatedConditionCount, marketRefreshAttempted, marketRefreshSucceeded,
+    status, skippedReason: null, createdCount, evaluatedConditionCount,
+    marketRefreshAttempted, marketRefreshSucceeded,
     dataAsOf: snapshot?.as_of ? String(snapshot.as_of) : null,
     errorCode: primaryError?.code ?? null, errorMessage: primaryError?.message ?? null,
   };
+}
+
+function notificationMode(userId: string) {
+  const db = getDatabase();
+  try {
+    return readNotificationPreference(db, userId).mode;
+  } finally {
+    db.close();
+  }
 }
 
 export function getNotificationSyncState(userId: string) {
@@ -130,11 +165,13 @@ export function getNotificationSyncState(userId: string) {
 
 function loadSyncContext(userId: string) {
   const db = getDatabase();
-  const holding = db.prepare("SELECT portfolio_id FROM holdings WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 1").get(userId) as { portfolio_id?: string } | undefined;
+  const holdings = db.prepare(`SELECT DISTINCT portfolio_id FROM holdings
+    WHERE user_id=? AND status='active' ORDER BY portfolio_id`)
+    .all(userId) as Array<{ portfolio_id: string }>;
   const state = db.prepare("SELECT last_market_refresh_at FROM notification_sync_states WHERE user_id=?").get(userId) as { last_market_refresh_at?: string } | undefined;
   db.close();
   return {
-    portfolioId: holding?.portfolio_id ?? null,
+    portfolioIds: holdings.map((holding) => holding.portfolio_id),
     lastMarketRefreshAt: state?.last_market_refresh_at ?? null,
     watchlistTargets: loadActiveWatchlistTargets(userId),
   };
@@ -164,6 +201,21 @@ function markSyncRunning(userId: string, now: string): void {
   db.prepare(`INSERT INTO notification_sync_states (user_id,status,last_attempt_at,created_at,updated_at)
     VALUES (?,'running',?,?,?) ON CONFLICT(user_id) DO UPDATE SET status='running',last_attempt_at=excluded.last_attempt_at,
     updated_at=excluded.updated_at,error_code=NULL,error_message=NULL`).run(userId, now, now, now);
+  db.close();
+}
+
+function markSyncMuted(userId: string, now: string): void {
+  const db = getDatabase();
+  db.prepare(`INSERT INTO notification_sync_states
+    (user_id,status,last_attempt_at,created_at,updated_at)
+    VALUES (?,'idle',?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      status='idle',
+      last_attempt_at=excluded.last_attempt_at,
+      error_code=NULL,
+      error_message=NULL,
+      updated_at=excluded.updated_at`)
+    .run(userId, now, now, now);
   db.close();
 }
 

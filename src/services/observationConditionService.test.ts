@@ -21,6 +21,7 @@ import {
   listObservationConditions,
   updateObservationCondition,
   type ObservationConditionCreateInput,
+  type ObservationConditionEvaluation,
 } from "./observationConditionService";
 
 describe("observationConditionService", () => {
@@ -192,5 +193,22 @@ describe("observationConditionService", () => {
       },
     );
     expect(result[0]?.status).toBe("insufficient_data");
+  });
+
+  it("preserves safe rule failures in the frontend contract", async () => {
+    const failed: ObservationConditionEvaluation = {
+      conditionId: "condition_failed",
+      status: "failed",
+      triggered: false,
+      observedValue: null,
+      dataAsOf: null,
+      notificationCreated: false,
+      errorCode: "CONDITION_EVALUATION_FAILED",
+      errorMessage: "观察规则评估失败。",
+    };
+    vi.mocked(apiPost).mockResolvedValue({ items: [failed] });
+
+    await expect(evaluateObservationConditions(["condition_failed"]))
+      .resolves.toEqual([failed]);
   });
 });

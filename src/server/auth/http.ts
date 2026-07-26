@@ -15,11 +15,14 @@ export function requireAdmin(user: AuthUser): void {
 }
 
 export function requestIp(request: NextRequest): string | null {
+  if (!trustProxyHeaders()) return null;
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip");
 }
 
 export function setSessionCookies(response: NextResponse, session: { token: string; csrfToken: string; maxAge: number }, request?: NextRequest): void {
-  const forwardedProto = request?.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  const forwardedProto = trustProxyHeaders()
+    ? request?.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase()
+    : undefined;
   const requestProtocol = request?.nextUrl.protocol.replace(":", "").toLowerCase();
   const secure = (forwardedProto ?? requestProtocol) === "https";
   response.cookies.set("mw_session", session.token, { httpOnly: true, sameSite: "lax", secure, path: "/", maxAge: session.maxAge });
@@ -29,4 +32,8 @@ export function setSessionCookies(response: NextResponse, session: { token: stri
 export function clearSessionCookies(response: NextResponse): void {
   response.cookies.delete("mw_session");
   response.cookies.delete("mw_csrf");
+}
+
+function trustProxyHeaders(): boolean {
+  return process.env.TRUST_PROXY_HEADERS?.toLowerCase() === "true";
 }

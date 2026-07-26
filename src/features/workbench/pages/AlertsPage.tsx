@@ -35,12 +35,18 @@ const sourceLabels: Record<string, string> = {
 
 const AlertsPage = () => {
   const { user } = useAuth();
-  const { data: alerts = [], isLoading } = useAlerts();
+  const [filter, setFilter] = useState<Filter>("active");
+  const allAlerts = useAlerts();
+  const eventAlerts = useAlerts({
+    sourceType: "WATCHLIST_EVENT",
+    enabled: filter === "events",
+    browserNotifications: false,
+  });
+  const isLoading = filter === "events" ? eventAlerts.isLoading : allAlerts.isLoading;
   const syncState = useAlertSyncState();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const initialSyncStarted = useRef(false);
-  const [filter, setFilter] = useState<Filter>("active");
   const [syncing, setSyncing] = useState(false);
   const [browserAlerts, setBrowserAlerts] = useState(false);
 
@@ -57,15 +63,21 @@ const AlertsPage = () => {
     }).catch(() => undefined);
   }, [qc, user]);
 
-  const unreadCount = alerts.filter((item) => item.status === "unread").length;
-  const urgentCount = alerts.filter((item) => item.severity === "urgent" && item.status !== "dismissed").length;
-  const importantCount = alerts.filter((item) => ["urgent", "important"].includes(item.severity) && item.status !== "dismissed").length;
-  const filtered = useMemo(() => alerts.filter((item) => {
-    if (filter === "unread") return item.status === "unread";
-    if (filter === "important") return item.status !== "dismissed" && ["urgent", "important"].includes(item.severity);
-    if (filter === "events") return item.status !== "dismissed" && item.sourceType === "WATCHLIST_EVENT";
-    return item.status !== "dismissed";
-  }), [alerts, filter]);
+  const baseAlerts = allAlerts.data?.items ?? [];
+  const unreadCount = allAlerts.data?.unreadCount ?? 0;
+  const urgentCount = baseAlerts.filter((item) => item.severity === "urgent" && item.status !== "dismissed").length;
+  const importantCount = baseAlerts.filter((item) => ["urgent", "important"].includes(item.severity) && item.status !== "dismissed").length;
+  const filtered = useMemo(() => {
+    const alerts = filter === "events"
+      ? eventAlerts.data?.items ?? []
+      : allAlerts.data?.items ?? [];
+    return alerts.filter((item) => {
+      if (filter === "unread") return item.status === "unread";
+      if (filter === "important") return item.status !== "dismissed" && ["urgent", "important"].includes(item.severity);
+      if (filter === "events") return item.status !== "dismissed" && item.sourceType === "WATCHLIST_EVENT";
+      return item.status !== "dismissed";
+    });
+  }, [allAlerts.data, eventAlerts.data, filter]);
 
   const runSync = async () => {
     setSyncing(true);
@@ -76,7 +88,8 @@ const AlertsPage = () => {
         qc.invalidateQueries({ queryKey: ["alert-sync-state"] }),
         qc.invalidateQueries({ queryKey: ["holdings"] }),
       ]);
-      if (result.status === "partial") toast.warning(result.errorMessage ?? "部分行情未更新，已使用最近一次有效数据");
+      if (result.skippedReason === "MUTED") toast.info("提醒已暂停，本次未执行同步");
+      else if (result.status === "partial") toast.warning(result.errorMessage ?? "部分行情未更新，已使用最近一次有效数据");
       else toast.success(result.createdCount ? `发现 ${result.createdCount} 条新提醒` : "行情与提醒已是最新");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "同步失败");

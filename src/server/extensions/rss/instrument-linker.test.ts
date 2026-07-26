@@ -47,6 +47,34 @@ describe("RSS instrument linker", () => {
     )).toHaveLength(0);
   });
 
+  it("rejects a Chinese instrument name embedded in a longer Chinese phrase", () => {
+    const instruments = [{ id: "601857.SH", symbol: "601857", name: "中国石油" }];
+
+    expect(findInstrumentMatches(
+      { title: "中国石油发布公告", summary: null },
+      instruments,
+    )).toEqual([
+      { instrumentId: "601857.SH", matchBasis: "name_exact", matchedText: "中国石油" },
+    ]);
+    expect(findInstrumentMatches(
+      { title: "中国石油大学发布公告", summary: null },
+      instruments,
+    )).toHaveLength(0);
+    for (const title of [
+      "中国石油博物馆发布公告",
+      "中国石油城举办活动",
+      "中国石油报社发布消息",
+    ]) {
+      expect(findInstrumentMatches({ title, summary: null }, instruments)).toHaveLength(0);
+    }
+    expect(findInstrumentMatches(
+      { title: "监管通报：中国石油发布公告", summary: null },
+      instruments,
+    )).toEqual([
+      { instrumentId: "601857.SH", matchBasis: "name_exact", matchedText: "中国石油" },
+    ]);
+  });
+
   it("matches English names case-insensitively with token boundaries", () => {
     const instruments = [{ id: "AAPL", symbol: "AAPL", name: "Apple" }];
 

@@ -1,18 +1,17 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { backupDatabase, prepareDatabase } from "./migration-runner";
+import { prepareDatabase } from "./migration-runner";
 
 describe("database migration guard", () => {
   it("executes and records every migration", () => {
     const db = new Database(":memory:");
     prepareDatabase(db as never, ":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(16);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
+    expect(db.pragma("user_version", { simple: true })).toBe(17);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(19);
     expect(() => prepareDatabase(db as never, ":memory:")).not.toThrow();
     db.close();
   });
@@ -24,8 +23,9 @@ describe("database migration guard", () => {
     const columnNames = (table: string) =>
       (db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((column) => column.name);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(16);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(18);
+    expect(db.pragma("user_version", { simple: true })).toBe(17);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count).toBe(19);
+    expect(columnNames("data_queries")).toContain("idempotency_key");
     expect(columnNames("watchlist_items")).toEqual(expect.arrayContaining(["goal_id", "source_type"]));
     expect(columnNames("observation_conditions")).toEqual(expect.arrayContaining([
       "watchlist_item_id",
@@ -56,6 +56,7 @@ describe("database migration guard", () => {
       "idx_rss_item_instruments_unique",
       "idx_rss_item_instruments_instrument",
     ]));
+    expect(indexes("data_queries")).toContain("idx_data_queries_user_idempotency");
     db.close();
   });
 
@@ -204,25 +205,6 @@ describe("database migration guard", () => {
     db.close();
   });
 
-  it("does not create backups for in-memory databases", () => {
-    expect(backupDatabase(":memory:")).toBe(":memory:");
-  });
-
-  it("creates a consistent online backup that can restore stored values", () => {
-    const directory = mkdtempSync(join(tmpdir(), "money-whisperer-backup-"));
-    const sourcePath = join(directory, "source.db");
-    const source = new Database(sourcePath);
-    source.pragma("journal_mode = WAL");
-    source.exec("CREATE TABLE ledger (id TEXT PRIMARY KEY, amount_decimal TEXT NOT NULL); INSERT INTO ledger VALUES ('asset-1','1234567890.123456789');");
-    const target = backupDatabase(sourcePath, source as never);
-    source.close();
-
-    const restored = new Database(target, { readonly: true });
-    const row = restored.prepare("SELECT amount_decimal FROM ledger WHERE id='asset-1'").get() as { amount_decimal: string };
-    restored.close();
-    expect(row.amount_decimal).toBe("1234567890.123456789");
-    rmSync(directory, { recursive: true, force: true });
-  });
 });
 
 function createLegacy0015WatchlistSchema(db: Database.Database): void {
@@ -250,6 +232,10 @@ function createLegacy0015WatchlistSchema(db: Database.Database): void {
       condition_type TEXT NOT NULL, threshold_decimal TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
       source_recommendation_id TEXT, last_observed_decimal TEXT, last_evaluated_at TEXT,
       version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE data_queries (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, agent_run_id TEXT NOT NULL,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE rss_items (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL, guid TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL);
   `);

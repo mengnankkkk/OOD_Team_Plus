@@ -4,7 +4,7 @@ import { createExtensionError, ExtensionErrorCode, type ExtensionError } from "@
 import type { PandaDataMethod } from "@/server/extensions/pandadata/adapter";
 import { executePandaSources } from "@/server/extensions/query/panda-query-executor";
 import type { MarketDatasetKey, PandaQuerySource } from "@/server/extensions/query/market-catalog";
-import { persistSseEvent } from "@/server/extensions/sse/event-persister";
+import { persistSseEventBestEffort } from "@/server/extensions/sse/event-persister";
 import { createId, getDatabase, isoNow, json, parseJson } from "@/server/http/context";
 
 import { calculatePortfolioScore, type HoldingSnapshot } from "./scoring";
@@ -85,6 +85,7 @@ export function getPortfolioHoldings(userId: string, snapshotId?: string) {
   });
   return {
     portfolioSnapshotId: snapshot.id,
+    portfolioId: snapshot.portfolio_id,
     asOf: snapshot.as_of,
     dataQuality: String(snapshot.data_quality ?? "complete").toUpperCase(),
     sourceStatuses: parseJson(String(snapshot.source_statuses_json ?? "[]"), []),
@@ -261,7 +262,11 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
   const analysisId = createId("analysis");
   db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at) VALUES (?,?,?,?,?)").run(analysisId, userId, "portfolio_refresh", "running", now);
   db.close();
-  persistSseEvent({ analysisId, type: "agent.started", payload: { type: "PORTFOLIO_REFRESH", portfolioId } });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "agent.started",
+    payload: { type: "PORTFOLIO_REFRESH", portfolioId },
+  });
 
   try {
     const marketData = await fetchLatestPrices(holdings, analysisId);
@@ -309,15 +314,31 @@ export async function refreshPortfolio(userId: string, portfolioId: string) {
     });
     publish();
     publishDb.close();
-    persistSseEvent({ analysisId, type: "portfolio.refreshed", payload: { portfolioSnapshotId: snapshotId, dataQuality: dataQuality.toUpperCase(), missingSymbols } });
-    persistSseEvent({ analysisId, type: "agent.completed", payload: { type: "PORTFOLIO_REFRESH", portfolioSnapshotId: snapshotId } });
+    persistSseEventBestEffort({
+      analysisId,
+      type: "portfolio.refreshed",
+      payload: {
+        portfolioSnapshotId: snapshotId,
+        dataQuality: dataQuality.toUpperCase(),
+        missingSymbols,
+      },
+    });
+    persistSseEventBestEffort({
+      analysisId,
+      type: "agent.completed",
+      payload: { type: "PORTFOLIO_REFRESH", portfolioSnapshotId: snapshotId },
+    });
     return { snapshotId, analysisId, asOf: publishedAt, dataQuality: dataQuality.toUpperCase(), sourceStatuses };
   } catch (error) {
     const normalized = normalizeExtensionError(error);
     const failureDb = getDatabase();
     failureDb.prepare("UPDATE agent_runs SET status='failed', completed_at=?, failure_code=?, failure_message=? WHERE id=? AND user_id=?").run(isoNow(), normalized.code, normalized.message, analysisId, userId);
     failureDb.close();
-    persistSseEvent({ analysisId, type: "agent.failed", payload: { code: normalized.code, retryable: normalized.retryable } });
+    persistSseEventBestEffort({
+      analysisId,
+      type: "agent.failed",
+      payload: { code: normalized.code, retryable: normalized.retryable },
+    });
     throw normalized;
   }
 }

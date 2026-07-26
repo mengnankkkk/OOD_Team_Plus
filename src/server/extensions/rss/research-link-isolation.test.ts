@@ -13,6 +13,7 @@ describe("research-linked RSS user isolation", () => {
   beforeEach(() => {
     const db = getDatabase();
     db.prepare("DELETE FROM notifications WHERE user_id IN (?,?)").run(USER_ID, OTHER_USER_ID);
+    db.prepare("DELETE FROM notification_preferences WHERE user_id IN (?,?)").run(USER_ID, OTHER_USER_ID);
     db.prepare("DELETE FROM evidence_items WHERE id LIKE 'research-link-%'").run();
     db.prepare("DELETE FROM recommendations WHERE id LIKE 'research-link-%'").run();
     db.prepare("DELETE FROM rss_item_instruments WHERE id LIKE 'research-link-%'").run();
@@ -21,6 +22,10 @@ describe("research-linked RSS user isolation", () => {
     db.prepare("DELETE FROM users WHERE id IN (?,?)").run(USER_ID, OTHER_USER_ID);
     db.prepare("INSERT INTO users (id,display_name,created_at) VALUES (?,'Owner',?),(?,'Other',?)")
       .run(USER_ID, NOW, OTHER_USER_ID, NOW);
+    db.prepare(`INSERT INTO notification_preferences
+      (id,user_id,mode,created_at,updated_at)
+      VALUES ('research-link-preference',?,'daily_digest',?,?)`)
+      .run(USER_ID, NOW, NOW);
     db.prepare(`INSERT INTO rss_feeds
       (id,url,title,status,created_by,created_at,updated_at)
       VALUES ('research-link-feed','https://example.com/private-feed','Private Feed','active',?,?,?)`)

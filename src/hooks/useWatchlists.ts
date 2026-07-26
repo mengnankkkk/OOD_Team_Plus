@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 
 import { useAuth } from "@/hooks/useAuth";
+import { invalidateAlertQueries } from "@/hooks/alertKeys";
 import {
   createObservationCondition,
   deleteObservationCondition,
@@ -229,7 +230,7 @@ export function useCheckWatchlist(watchlistId: string | null) {
       ...result.itemIds.map((itemId) => (
         invalidateConditions(queryClient, user?.id, itemId)
       )),
-      invalidateAlerts(queryClient, user?.id),
+      invalidateAlertQueries(queryClient, user?.id),
     ]),
   });
 }
@@ -246,7 +247,7 @@ export function useCheckWatchlistItem(
       invalidateList(queryClient, user?.id, "active"),
       invalidateItems(queryClient, user?.id, watchlistId),
       invalidateConditions(queryClient, user?.id, itemId),
-      invalidateAlerts(queryClient, user?.id),
+      invalidateAlertQueries(queryClient, user?.id),
     ]),
   });
 }
@@ -346,7 +347,7 @@ function invalidateConditionContext(
     invalidateConditions(queryClient, userId, context.itemId),
   ];
   if (includeAlerts) {
-    invalidations.push(invalidateAlerts(queryClient, userId));
+    invalidations.push(invalidateAlertQueries(queryClient, userId));
   }
   return Promise.all(invalidations);
 }
@@ -380,16 +381,6 @@ function invalidateConditions(
 ) {
   return queryClient.invalidateQueries({
     queryKey: watchlistKeys.conditions(userId, itemId),
-    exact: true,
-  });
-}
-
-function invalidateAlerts(
-  queryClient: QueryClient,
-  userId: string | undefined,
-) {
-  return queryClient.invalidateQueries({
-    queryKey: ["alerts", userId],
     exact: true,
   });
 }

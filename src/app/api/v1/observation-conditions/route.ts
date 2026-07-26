@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  createCondition,
+  createConditionInDb,
   CreateConditionSchema,
   listConditions,
 } from "@/server/extensions/notifications/condition-service";
-import { beginIdempotentRequest, parseIdempotentResponse, saveIdempotentResponse } from "@/server/extensions/middleware/idempotency";
+import {
+  IdempotencyConflictError,
+  runIdempotentMutation,
+} from "@/server/extensions/middleware/idempotency";
 import { domainResponse } from "@/server/extensions/watchlists/http";
 import { getRequestContext, idempotencyKey, meta } from "@/server/http/context";
 
@@ -48,19 +51,22 @@ export async function POST(request: NextRequest) {
   }
   const { userId } = getRequestContext(request);
   const routeCode = `observation_condition:${parsed.data.watchlistItemId}`;
-  const idem = await beginIdempotentRequest(userId, routeCode, key, parsed.data);
-  if (idem.existing?.conflict) {
-    return NextResponse.json(
-      { error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key was already used with a different request" } },
-      { status: 409 },
-    );
-  }
-  if (idem.existing) return NextResponse.json(parseIdempotentResponse(idem.existing), { status: 200 });
   try {
-    const payload = { data: createCondition(userId, parsed.data), meta: meta() };
-    await saveIdempotentResponse(userId, routeCode, key, idem.requestHash, payload);
-    return NextResponse.json(payload, { status: 201 });
+    const result = runIdempotentMutation(
+      userId,
+      routeCode,
+      key,
+      parsed.data,
+      (db) => ({ data: createConditionInDb(db, userId, parsed.data), meta: meta() }),
+    );
+    return NextResponse.json(result.value, { status: result.replayed ? 200 : 201 });
   } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: { code: "IDEMPOTENCY_CONFLICT", message: error.message } },
+        { status: 409 },
+      );
+    }
     return domainResponse(error);
   }
 }

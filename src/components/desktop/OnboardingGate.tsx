@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiGet, apiPost } from "@/features/frontend-migration/api";
 import { useAuth } from "@/hooks/useAuth";
-import { useHoldings, useHoldingsInvalidator } from "@/hooks/useHoldings";
+import { useHoldingsInvalidator } from "@/hooks/useHoldings";
 import { horizonFromAnswer, maxDrawdownFromAnswer } from "@/lib/risk-assessment";
 import { toast } from "sonner";
 
@@ -112,7 +112,6 @@ function Field({ label, htmlFor, required, children }: { label: string; htmlFor?
 
 export default function OnboardingGate() {
   const { user, profile, loading, refreshProfile } = useAuth();
-  const { data: savedHoldings = [], isLoading: holdingsLoading } = useHoldings();
   const invalidateHoldings = useHoldingsInvalidator();
   const holdingIdRef = useRef(2);
   const refreshedUserIdRef = useRef<string | null>(null);
@@ -130,10 +129,10 @@ export default function OnboardingGate() {
   const profileComplete = Boolean(profile?.onboardingCompleted);
   const needsOnboarding = Boolean(
     user
+    && user.role !== "ADMIN"
     && !loading
-    && !holdingsLoading
     && profile
-    && (!profileComplete || savedHoldings.length === 0),
+    && !profileComplete,
   );
   const currentQuestion = questions[questionIndex];
   const progress = step === 0 ? ((questionIndex + 1) / Math.max(questions.length, 1)) * 25 : (step + 1) * 25;
@@ -150,8 +149,7 @@ export default function OnboardingGate() {
       return;
     }
     setOpen(true);
-    if (profileComplete && savedHoldings.length === 0) setStep(3);
-  }, [needsOnboarding, profileComplete, savedHoldings.length]);
+  }, [needsOnboarding]);
 
   useEffect(() => {
     if (!open || profileComplete || questions.length > 0) return;

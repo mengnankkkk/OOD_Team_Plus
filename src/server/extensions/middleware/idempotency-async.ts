@@ -8,6 +8,23 @@ import {
 
 const POLL_INTERVAL_MS = 20;
 const WAIT_TIMEOUT_MS = 120_000;
+const DEFAULT_STALE_AFTER_MS = 10 * 60 * 1_000;
+
+export type AsyncIdempotencyRecovery<T> =
+  | { kind: "replay"; value: T }
+  | { kind: "retry" }
+  | { kind: "pending" }
+  | null;
+
+type AsyncIdempotencyOptions<T> = {
+  recover?: () => Promise<AsyncIdempotencyRecovery<T>>;
+  staleAfterMs?: number;
+};
+
+type Claim<T> =
+  | { kind: "owner" }
+  | { kind: "pending"; createdAt: string }
+  | { kind: "replay"; value: T };
 
 export async function runIdempotentAsync<T>(
   ownerKey: string,
@@ -15,6 +32,7 @@ export async function runIdempotentAsync<T>(
   idempotencyKey: string,
   requestBody: unknown,
   mutate: () => Promise<T>,
+  options: AsyncIdempotencyOptions<T> = {},
 ): Promise<{ value: T; replayed: boolean }> {
   const requestHash = hashIdempotencyRequest(requestBody);
   const startedAt = Date.now();
@@ -22,24 +40,24 @@ export async function runIdempotentAsync<T>(
     const claim = claimRequest<T>(ownerKey, routeCode, idempotencyKey, requestHash);
     if (claim.kind === "replay") return { value: claim.value, replayed: true };
     if (claim.kind === "owner") break;
-    const replay = await waitForResponse<T>(
-      ownerKey,
-      routeCode,
-      idempotencyKey,
-      requestHash,
-      startedAt,
-    );
-    if (replay !== null) return { value: replay, replayed: true };
+    const recovery = await recoverPending(ownerKey, routeCode, idempotencyKey, requestHash, claim.createdAt, options);
+    if (recovery?.kind === "replay") {
+      return { value: recovery.value, replayed: true };
+    }
+    if (recovery?.kind === "retry") continue;
+    const replay = await waitForResponse<T>(ownerKey, routeCode, idempotencyKey, requestHash, startedAt, options);
+    if (replay.kind === "replay") return { value: replay.value, replayed: true };
   }
 
+  let value: T;
   try {
-    const value = await mutate();
-    saveResponse(ownerKey, routeCode, idempotencyKey, requestHash, value);
-    return { value, replayed: false };
+    value = await mutate();
   } catch (error) {
     clearReservation(ownerKey, routeCode, idempotencyKey, requestHash);
     throw error;
   }
+  saveResponseBestEffort(ownerKey, routeCode, idempotencyKey, requestHash, value);
+  return { value, replayed: false };
 }
 
 function claimRequest<T>(
@@ -47,17 +65,19 @@ function claimRequest<T>(
   routeCode: string,
   idempotencyKey: string,
   requestHash: string,
-): { kind: "owner" | "pending" } | { kind: "replay"; value: T } {
+): Claim<T> {
   const db = getDatabase();
   let transactionStarted = false;
   try {
     db.exec("BEGIN IMMEDIATE");
     transactionStarted = true;
-    const row = db.prepare(`SELECT request_hash,response_json FROM idempotency_records
+    const row = db.prepare(`SELECT request_hash,response_json,created_at
+      FROM idempotency_records
       WHERE user_id=? AND operation=? AND idempotency_key=?`)
       .get(ownerKey, routeCode, idempotencyKey) as {
         request_hash: string | null;
         response_json: string | null;
+        created_at: string;
       } | undefined;
     if (row) {
       if (row.request_hash !== requestHash) throw new IdempotencyConflictError();
@@ -65,22 +85,26 @@ function claimRequest<T>(
       transactionStarted = false;
       return row.response_json
         ? { kind: "replay", value: JSON.parse(row.response_json) as T }
-        : { kind: "pending" };
+        : { kind: "pending", createdAt: row.created_at };
     }
     db.prepare(`INSERT INTO idempotency_records
       (id,user_id,operation,idempotency_key,resource_id,response_json,request_hash,created_at)
       VALUES (?,?,?,?,?,'',?,?)`)
-      .run(createId("idem"), ownerKey, routeCode, idempotencyKey, "pending", requestHash, isoNow());
+      .run(
+        createId("idem"),
+        ownerKey,
+        routeCode,
+        idempotencyKey,
+        "pending",
+        requestHash,
+        isoNow(),
+      );
     db.exec("COMMIT");
     transactionStarted = false;
     return { kind: "owner" };
   } catch (error) {
     if (transactionStarted) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // SQLite may already have closed the transaction.
-      }
+      try { db.exec("ROLLBACK"); } catch { /* Transaction may already be closed. */ }
     }
     throw error;
   } finally {
@@ -94,25 +118,83 @@ async function waitForResponse<T>(
   idempotencyKey: string,
   requestHash: string,
   startedAt: number,
-): Promise<T | null> {
+  options: AsyncIdempotencyOptions<T>,
+): Promise<{ kind: "replay"; value: T } | { kind: "retry" }> {
   while (Date.now() - startedAt < WAIT_TIMEOUT_MS) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const db = getDatabase();
-    try {
-      const row = db.prepare(`SELECT request_hash,response_json FROM idempotency_records
-        WHERE user_id=? AND operation=? AND idempotency_key=?`)
-        .get(ownerKey, routeCode, idempotencyKey) as {
-          request_hash: string | null;
-          response_json: string | null;
-        } | undefined;
-      if (!row) return null;
-      if (row.request_hash !== requestHash) throw new IdempotencyConflictError();
-      if (row.response_json) return JSON.parse(row.response_json) as T;
-    } finally {
-      db.close();
+    const row = readPending(ownerKey, routeCode, idempotencyKey, requestHash);
+    if (!row) return { kind: "retry" };
+    if (row.responseJson) {
+      return { kind: "replay", value: JSON.parse(row.responseJson) as T };
     }
+    const recovery = await recoverPending(ownerKey, routeCode, idempotencyKey, requestHash, row.createdAt, options);
+    if (recovery?.kind === "replay" || recovery?.kind === "retry") return recovery;
   }
   throw new Error("Timed out waiting for the idempotent operation to complete");
+}
+
+async function recoverPending<T>(
+  ownerKey: string,
+  routeCode: string,
+  idempotencyKey: string,
+  requestHash: string,
+  createdAt: string,
+  options: AsyncIdempotencyOptions<T>,
+): Promise<{ kind: "replay"; value: T } | { kind: "retry" } | null> {
+  const recovery = await options.recover?.() ?? null;
+  if (recovery?.kind === "replay") {
+    saveResponseBestEffort(ownerKey, routeCode, idempotencyKey, requestHash, recovery.value);
+    return recovery;
+  }
+  if (recovery?.kind === "retry") {
+    clearReservation(ownerKey, routeCode, idempotencyKey, requestHash);
+    return recovery;
+  }
+  const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+  if (recovery === null && Date.now() - Date.parse(createdAt) >= staleAfterMs) {
+    clearReservation(ownerKey, routeCode, idempotencyKey, requestHash);
+    return { kind: "retry" };
+  }
+  return null;
+}
+
+function readPending(
+  ownerKey: string,
+  routeCode: string,
+  idempotencyKey: string,
+  requestHash: string,
+): { responseJson: string; createdAt: string } | null {
+  const db = getDatabase();
+  try {
+    const row = db.prepare(`SELECT request_hash,response_json,created_at
+      FROM idempotency_records
+      WHERE user_id=? AND operation=? AND idempotency_key=?`)
+      .get(ownerKey, routeCode, idempotencyKey) as {
+        request_hash: string | null;
+        response_json: string | null;
+        created_at: string;
+      } | undefined;
+    if (!row) return null;
+    if (row.request_hash !== requestHash) throw new IdempotencyConflictError();
+    return { responseJson: row.response_json ?? "", createdAt: row.created_at };
+  } finally {
+    db.close();
+  }
+}
+
+function saveResponseBestEffort<T>(
+  ownerKey: string,
+  routeCode: string,
+  idempotencyKey: string,
+  requestHash: string,
+  value: T,
+): boolean {
+  try {
+    saveResponse(ownerKey, routeCode, idempotencyKey, requestHash, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function saveResponse<T>(
@@ -127,7 +209,8 @@ function saveResponse<T>(
   try {
     const result = db.prepare(`UPDATE idempotency_records
       SET resource_id=?,response_json=?
-      WHERE user_id=? AND operation=? AND idempotency_key=? AND request_hash=? AND response_json=''`)
+      WHERE user_id=? AND operation=? AND idempotency_key=? AND request_hash=?
+        AND response_json=''`)
       .run(
         responseResourceId(responseJson),
         responseJson,
@@ -151,7 +234,8 @@ function clearReservation(
   const db = getDatabase();
   try {
     db.prepare(`DELETE FROM idempotency_records
-      WHERE user_id=? AND operation=? AND idempotency_key=? AND request_hash=? AND response_json=''`)
+      WHERE user_id=? AND operation=? AND idempotency_key=? AND request_hash=?
+        AND response_json=''`)
       .run(ownerKey, routeCode, idempotencyKey, requestHash);
   } finally {
     db.close();

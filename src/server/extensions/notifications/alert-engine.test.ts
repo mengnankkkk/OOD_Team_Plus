@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDatabase } from "@/server/http/context";
+import { aggregateWatchlistItem } from "@/server/extensions/watchlists/aggregation";
 import { seedAuthenticatedUser } from "@tests/helpers/auth";
 
 import {
@@ -42,7 +43,9 @@ describe("evaluateConditions", () => {
     const db = getDatabase();
     db.prepare("DELETE FROM observation_condition_events WHERE user_id = ?").run(userId);
     db.prepare("DELETE FROM notifications WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM notification_preferences WHERE user_id = ?").run(userId);
     db.prepare("DELETE FROM observation_conditions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM market_snapshots WHERE id LIKE 'condition-%'").run();
     db.prepare("DELETE FROM watchlist_items WHERE id = 'condition-engine-item'").run();
     db.prepare("DELETE FROM watchlists WHERE id = 'condition-engine-list'").run();
     db.prepare(`INSERT INTO watchlists
@@ -51,6 +54,9 @@ describe("evaluateConditions", () => {
     db.prepare(`INSERT INTO watchlist_items
       (id,watchlist_id,instrument_id,status,added_at,created_at,updated_at)
       VALUES ('condition-engine-item','condition-engine-list','SPY','active',?,?,?)`).run(now, now, now);
+    db.prepare(`INSERT INTO notification_preferences
+      (id,user_id,mode,created_at,updated_at)
+      VALUES ('condition-engine-preference',?,'daily_digest',?,?)`).run(userId, now, now);
     db.close();
   });
 
@@ -70,6 +76,85 @@ describe("evaluateConditions", () => {
         observedValue: null,
       }),
     ]);
+  });
+
+  it("does not reuse an older holding snapshot after the instrument was sold", () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO portfolio_snapshots
+      (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at)
+      VALUES ('condition-old-snapshot',?,'condition-old-portfolio','0','1000','complete','[]',
+        '2025-07-25T00:00:00.000Z','2025-07-25T00:00:00.000Z')`).run(userId);
+    db.prepare(`INSERT INTO holding_snapshots
+      (id,portfolio_snapshot_id,instrument_id,quantity_decimal,cost_decimal,price_decimal,
+       market_value_decimal,unrealized_pnl_decimal,weight_bps,created_at)
+      VALUES ('condition-old-spy','condition-old-snapshot','SPY','1','400','500','500','100','5000',
+        '2025-07-25T00:00:00.000Z')`).run();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
+       last_observed_decimal,config_json,created_at,updated_at)
+      VALUES ('condition-sold-weight',?,'SPY','POSITION_WEIGHT_ABOVE','0.20','active',
+        'condition-engine-item','important','0.10','{}',?,?)`).run(userId, now, now);
+    db.close();
+
+    expect(evaluateConditions(["condition-sold-weight"], "test", userId)).toEqual([
+      expect.objectContaining({
+        conditionId: "condition-sold-weight",
+        status: "insufficient_data",
+        triggered: false,
+        observedValue: null,
+      }),
+    ]);
+  });
+
+  it("alerts again after a reset and a new snapshot crosses the threshold", () => {
+    const db = getDatabase();
+    db.prepare(`INSERT INTO observation_conditions
+      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
+       last_observed_decimal,config_json,created_at,updated_at)
+      VALUES ('condition-recross',?,'SPY','PRICE_ABOVE','150','active','condition-engine-item',
+        'important','149','{}',?,?)`).run(userId, now, now);
+    insertMarketSnapshot(db, "condition-recross-up-1", "2026-07-23T08:00:00.000Z", "2026-07-23", 151);
+    db.close();
+
+    expect(evaluateConditions(["condition-recross"], "first-cross", userId)[0]?.triggered).toBe(true);
+
+    const resetDb = getDatabase();
+    insertMarketSnapshot(resetDb, "condition-recross-reset", "2026-07-24T08:00:00.000Z", "2026-07-24", 149);
+    resetDb.close();
+    expect(evaluateConditions(["condition-recross"], "reset", userId)[0]?.triggered).toBe(false);
+
+    const recrossDb = getDatabase();
+    insertMarketSnapshot(recrossDb, "condition-recross-up-2", "2026-07-25T08:00:00.000Z", "2026-07-25", 151);
+    recrossDb.close();
+    expect(evaluateConditions(["condition-recross"], "second-cross", userId)[0]?.triggered).toBe(true);
+
+    const verifyDb = getDatabase();
+    expect((verifyDb.prepare(`SELECT COUNT(*) AS count FROM observation_condition_events
+      WHERE condition_id='condition-recross'`).get() as { count: number }).count).toBe(2);
+    verifyDb.close();
+  });
+
+  it("uses one evaluation timestamp so every triggered rule is counted for the item", () => {
+    const db = getDatabase();
+    for (const [id, threshold] of [
+      ["condition-count-a", "120"],
+      ["condition-count-b", "150"],
+    ]) {
+      db.prepare(`INSERT INTO observation_conditions
+        (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
+         last_observed_decimal,config_json,created_at,updated_at)
+        VALUES (?,?,'SPY','PRICE_ABOVE',?,'active','condition-engine-item',
+          'important','100','{}',?,?)`).run(id, userId, threshold, now, now);
+    }
+    insertMarketSnapshot(db, "condition-count-market", "2026-07-25T09:00:00.000Z", "2026-07-25", 160);
+    db.close();
+
+    expect(evaluateConditions(["condition-count-a", "condition-count-b"], "count-test", userId))
+      .toEqual([
+        expect.objectContaining({ triggered: true }),
+        expect.objectContaining({ triggered: true }),
+      ]);
+    expect(aggregateWatchlistItem(userId, "condition-engine-item").triggeredConditionCount).toBe(2);
   });
 
   it("triggers a due review date once", () => {
@@ -96,3 +181,18 @@ describe("evaluateConditions", () => {
     verifyDb.close();
   });
 });
+
+function insertMarketSnapshot(
+  db: ReturnType<typeof getDatabase>,
+  id: string,
+  asOf: string,
+  tradingDate: string,
+  close: number,
+): void {
+  db.prepare(`INSERT INTO market_snapshots
+    (id,instrument_id,data_source_id,snapshot_type,as_of,trading_date,market_timezone,
+     freshness_status,quality_status,raw_payload_json,created_at)
+    VALUES (?,'SPY','source-pandadata-api','daily',?,?,'America/New_York',
+      'fresh','valid',?,?)`)
+    .run(id, asOf, tradingDate, JSON.stringify({ date: tradingDate, close }), asOf);
+}

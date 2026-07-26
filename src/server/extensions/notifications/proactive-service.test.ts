@@ -42,6 +42,11 @@ describe("proactive notification sync", () => {
     seedAuthenticatedUser({ userId, role: "USER" });
     const db = getDatabase();
     db.prepare("DELETE FROM notifications WHERE user_id=?").run(userId);
+    db.prepare("DELETE FROM notification_preferences WHERE user_id=?").run(userId);
+    db.prepare(`INSERT INTO notification_preferences
+      (id,user_id,mode,created_at,updated_at)
+      VALUES ('notification-sync-preference',?,'daily_digest',?,?)`)
+      .run(userId, "2026-07-25T00:00:00.000Z", "2026-07-25T00:00:00.000Z");
     db.prepare("DELETE FROM notification_sync_states WHERE user_id=?").run(userId);
     db.prepare("DELETE FROM observation_conditions WHERE user_id=? AND id LIKE 'notification-%'").run(userId);
     db.prepare("DELETE FROM rss_item_instruments WHERE id LIKE 'notification-%'").run();

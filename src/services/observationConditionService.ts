@@ -91,12 +91,15 @@ export type ObservationConditionPatch = {
 
 export type ObservationConditionEvaluation = {
   conditionId: string;
-  status: "evaluated" | "insufficient_data";
+  status: "evaluated" | "insufficient_data" | "failed";
   triggered: boolean;
   observedValue: string | null;
   dataAsOf: string | null;
   eventId?: string;
   duplicate?: boolean;
+  notificationCreated?: boolean;
+  errorCode?: string;
+  errorMessage?: string;
 };
 
 export async function listObservationConditions(

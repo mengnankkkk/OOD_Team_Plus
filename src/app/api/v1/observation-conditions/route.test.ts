@@ -55,6 +55,46 @@ describe("/api/v1/observation-conditions", () => {
     });
   });
 
+  it("atomically replays concurrent creates with the same idempotency key", async () => {
+    const requestBody = JSON.stringify({
+      watchlistItemId: "condition-item-a",
+      conditionType: "PRICE_ABOVE",
+      threshold: "220",
+      severity: "IMPORTANT",
+    });
+    const requests = [
+      authenticatedRequest(
+        "http://localhost/api/v1/observation-conditions",
+        {
+          method: "POST",
+          body: requestBody,
+          headers: { "Idempotency-Key": "condition-concurrent-create" },
+        },
+        { userId },
+      ),
+      authenticatedRequest(
+        "http://localhost/api/v1/observation-conditions",
+        {
+          method: "POST",
+          body: requestBody,
+          headers: { "Idempotency-Key": "condition-concurrent-create" },
+        },
+        { userId },
+      ),
+    ];
+
+    const responses = await Promise.all(requests.map((request) => POST(request)));
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(bodies[0].data.id).toBe(bodies[1].data.id);
+    const db = getDatabase();
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM observation_conditions
+      WHERE user_id=? AND watchlist_item_id='condition-item-a' AND condition_type='PRICE_ABOVE'`)
+      .get(userId) as { count: number }).count).toBe(1);
+    db.close();
+  });
+
   it("creates review-date rules with threshold_decimal fixed to zero", async () => {
     const response = await POST(authenticatedRequest(
       "http://localhost/api/v1/observation-conditions",

@@ -4,7 +4,7 @@ import {
   linkRecentRssItems,
   loadActiveObservedInstrumentIds,
 } from "@/server/extensions/rss/instrument-linker";
-import { persistSseEvent } from "@/server/extensions/sse/event-persister";
+import { persistSseEventBestEffort } from "@/server/extensions/sse/event-persister";
 import { fetchPublicHttpUrl } from "@/server/extensions/security/public-url";
 import { sanitizeRssText } from "@/server/extensions/rss/text";
 import { createId, getDatabase, isoNow, json } from "@/server/http/context";
@@ -45,7 +45,11 @@ export async function syncRssFeed(feedId: string, userId: string, options: { for
   const startedAt = isoNow();
   db.prepare("INSERT INTO agent_runs (id,user_id,type,status,created_at,result_json) VALUES (?,?,?,'running',?,?)").run(analysisId, userId, "rss_sync", startedAt, json({ feedId }));
   db.close();
-  persistSseEvent({ analysisId, type: "agent.started", payload: { type: "RSS_SYNC", feedId } });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "agent.started",
+    payload: { type: "RSS_SYNC", feedId },
+  });
 
   try {
     const headers: Record<string, string> = { Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml" };
@@ -67,7 +71,11 @@ export async function syncRssFeed(feedId: string, userId: string, options: { for
     failureDb.prepare("UPDATE rss_feeds SET status='error',last_error_message=?,updated_at=? WHERE id=?").run(message.slice(0, 500), isoNow(), feedId);
     failureDb.prepare("UPDATE agent_runs SET status='failed',completed_at=?,failure_code='RSS_UPSTREAM_FAILED',failure_message=? WHERE id=? AND user_id=?").run(isoNow(), message.slice(0, 500), analysisId, userId);
     failureDb.close();
-    persistSseEvent({ analysisId, type: "agent.failed", payload: { code: "RSS_UPSTREAM_FAILED", retryable: true } });
+    persistSseEventBestEffort({
+      analysisId,
+      type: "agent.failed",
+      payload: { code: "RSS_UPSTREAM_FAILED", retryable: true },
+    });
     throw error;
   }
 }
@@ -96,9 +104,21 @@ function finishSync(feedId: string, userId: string, analysisId: string, items: P
   publish();
   db.close();
   const linkedCount = linkObservedRssItems();
-  persistSseEvent({ analysisId, type: "rss.synced", payload: { feedId, newCount, updatedCount, notModified } });
-  persistSseEvent({ analysisId, type: "rss.linked", payload: { feedId, linkedCount } });
-  persistSseEvent({ analysisId, type: "agent.completed", payload: { type: "RSS_SYNC", feedId } });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "rss.synced",
+    payload: { feedId, newCount, updatedCount, notModified },
+  });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "rss.linked",
+    payload: { feedId, linkedCount },
+  });
+  persistSseEventBestEffort({
+    analysisId,
+    type: "agent.completed",
+    payload: { type: "RSS_SYNC", feedId },
+  });
   return { feedId, analysisId, newCount, updatedCount, linkedCount, notModified, status: "COMPLETED" as const };
 }
 

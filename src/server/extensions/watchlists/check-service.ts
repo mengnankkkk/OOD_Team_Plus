@@ -27,12 +27,7 @@ export async function checkWatchlist(
   watchlistId: string,
   options: CheckOptions,
 ): Promise<WatchlistCheckResult> {
-  return runScopedCheck(
-    userId,
-    loadWatchlistScope(userId, watchlistId),
-    () => loadWatchlistScope(userId, watchlistId),
-    options,
-  );
+  return runScopedCheck(userId, loadWatchlistScope(userId, watchlistId), () => loadWatchlistScope(userId, watchlistId), options);
 }
 
 export async function checkWatchlistItem(
@@ -40,12 +35,7 @@ export async function checkWatchlistItem(
   itemId: string,
   options: CheckOptions,
 ): Promise<WatchlistCheckResult> {
-  return runScopedCheck(
-    userId,
-    loadItemScope(userId, itemId),
-    () => loadItemScope(userId, itemId),
-    options,
-  );
+  return runScopedCheck(userId, loadItemScope(userId, itemId), () => loadItemScope(userId, itemId), options);
 }
 
 export async function checkWatchlistTargets(
@@ -120,10 +110,17 @@ async function runScopedCheck(
     const evaluations = scope.conditionIds.length
       ? evaluateConditions(scope.conditionIds, options.reason ?? "watchlist-check", userId)
       : [];
-    evaluatedConditionCount = evaluations.length;
-    createdNotificationCount += evaluations.filter((result) => result.triggered).length;
+    const failedEvaluations = evaluations.filter((result) => result.status === "failed");
+    evaluatedConditionCount = evaluations.length - failedEvaluations.length;
+    createdNotificationCount += evaluations.filter((result) => result.notificationCreated).length;
     createdNotificationCount += createWatchlistNotifications(userId, scope.targets);
     createdNotificationCount += createWatchlistEventNotifications(userId, scope.targets);
+    if (failedEvaluations.length) {
+      error ??= {
+        code: "WATCHLIST_EVALUATION_PARTIAL",
+        message: `部分观察规则评估失败（${failedEvaluations.length} 条），其余规则已继续完成。`,
+      };
+    }
   } catch (evaluationError) {
     error ??= publicError(evaluationError, "WATCHLIST_EVALUATION_FAILED", "观察规则评估失败。");
   }
@@ -131,7 +128,7 @@ async function runScopedCheck(
   const dataAsOf = latestMarketDataAsOf(scope.targets.map((target) => target.instrument_id));
   return {
     status: error
-      ? (dataAsOf || evaluatedConditionCount > 0 || marketRefreshHadSuccess ? "PARTIAL" : "FAILED")
+      ? (dataAsOf || evaluatedConditionCount > 0 || createdNotificationCount > 0 || marketRefreshHadSuccess ? "PARTIAL" : "FAILED")
       : "SUCCEEDED",
     checkedItemCount: scope.targets.length,
     itemIds: scope.targets.map((target) => target.id),

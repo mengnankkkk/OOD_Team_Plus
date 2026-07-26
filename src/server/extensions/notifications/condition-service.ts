@@ -52,31 +52,51 @@ export function createCondition(
 ): Record<string, unknown> {
   const db = getDatabase();
   try {
-    const item = requireOwnedItem(db, userId, input.watchlistItemId);
-    const normalized = normalizeOrThrow(input);
-    const now = isoNow();
-    const id = createId("condition");
-    db.prepare(`INSERT INTO observation_conditions
-      (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
-       threshold_date,window_days,config_json,created_at,updated_at)
-      VALUES (?,?,?,?,?,'active',?,?,?,?, '{}',?,?)`)
-      .run(
-        id,
-        userId,
-        item.instrument_id,
-        input.conditionType,
-        normalized.threshold,
-        input.watchlistItemId,
-        input.severity.toLowerCase(),
-        normalized.thresholdDate,
-        normalized.windowDays,
-        now,
-        now,
-      );
-    return formatCondition(db.prepare("SELECT * FROM observation_conditions WHERE id = ?").get(id) as Row);
+    let created: Record<string, unknown> | undefined;
+    db.transaction(() => {
+      created = createConditionInDb(db, userId, input);
+    })();
+    if (!created) throw new Error("Condition creation did not produce a result");
+    return created;
   } finally {
     db.close();
   }
+}
+
+export function createConditionInDb(
+  db: ReturnType<typeof getDatabase>,
+  userId: string,
+  input: {
+    watchlistItemId: string;
+    conditionType: ObservationConditionType;
+    threshold?: string;
+    thresholdDate?: string;
+    windowDays?: number;
+    severity: "INFORMATION" | "ATTENTION" | "IMPORTANT" | "URGENT";
+  },
+): Record<string, unknown> {
+  const item = requireOwnedItem(db, userId, input.watchlistItemId);
+  const normalized = normalizeOrThrow(input);
+  const now = isoNow();
+  const id = createId("condition");
+  db.prepare(`INSERT INTO observation_conditions
+    (id,user_id,instrument_id,condition_type,threshold_decimal,status,watchlist_item_id,severity,
+     threshold_date,window_days,config_json,created_at,updated_at)
+    VALUES (?,?,?,?,?,'active',?,?,?,?, '{}',?,?)`)
+    .run(
+      id,
+      userId,
+      item.instrument_id,
+      input.conditionType,
+      normalized.threshold,
+      input.watchlistItemId,
+      input.severity.toLowerCase(),
+      normalized.thresholdDate,
+      normalized.windowDays,
+      now,
+      now,
+    );
+  return formatCondition(db.prepare("SELECT * FROM observation_conditions WHERE id = ?").get(id) as Row);
 }
 
 export function updateCondition(

@@ -13,6 +13,7 @@ import { getDatabase, isoNow } from "@/server/http/context";
 describe("username and password authentication", () => {
   beforeEach(() => {
     vi.stubEnv("ALLOW_REGISTRATION", "true");
+    vi.stubEnv("TRUST_PROXY_HEADERS", "false");
     const db = getDatabase();
     db.exec("DELETE FROM api_sessions; DELETE FROM auth_rate_limits; DELETE FROM users;");
     db.close();
@@ -48,6 +49,30 @@ describe("username and password authentication", () => {
     expect((await getMe(new NextRequest("http://localhost/api/v1/auth/me", { headers: { cookie } }))).status).toBe(200);
     expect((await logout(new NextRequest("http://localhost/api/v1/auth/logout", { method: "POST", headers: { cookie } }))).status).toBe(204);
     expect((await getMe(new NextRequest("http://localhost/api/v1/auth/me", { headers: { cookie } }))).status).toBe(401);
+  });
+
+  it("does not let one username exhaust registration limits for every user", async () => {
+    const blockedUsername = {
+      username: "rate_limited_user",
+      password: "very-secure-password",
+    };
+    let lastResponse: Response | null = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      lastResponse = await register(jsonRequest(
+        "http://localhost/api/v1/auth/register",
+        blockedUsername,
+      ));
+    }
+    expect(lastResponse?.status).toBe(429);
+
+    const independent = await register(jsonRequest(
+      "http://localhost/api/v1/auth/register",
+      {
+        username: "independent_user",
+        password: "very-secure-password",
+      },
+    ));
+    expect(independent.status).toBe(201);
   });
 
   it("rejects ordinary users from admin APIs and protects the final administrator", async () => {

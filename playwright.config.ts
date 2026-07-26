@@ -39,6 +39,7 @@ export default defineConfig({
       PORT: String(port),
       APP_ORIGIN: origin,
       ALLOW_REGISTRATION: "true",
+      TRUST_PROXY_HEADERS: "true",
       ADMIN_USERNAME: "e2e_admin",
       ADMIN_INITIAL_PASSWORD: "e2e_admin_password_123",
       DEEPSEEK_API_KEY: "",

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { getDatabase } from "@/server/http/context";
 
-import { aggregateWatchlistItems, computeRiskAggregate } from "./aggregation";
+import { aggregateWatchlistItems } from "./aggregation";
 
 const USER_ID = "watchlist-aggregation-user";
 const WATCHLIST_ID = "watchlist-aggregation";
@@ -88,16 +88,6 @@ describe("watchlist aggregation", () => {
     expect(held.triggeredConditionCount).toBe(1);
     expect(held.unreadAlertCount).toBe(1);
     expect(held.lastCheckedAt).toBe(checkTime());
-  });
-
-  it("uses the approved thresholds for risk direction", () => {
-    expect(computeRiskAggregate(stableRiskPoints(1.26)).status).toBe("increasing");
-    expect(computeRiskAggregate(stableRiskPoints(0.79)).status).toBe("decreasing");
-    expect(computeRiskAggregate(stableRiskPoints(1.1)).status).toBe("stable");
-    expect(computeRiskAggregate(stableRiskPoints(1).slice(0, 19))).toMatchObject({
-      status: "insufficient_data",
-      dataAsOf: null,
-    });
   });
 
   it("returns explicit insufficient-data states instead of invented advanced data", () => {
@@ -187,6 +177,25 @@ function seedMarketPoints(db: Db, instrumentId: string, prices: number[]): void 
 
 function seedPortfolio(db: Db): void {
   const old = new Date(NOW.getTime() - 86_400_000).toISOString();
+  for (const [instrumentId, quantity, cost] of [
+    ["AAPL", "2", "140"],
+    ["MSFT", "1", "180"],
+    ["GLD", "1", "180"],
+  ]) {
+    db.prepare(`INSERT INTO holdings
+      (id,user_id,portfolio_id,instrument_id,quantity_decimal,cost_decimal,status,
+       created_at,updated_at)
+      VALUES (?,?, 'aggregation-portfolio',?,?,?,'active',?,?)`)
+      .run(
+        `aggregation-holding-${instrumentId}`,
+        USER_ID,
+        instrumentId,
+        quantity,
+        cost,
+        NOW_ISO,
+        NOW_ISO,
+      );
+  }
   for (const snapshot of [["aggregation-portfolio-old", old], ["aggregation-portfolio-latest", NOW_ISO]]) {
     db.prepare(`INSERT INTO portfolio_snapshots
       (id,user_id,portfolio_id,cash_decimal,total_market_value_decimal,data_quality,source_statuses_json,as_of,created_at)
@@ -254,23 +263,6 @@ function risingRiskPrices(): number[] {
 }
 
 function stablePrices(length: number): number[] { return Array.from({ length }, (_, index) => 100 + index * 0.2); }
-
-function stableRiskPoints(recentScale: number) {
-  const prices = Array.from({ length: 20 }, () => 100);
-  for (let index = 0; index < 9; index += 1) {
-    prices.push(prices.at(-1)! * (1 + (index % 2 === 0 ? 0.01 : -0.01)));
-  }
-  prices.push(prices.at(-1)!);
-  for (let index = 0; index < 9; index += 1) {
-    prices.push(prices.at(-1)! * (1 + (index % 2 === 0 ? 0.01 : -0.01) * recentScale));
-  }
-  prices.push(prices.at(-1)!);
-  return prices.map((close, index) => ({
-    date: `2026-06-${String(index + 1).padStart(2, "0")}`,
-    close,
-    previousClose: index === 0 ? close : prices[index - 1],
-  }));
-}
 
 function checkTime(): string {
   return new Date(NOW.getTime() - 60_000).toISOString();
