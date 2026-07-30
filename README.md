@@ -219,7 +219,19 @@ pip install -r requirements.txt
 cp .env.example .env.local
 ```
 
-至少配置 AI 顾问所需的 `DEEPSEEK_API_KEY`。PandaData、远程搜索和 A2A 是按功能启用的可选集成，变量说明见[环境变量](#环境变量)。
+然后编辑 `.env.local`。如果只想先启动基础工作台，建议至少配置：
+
+```dotenv
+DB_PATH=./data/mw-dev.db
+APP_ORIGIN=http://localhost:3000
+ALLOW_REGISTRATION=true
+
+DEEPSEEK_API_KEY=替换为你的模型密钥
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+```
+
+完整能力还需要按需配置行情数据源、研究搜索源、A2A 和管理员账号，具体见下方[配置模型](#配置模型)和[配置数据源](#配置数据源)。
 
 ### 3. 启动开发服务器
 
@@ -274,8 +286,8 @@ pnpm smoke:branch
 | `DB_PATH` | 可选 | SQLite 路径，默认 `./data/mw-dev.db` |
 | `APP_ORIGIN` | 生产建议必填 | 写请求 Origin 校验，以及 A2A Agent Card 的公开地址 |
 | `DEEPSEEK_API_KEY` | AI 功能必需 | 顾问、查询计划和情景规划的模型调用密钥 |
-| `DEEPSEEK_MODEL` | 可选 | 模型名称，默认 `DeepSeek-Pro` |
-| `DEEPSEEK_API_URL` | 可选 | OpenAI-compatible API 地址 |
+| `DEEPSEEK_MODEL` | 建议配置 | 模型名称；顾问默认 `DeepSeek-Pro`，查询计划默认 `deepseek-chat`，建议显式填写 |
+| `DEEPSEEK_API_URL` | 建议配置 | OpenAI-compatible Chat Completions 地址 |
 | `PANDADATA_PYTHON` | PandaData 必需 | Python 可执行文件路径 |
 | `DEFAULT_USERNAME` | PandaData 必需 | PandaData 用户名 |
 | `DEFAULT_PASSWORD` | PandaData 必需 | PandaData 密码 |
@@ -289,6 +301,180 @@ pnpm smoke:branch
 | `ALLOW_REGISTRATION` | 可选 | 是否允许注册，默认 `true` |
 
 完整占位配置见 `.env.example` 和 `.env.prod.example`。
+
+### 配置模型
+
+Money Whisperer 的 Chief Advisor、专业 Agent、情景规划和语义查询计划共用一组 OpenAI-compatible 模型配置：
+
+```dotenv
+DEEPSEEK_API_KEY=your_model_api_key
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+```
+
+配置说明：
+
+- `DEEPSEEK_API_KEY`：模型服务的访问密钥。不要把真实密钥提交到 Git。
+- `DEEPSEEK_MODEL`：模型名称，必须是服务端支持的模型 ID，例如 `deepseek-chat` 或其他兼容模型名称。
+- `DEEPSEEK_API_URL`：OpenAI-compatible Chat Completions 地址。使用第三方模型服务时，将它替换成对应的 `/v1/chat/completions` 地址。
+
+模型配置对所有 Agent 生效，目前不需要为每个 Agent 单独配置模型。推荐显式填写 `DEEPSEEK_API_URL`，这样顾问对话、情景模拟和语义查数会使用同一个模型服务。
+
+如果没有配置 `DEEPSEEK_API_KEY`：
+
+- 基础登录、用户画像、持仓管理和本地组合分析仍可以启动。
+- 顾问和专业 Agent 会进入服务端确定性降级流程，不会伪装成完整的模型结论。
+- 情景模拟会使用可解释的确定性候选方案。
+- 语义查数会使用默认查询计划，不调用模型生成 QueryPlan。
+
+### 配置数据源
+
+#### 1. PandaData 行情数据
+
+PandaData 为持仓刷新、市场快照、组合分析、行情提醒和部分证据研究提供行情数据。它需要 Python 运行时、PandaData SDK、账号和上游服务地址。
+
+先创建独立的 Python 环境：
+
+```bash
+python3 -m venv .venv-pandadata
+. .venv-pandadata/bin/activate
+pip install -r requirements.txt
+```
+
+然后在 `.env.local` 中配置：
+
+```dotenv
+PANDADATA_PYTHON=/绝对路径/Money-Whisperer/.venv-pandadata/bin/python
+DEFAULT_USERNAME=your_pandadata_username
+DEFAULT_PASSWORD=your_pandadata_password
+JAVA_SERVICE_BASE_URL=https://your-pandadata-service.example
+```
+
+其中：
+
+- `PANDADATA_PYTHON` 指向安装了 `panda_data==0.0.12` 的 Python 可执行文件。
+- `DEFAULT_USERNAME` 和 `DEFAULT_PASSWORD` 是 PandaData 登录凭证。
+- `JAVA_SERVICE_BASE_URL` 是 PandaData 上游服务地址。
+
+PandaData 适合生产或需要真实行情的环境。没有配置时，应用仍可以启动，但行情刷新、基于行情的提醒和部分市场研究会显示未配置或降级状态；系统不会把缺失行情当作真实数据继续使用。
+
+Docker 部署时，容器会自动使用 `/opt/pandadata-venv/bin/python`，只需要通过宿主环境注入 `DEFAULT_USERNAME`、`DEFAULT_PASSWORD` 和 `JAVA_SERVICE_BASE_URL`。
+
+#### 2. Web 搜索
+
+选择 `WEB` 研究适配器时，系统会通过 DuckDuckGo HTML 搜索公开网页，不需要额外 API Key，但运行环境必须能够访问互联网。
+
+Web 搜索适合补充公开资讯，不保证所有地区、网络环境或时间段都稳定可用。搜索结果会经过 URL 安全检查，并以研究证据形式保存。
+
+#### 3. Firecrawl 或自定义 MCP 搜索
+
+如果需要更稳定或可控的搜索服务，可以配置 Firecrawl：
+
+```dotenv
+FIRECRAWL_API_KEY=your_firecrawl_api_key
+FIRECRAWL_SEARCH_URL=https://api.firecrawl.dev/v2/search
+```
+
+也可以接入自定义 MCP 搜索 HTTP endpoint：
+
+```dotenv
+MCP_SEARCH_URL=https://your-mcp-search.example/search
+```
+
+搜索适配器的选择规则：
+
+- 配置 `FIRECRAWL_API_KEY` 或 `FIRECRAWL_SEARCH_URL` 时，MCP 适配器优先调用 Firecrawl。
+- 没有 Firecrawl 配置时，如果存在 `MCP_SEARCH_URL`，则调用自定义 MCP endpoint。
+- 两者都没有配置时，选择 MCP 适配器会返回未配置状态，不影响 `WEB`、`KNOWLEDGE_BASE` 和 `RSS` 适配器。
+
+自定义 MCP endpoint 应接受 JSON POST 请求：
+
+```json
+{
+  "query": "用户的研究问题",
+  "limit": 5
+}
+```
+
+返回值可以是数组，也可以是包含 `results`、`items`、`documents` 或 `data` 数组的 JSON 对象。每条结果建议包含 `title`、`url` 和 `snippet` 字段。
+
+#### 4. 本地知识库与 RSS
+
+- `KNOWLEDGE_BASE` 直接检索仓库 `docs/` 下的 Markdown 文件，不需要额外密钥。
+- `RSS` 从数据库中已配置的 RSS 源读取内容，需要管理员在工作台中维护 RSS 源并执行同步。
+
+这两类数据源适合沉淀项目文档、研究资料、内部知识和固定资讯来源。
+
+### 配置 A2A 远程 Agent
+
+如果需要让其他 Agent 或外部系统调用 Chief Advisor，配置：
+
+```dotenv
+APP_ORIGIN=https://your-public-domain.example
+A2A_BEARER_TOKEN=replace_with_a_long_random_token
+```
+
+配置完成后：
+
+- Agent Card：`https://your-public-domain.example/.well-known/agent-card.json`
+- JSON-RPC 入口：`POST https://your-public-domain.example/api/a2a/message-send`
+- 调用时使用 `Authorization: Bearer <A2A_BEARER_TOKEN>`
+
+`APP_ORIGIN` 还用于校验已登录写请求的 Origin。多个合法来源可以使用逗号分隔：
+
+```dotenv
+APP_ORIGIN=https://app.example.com,https://admin.example.com
+```
+
+没有配置 `A2A_BEARER_TOKEN` 时，工作台本身不受影响，但 A2A endpoint 会返回未配置状态。
+
+### 配置管理员与注册策略
+
+首次启动时可以通过环境变量创建管理员：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_INITIAL_PASSWORD=replace_with_a_strong_password
+ALLOW_REGISTRATION=true
+```
+
+- `ADMIN_USERNAME` 和 `ADMIN_INITIAL_PASSWORD` 只在该用户名尚不存在时创建初始管理员。
+- 初始管理员首次登录后应立即修改密码。
+- `ALLOW_REGISTRATION=false` 会关闭公开注册，适合生产环境。
+- 管理员可以在工作台中管理用户、RSS 源、系统健康和语义层 Metadata。
+
+### 配置数据库与部署地址
+
+本地默认使用 SQLite：
+
+```dotenv
+DB_PATH=./data/mw-dev.db
+```
+
+Docker 环境默认使用：
+
+```dotenv
+DB_PATH=/app/data/money-whisperer.db
+```
+
+使用 Docker Compose 时，还可以配置：
+
+```dotenv
+HOST_BIND_ADDRESS=127.0.0.1
+HOST_PORT=3000
+```
+
+生产环境通常将 `HOST_BIND_ADDRESS` 设置为 `0.0.0.0`，再通过反向代理或云负载均衡暴露服务。数据库迁移会在应用访问数据库时自动执行，升级前会创建备份。
+
+### 配置检查
+
+启动应用后，可以通过以下方式确认配置状态：
+
+```bash
+curl http://localhost:3000/api/v1/health
+```
+
+登录管理员账号后，也可以打开工作台的系统健康页面查看 SQLite、PandaData 运行时和外部服务配置状态。健康检查不会返回 API Key、密码、数据库路径等敏感值。
 
 ## Docker 部署
 
